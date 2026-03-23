@@ -1,1 +1,0 @@
-/usr/bin/c++  -g -std=c++11 CMakeFiles/DebugServer.dir/debug_server.cpp.o -o /home/makise/cpp/bin/DebugServer  -Wl,-rpath,/home/makise/cpp/mymuduo/lib /home/makise/cpp/mymuduo/lib/libmymuduo.so -lpthread 

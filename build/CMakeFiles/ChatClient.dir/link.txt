@@ -1,1 +1,0 @@
-/usr/bin/c++  -g -std=c++11 CMakeFiles/ChatClient.dir/chatserver/client.cpp.o -o /home/makise/cpp/bin/ChatClient  -lpthread 
