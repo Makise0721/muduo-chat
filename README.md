@@ -96,8 +96,8 @@ make
 - 第二个参数：服务器端口号
 
 ## 消息协议
-
 所有消息使用JSON格式，包含以下字段：
+每条消息必须以换行符 `\n` 结束（即“一行一个 JSON”），否则服务器可能无法正确解析。
 
 ### 登录消息 (msgid: 1)
 ```json
@@ -108,19 +108,19 @@ make
 }
 ```
 
-### 注册消息 (msgid: 3)
+### 注册消息 (msgid: 4)
 ```json
 {
-  "msgid": 3,
+  "msgid": 4,
   "name": "username",
   "password": "123456"
 }
 ```
 
-### 单聊消息 (msgid: 5)
+### 单聊消息 (msgid: 6)
 ```json
 {
-  "msgid": 5,
+  "msgid": 6,
   "id": 123,
   "name": "sender",
   "toid": 456,
@@ -129,38 +129,38 @@ make
 }
 ```
 
-### 添加好友 (msgid: 6)
+### 添加好友 (msgid: 7)
 ```json
 {
-  "msgid": 6,
+  "msgid": 7,
   "id": 123,
   "friendid": 456
 }
 ```
 
-### 创建群组 (msgid: 7)
+### 创建群组 (msgid: 8)
 ```json
 {
-  "msgid": 7,
+  "msgid": 8,
   "id": 123,
   "groupname": "聊天群",
   "groupdesc": "这是一个测试群组"
 }
 ```
 
-### 加入群组 (msgid: 8)
+### 加入群组 (msgid: 9)
 ```json
 {
-  "msgid": 8,
+  "msgid": 9,
   "id": 123,
   "groupid": 1
 }
 ```
 
-### 群聊消息 (msgid: 9)
+### 群聊消息 (msgid: 10)
 ```json
 {
-  "msgid": 9,
+  "msgid": 10,
   "id": 123,
   "name": "sender",
   "groupid": 1,
@@ -178,7 +178,7 @@ make
 nc 127.0.0.1 6000
 
 # 发送注册消息
-{"msgid":3,"name":"test","password":"123456"}
+{"msgid":4,"name":"test","password":"123456"}
 
 # 发送登录消息
 {"msgid":1,"id":1,"password":"123456"}

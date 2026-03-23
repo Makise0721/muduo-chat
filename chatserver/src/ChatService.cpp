@@ -1,7 +1,37 @@
 #include "ChatService.hpp"
 #include <iostream>
+#include <exception>
 #include <string>
 #include <vector>
+
+namespace {
+// 确保从 ConnectionPool 取出的连接一定会归还，避免连接池耗尽导致阻塞。
+struct MySQLConnectionGuard {
+    ConnectionPool& pool;
+    std::shared_ptr<MySQL> mysql;
+
+    MySQLConnectionGuard(ConnectionPool& p, std::shared_ptr<MySQL> c)
+        : pool(p), mysql(std::move(c)) {}
+
+    ~MySQLConnectionGuard() {
+        pool.releaseConnection(mysql);
+    }
+
+    MySQL* operator->() { return mysql.get(); }
+    const MySQL* operator->() const { return mysql.get(); }
+};
+
+// 确保 mysql_use_result() 产生的结果集会释放。
+struct MySQLResultGuard {
+    MYSQL_RES* res;
+    explicit MySQLResultGuard(MYSQL_RES* r) : res(r) {}
+    ~MySQLResultGuard() {
+        if (res) {
+            mysql_free_result(res);
+        }
+    }
+};
+} // namespace
 
 ChatService::ChatService() {
     _msgHandlerMap.insert({LOGIN_MSG, bind(&ChatService::login, this, placeholders::_1, placeholders::_2, placeholders::_3)});
@@ -20,7 +50,19 @@ ChatService* ChatService::instance() {
 }
 
 void ChatService::handler(const TcpConnectionPtr& conn, string& msg, Timestamp time) {
-    json js = json::parse(msg);
+    json js;
+    try {
+        js = json::parse(msg);
+    } catch (const std::exception& e) {
+        cerr << "json parse failed: " << e.what() << ", msg=" << msg << endl;
+        return;
+    }
+
+    if (!js.contains("msgid")) {
+        cerr << "msg has no msgid, msg=" << msg << endl;
+        return;
+    }
+
     int msgid = js["msgid"].get<int>();
     
     auto it = _msgHandlerMap.find(msgid);
@@ -34,103 +76,129 @@ void ChatService::handler(const TcpConnectionPtr& conn, string& msg, Timestamp t
 
 void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int id = js["id"].get<int>();
-    string pwd = js["password"];
-    
+    std::string pwd = js["password"].get<std::string>();
+
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
-    
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+
     char sql[1024] = {0};
     sprintf(sql, "SELECT id, name, password, state FROM User WHERE id = %d AND password = '%s'", id, pwd.c_str());
-    
-    MYSQL_RES* res = mysql->query(sql);
-    if (res != nullptr) {
-        MYSQL_ROW row = mysql_fetch_row(res);
-        if (row != nullptr) {
-            string state = row[3];
-            if (state == "online") {
-                json response;
-                response["msgid"] = LOGIN_MSG_ACK;
-                response["errno"] = 2;
-                response["errmsg"] = "this account is using, input another!";
-                conn->send(response.dump());
-            } else {
-                {
-                    lock_guard<mutex> lock(_connMutex);
-                    _userConnMap.insert({id, conn});
-                }
-                
-                mysql_free_result(res);
-                sprintf(sql, "UPDATE User SET state = 'online' WHERE id = %d", id);
-                mysql->update(sql);
-                
-                json response;
-                response["msgid"] = LOGIN_MSG_ACK;
-                response["errno"] = 0;
-                response["id"] = id;
-                response["name"] = row[1];
-                
-                sprintf(sql, "SELECT friendid, name FROM Friend, User WHERE Friend.userid = %d AND Friend.friendid = User.id", id);
-                res = mysql->query(sql);
-                if (res != nullptr) {
-                    vector<string> vec;
-                    while ((row = mysql_fetch_row(res)) != nullptr) {
-                        vec.push_back(row[1]);
-                    }
-                    response["friends"] = vec;
-                    mysql_free_result(res);
-                }
-                
-                conn->send(response.dump());
+
+    MYSQL_RES* resUser = mysql->query(sql);
+    if (!resUser) {
+        json response;
+        response["msgid"] = LOGIN_MSG_ACK;
+        response["errno"] = 1;
+        response["errmsg"] = "userid or password is invalid!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQLResultGuard guardUser(resUser);
+
+    MYSQL_ROW rowUser = mysql_fetch_row(resUser);
+    if (!rowUser) {
+        json response;
+        response["msgid"] = LOGIN_MSG_ACK;
+        response["errno"] = 1;
+        response["errmsg"] = "userid or password is invalid!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+
+    std::string state = rowUser[3] ? rowUser[3] : "";
+    if (state == "online") {
+        json response;
+        response["msgid"] = LOGIN_MSG_ACK;
+        response["errno"] = 2;
+        response["errmsg"] = "this account is using, input another!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+
+    {
+        lock_guard<mutex> lock(_connMutex);
+        _userConnMap.insert({id, conn});
+    }
+
+    sprintf(sql, "UPDATE User SET state = 'online' WHERE id = %d", id);
+    mysql->update(sql);
+
+    json response;
+    response["msgid"] = LOGIN_MSG_ACK;
+    response["errno"] = 0;
+    response["id"] = id;
+    response["name"] = rowUser[1] ? rowUser[1] : "";
+
+    // 好友列表
+    sprintf(sql, "SELECT friendid, name FROM Friend, User WHERE Friend.userid = %d AND Friend.friendid = User.id", id);
+    MYSQL_RES* resFriends = mysql->query(sql);
+    if (resFriends) {
+        MySQLResultGuard guardFriends(resFriends);
+        vector<string> vec;
+        MYSQL_ROW rowFriend;
+        while ((rowFriend = mysql_fetch_row(resFriends)) != nullptr) {
+            if (rowFriend[1]) {
+                vec.push_back(rowFriend[1]);
             }
-        } else {
-            json response;
-            response["msgid"] = LOGIN_MSG_ACK;
-            response["errno"] = 1;
-            response["errmsg"] = "userid or password is invalid!";
-            conn->send(response.dump());
+        }
+        response["friends"] = vec;
+    }
+
+    // 先回登录应答，客户端更容易按顺序处理
+    conn->send(response.dump() + "\n");
+
+    // 离线消息下发
+    sprintf(sql, "SELECT message FROM OfflineMessage WHERE userid = %d", id);
+    MYSQL_RES* resOffline = mysql->query(sql);
+    if (resOffline) {
+        MySQLResultGuard guardOffline(resOffline);
+        MYSQL_ROW rowOff;
+        while ((rowOff = mysql_fetch_row(resOffline)) != nullptr) {
+            if (rowOff[0]) {
+                conn->send(std::string(rowOff[0]) + "\n");
+            }
         }
     }
+
+    sprintf(sql, "DELETE FROM OfflineMessage WHERE userid = %d", id);
+    mysql->update(sql);
 }
 
 void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
-    string name = js["name"];
-    string pwd = js["password"];
-    
+    std::string name = js["name"].get<std::string>();
+    std::string pwd = js["password"].get<std::string>();
+
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
-    
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+
     char sql[1024] = {0};
     sprintf(sql, "SELECT id FROM User WHERE name = '%s'", name.c_str());
-    
-    MYSQL_RES* res = mysql->query(sql);
-    if (res != nullptr) {
-        MYSQL_ROW row = mysql_fetch_row(res);
+
+    MYSQL_RES* resName = mysql->query(sql);
+    if (resName != nullptr) {
+        MySQLResultGuard guardName(resName);
+        MYSQL_ROW row = mysql_fetch_row(resName);
         if (row != nullptr) {
             json response;
             response["msgid"] = REG_MSG_ACK;
             response["errno"] = 1;
             response["errmsg"] = "this name is already exist!";
-            conn->send(response.dump());
-            mysql_free_result(res);
+            conn->send(response.dump() + "\n");
             return;
         }
-        mysql_free_result(res);
     }
-    
+
     sprintf(sql, "INSERT INTO User(name, password) VALUES('%s', '%s')", name.c_str(), pwd.c_str());
+    json response;
+    response["msgid"] = REG_MSG_ACK;
     if (mysql->update(sql)) {
-        json response;
-        response["msgid"] = REG_MSG_ACK;
         response["errno"] = 0;
         response["id"] = mysql_insert_id(mysql->getConnection());
-        conn->send(response.dump());
     } else {
-        json response;
-        response["msgid"] = REG_MSG_ACK;
         response["errno"] = 1;
         response["errmsg"] = "register failed!";
-        conn->send(response.dump());
     }
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -144,10 +212,15 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
     }
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     sprintf(sql, "UPDATE User SET state = 'offline' WHERE id = %d", userid);
     mysql->update(sql);
+
+    json response;
+    response["msgid"] = LOGINOUT_MSG;
+    response["errno"] = 0;
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -156,17 +229,24 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
         lock_guard<mutex> lock(_connMutex);
         auto it = _userConnMap.find(toid);
         if (it != _userConnMap.end()) {
-            it->second->send(js.dump());
+            it->second->send(js.dump() + "\n");
+            json response = js;
+            response["errno"] = 0;
+            conn->send(response.dump() + "\n");
             return;
         }
     }
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     
     char sql[1024] = {0};
     sprintf(sql, "INSERT INTO OfflineMessage VALUES(NULL, %d, '%s')", toid, js.dump().c_str());
-    mysql->update(sql);
+    bool ok = mysql->update(sql);
+
+    json response = js;
+    response["errno"] = ok ? 0 : 1;
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -174,10 +254,14 @@ void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp ti
     int friendid = js["friendid"].get<int>();
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     sprintf(sql, "INSERT INTO Friend VALUES(%d, %d)", userid, friendid);
-    mysql->update(sql);
+    bool ok = mysql->update(sql);
+
+    json response = js;
+    response["errno"] = ok ? 0 : 1;
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -186,14 +270,23 @@ void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp 
     string groupdesc = js["groupdesc"];
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     sprintf(sql, "INSERT INTO AllGroup(groupname, groupdesc) VALUES('%s', '%s')", groupname.c_str(), groupdesc.c_str());
+    json response;
+    response["msgid"] = CREATE_GROUP_MSG;
+    response["id"] = userid;
+
     if (mysql->update(sql)) {
         int groupid = mysql_insert_id(mysql->getConnection());
+        response["groupid"] = groupid;
         sprintf(sql, "INSERT INTO GroupUser VALUES(%d, %d, 'creator')", groupid, userid);
-        mysql->update(sql);
+        bool ok = mysql->update(sql);
+        response["errno"] = ok ? 0 : 1;
+    } else {
+        response["errno"] = 1;
     }
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -201,10 +294,14 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
     int groupid = js["groupid"].get<int>();
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     sprintf(sql, "INSERT INTO GroupUser VALUES(%d, %d, 'normal')", groupid, userid);
-    mysql->update(sql);
+    bool ok = mysql->update(sql);
+
+    json response = js;
+    response["errno"] = ok ? 0 : 1;
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -212,26 +309,31 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
     int groupid = js["groupid"].get<int>();
     
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     sprintf(sql, "SELECT userid FROM GroupUser WHERE groupid = %d AND userid != %d", groupid, userid);
     
     MYSQL_RES* res = mysql->query(sql);
     if (res != nullptr) {
+        MySQLResultGuard guard(res);
         MYSQL_ROW row;
         while ((row = mysql_fetch_row(res)) != nullptr) {
             int toid = atoi(row[0]);
             lock_guard<mutex> lock(_connMutex);
             auto it = _userConnMap.find(toid);
             if (it != _userConnMap.end()) {
-                it->second->send(js.dump());
+                it->second->send(js.dump() + "\n");
             } else {
                 sprintf(sql, "INSERT INTO OfflineMessage VALUES(NULL, %d, '%s')", toid, js.dump().c_str());
                 mysql->update(sql);
             }
         }
-        mysql_free_result(res);
     }
+
+    // 给群聊发送者一个确认，避免客户端阻塞等待
+    json response = js;
+    response["errno"] = 0;
+    conn->send(response.dump() + "\n");
 }
 
 void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
@@ -249,7 +351,7 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
     
     if (userid != -1) {
         auto& connPool = ConnectionPool::getInstance();
-        auto mysql = connPool.getConnection();
+        MySQLConnectionGuard mysql(connPool, connPool.getConnection());
         char sql[1024] = {0};
         sprintf(sql, "UPDATE User SET state = 'offline' WHERE id = %d", userid);
         mysql->update(sql);
@@ -258,6 +360,6 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
 
 void ChatService::reset() {
     auto& connPool = ConnectionPool::getInstance();
-    auto mysql = connPool.getConnection();
+    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     mysql->update("UPDATE User SET state = 'offline' WHERE state = 'online'");
 }
