@@ -143,45 +143,6 @@ ChatClient/fast:
 .PHONY : ChatClient/fast
 
 #=============================================================================
-# Target rules for targets named TestServer
-
-# Build rule for target.
-TestServer: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 TestServer
-.PHONY : TestServer
-
-# fast build rule for target.
-TestServer/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/build
-.PHONY : TestServer/fast
-
-#=============================================================================
-# Target rules for targets named SimpleMymuduoServer
-
-# Build rule for target.
-SimpleMymuduoServer: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 SimpleMymuduoServer
-.PHONY : SimpleMymuduoServer
-
-# fast build rule for target.
-SimpleMymuduoServer/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/build
-.PHONY : SimpleMymuduoServer/fast
-
-#=============================================================================
-# Target rules for targets named DebugServer
-
-# Build rule for target.
-DebugServer: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 DebugServer
-.PHONY : DebugServer
-
-# fast build rule for target.
-DebugServer/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/build
-.PHONY : DebugServer/fast
-
-#=============================================================================
 # Target rules for targets named mymuduo
 
 # Build rule for target.
@@ -362,78 +323,6 @@ chatserver/src/Redis.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ChatServer.dir/build.make CMakeFiles/ChatServer.dir/chatserver/src/Redis.cpp.s
 .PHONY : chatserver/src/Redis.cpp.s
 
-debug_server.o: debug_server.cpp.o
-.PHONY : debug_server.o
-
-# target to build an object file
-debug_server.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/debug_server.cpp.o
-.PHONY : debug_server.cpp.o
-
-debug_server.i: debug_server.cpp.i
-.PHONY : debug_server.i
-
-# target to preprocess a source file
-debug_server.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/debug_server.cpp.i
-.PHONY : debug_server.cpp.i
-
-debug_server.s: debug_server.cpp.s
-.PHONY : debug_server.s
-
-# target to generate assembly for a file
-debug_server.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/debug_server.cpp.s
-.PHONY : debug_server.cpp.s
-
-simple_mymuduo_server.o: simple_mymuduo_server.cpp.o
-.PHONY : simple_mymuduo_server.o
-
-# target to build an object file
-simple_mymuduo_server.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/simple_mymuduo_server.cpp.o
-.PHONY : simple_mymuduo_server.cpp.o
-
-simple_mymuduo_server.i: simple_mymuduo_server.cpp.i
-.PHONY : simple_mymuduo_server.i
-
-# target to preprocess a source file
-simple_mymuduo_server.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/simple_mymuduo_server.cpp.i
-.PHONY : simple_mymuduo_server.cpp.i
-
-simple_mymuduo_server.s: simple_mymuduo_server.cpp.s
-.PHONY : simple_mymuduo_server.s
-
-# target to generate assembly for a file
-simple_mymuduo_server.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/simple_mymuduo_server.cpp.s
-.PHONY : simple_mymuduo_server.cpp.s
-
-testserver.o: testserver.cpp.o
-.PHONY : testserver.o
-
-# target to build an object file
-testserver.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/testserver.cpp.o
-.PHONY : testserver.cpp.o
-
-testserver.i: testserver.cpp.i
-.PHONY : testserver.i
-
-# target to preprocess a source file
-testserver.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/testserver.cpp.i
-.PHONY : testserver.cpp.i
-
-testserver.s: testserver.cpp.s
-.PHONY : testserver.s
-
-# target to generate assembly for a file
-testserver.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/testserver.cpp.s
-.PHONY : testserver.cpp.s
-
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -444,9 +333,6 @@ help:
 	@echo "... rebuild_cache"
 	@echo "... ChatClient"
 	@echo "... ChatServer"
-	@echo "... DebugServer"
-	@echo "... SimpleMymuduoServer"
-	@echo "... TestServer"
 	@echo "... mymuduo"
 	@echo "... chatserver/client.o"
 	@echo "... chatserver/client.i"
@@ -469,15 +355,6 @@ help:
 	@echo "... chatserver/src/Redis.o"
 	@echo "... chatserver/src/Redis.i"
 	@echo "... chatserver/src/Redis.s"
-	@echo "... debug_server.o"
-	@echo "... debug_server.i"
-	@echo "... debug_server.s"
-	@echo "... simple_mymuduo_server.o"
-	@echo "... simple_mymuduo_server.i"
-	@echo "... simple_mymuduo_server.s"
-	@echo "... testserver.o"
-	@echo "... testserver.i"
-	@echo "... testserver.s"
 .PHONY : help
 
 

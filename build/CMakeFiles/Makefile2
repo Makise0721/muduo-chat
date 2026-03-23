@@ -65,9 +65,6 @@ CMAKE_BINARY_DIR = /home/makise/cpp/build
 # The main recursive "all" target.
 all: CMakeFiles/ChatServer.dir/all
 all: CMakeFiles/ChatClient.dir/all
-all: CMakeFiles/TestServer.dir/all
-all: CMakeFiles/SimpleMymuduoServer.dir/all
-all: CMakeFiles/DebugServer.dir/all
 all: mymuduo/all
 .PHONY : all
 
@@ -78,9 +75,6 @@ preinstall: mymuduo/preinstall
 # The main recursive "clean" target.
 clean: CMakeFiles/ChatServer.dir/clean
 clean: CMakeFiles/ChatClient.dir/clean
-clean: CMakeFiles/TestServer.dir/clean
-clean: CMakeFiles/SimpleMymuduoServer.dir/clean
-clean: CMakeFiles/DebugServer.dir/clean
 clean: mymuduo/clean
 .PHONY : clean
 
@@ -152,91 +146,13 @@ CMakeFiles/ChatClient.dir/clean:
 .PHONY : CMakeFiles/ChatClient.dir/clean
 
 #=============================================================================
-# Target rules for target CMakeFiles/TestServer.dir
-
-# All Build rule for target.
-CMakeFiles/TestServer.dir/all: mymuduo/CMakeFiles/mymuduo.dir/all
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/depend
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/makise/cpp/build/CMakeFiles --progress-num=14,15 "Built target TestServer"
-.PHONY : CMakeFiles/TestServer.dir/all
-
-# Build rule for subdir invocation for target.
-CMakeFiles/TestServer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 20
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/TestServer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 0
-.PHONY : CMakeFiles/TestServer.dir/rule
-
-# Convenience name for target.
-TestServer: CMakeFiles/TestServer.dir/rule
-.PHONY : TestServer
-
-# clean rule for target.
-CMakeFiles/TestServer.dir/clean:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/TestServer.dir/build.make CMakeFiles/TestServer.dir/clean
-.PHONY : CMakeFiles/TestServer.dir/clean
-
-#=============================================================================
-# Target rules for target CMakeFiles/SimpleMymuduoServer.dir
-
-# All Build rule for target.
-CMakeFiles/SimpleMymuduoServer.dir/all: mymuduo/CMakeFiles/mymuduo.dir/all
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/depend
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/makise/cpp/build/CMakeFiles --progress-num=12,13 "Built target SimpleMymuduoServer"
-.PHONY : CMakeFiles/SimpleMymuduoServer.dir/all
-
-# Build rule for subdir invocation for target.
-CMakeFiles/SimpleMymuduoServer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 20
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/SimpleMymuduoServer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 0
-.PHONY : CMakeFiles/SimpleMymuduoServer.dir/rule
-
-# Convenience name for target.
-SimpleMymuduoServer: CMakeFiles/SimpleMymuduoServer.dir/rule
-.PHONY : SimpleMymuduoServer
-
-# clean rule for target.
-CMakeFiles/SimpleMymuduoServer.dir/clean:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/SimpleMymuduoServer.dir/build.make CMakeFiles/SimpleMymuduoServer.dir/clean
-.PHONY : CMakeFiles/SimpleMymuduoServer.dir/clean
-
-#=============================================================================
-# Target rules for target CMakeFiles/DebugServer.dir
-
-# All Build rule for target.
-CMakeFiles/DebugServer.dir/all: mymuduo/CMakeFiles/mymuduo.dir/all
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/depend
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/makise/cpp/build/CMakeFiles --progress-num=10,11 "Built target DebugServer"
-.PHONY : CMakeFiles/DebugServer.dir/all
-
-# Build rule for subdir invocation for target.
-CMakeFiles/DebugServer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 20
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/DebugServer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/makise/cpp/build/CMakeFiles 0
-.PHONY : CMakeFiles/DebugServer.dir/rule
-
-# Convenience name for target.
-DebugServer: CMakeFiles/DebugServer.dir/rule
-.PHONY : DebugServer
-
-# clean rule for target.
-CMakeFiles/DebugServer.dir/clean:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/DebugServer.dir/build.make CMakeFiles/DebugServer.dir/clean
-.PHONY : CMakeFiles/DebugServer.dir/clean
-
-#=============================================================================
 # Target rules for target mymuduo/CMakeFiles/mymuduo.dir
 
 # All Build rule for target.
 mymuduo/CMakeFiles/mymuduo.dir/all:
 	$(MAKE) $(MAKESILENT) -f mymuduo/CMakeFiles/mymuduo.dir/build.make mymuduo/CMakeFiles/mymuduo.dir/depend
 	$(MAKE) $(MAKESILENT) -f mymuduo/CMakeFiles/mymuduo.dir/build.make mymuduo/CMakeFiles/mymuduo.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/makise/cpp/build/CMakeFiles --progress-num=16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33 "Built target mymuduo"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/makise/cpp/build/CMakeFiles --progress-num=10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27 "Built target mymuduo"
 .PHONY : mymuduo/CMakeFiles/mymuduo.dir/all
 
 # Build rule for subdir invocation for target.
