@@ -18,19 +18,25 @@
 * 构建工具：CMake
 
 ## 📂 项目结构说明
+
+```text
 .
-├── mymuduo/             # 网络基础设施
-├── chatserver/          # 聊天服务器业务代码
-│   ├── include/         # 业务层头文件
-│   │   ├── ChatServer.hpp    # 封装 TcpServer 处理连接和读写
+├── mymuduo/            # 网络基础设施
+│   ├── include/        # 网络库头文件
+│   └── src/            # 网络库源文件
+├── chatserver/         # 聊天服务器业务代码
+│   ├── include/        # 业务层头文件
+│   │   ├── ChatServer.hpp    # 封装 TcpServer
 │   │   ├── ChatService.hpp   # 核心业务单例
 │   │   ├── Redis.hpp         # Redis 订阅/发布封装
 │   │   └── db/               # MySQL 操作类
-│   ├── src/             # 业务层源文件
-│   └── main.cpp         # 启动入口
-├── thirdparty/          # 存放 json.hpp 等第三方库
-├── sql/                 # 存放 chat.sql 脚本
-└── CMakeLists.txt       # 顶层 CMake，同时编译 mymuduo 和 chatserver
+│   ├── src/            # 业务层源文件
+│   └── main.cpp        # 程序启动入口
+├── thirdparty/         # 存放 json.hpp 等第三方库
+├── sql/                # 存放 chat.sql 数据库脚本
+└── CMakeLists.txt      # 顶层 CMake，同时编译 mymuduo 和 chatserver
+```
+
 
 
 
