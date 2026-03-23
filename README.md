@@ -18,24 +18,20 @@
 * 构建工具：CMake
 
 ## 📂 项目结构说明
-ChatServer/
-├── bin/                # 编译生成的二进制可执行文件
-├── build/              # CMake 编译中间文件（临时目录）
-├── include/            # 头文件 (.h / .hpp)
-│   ├── server/         # 网络层核心头文件 (ChatServer, Connection)
-│   ├── service/        # 业务层头文件 (ChatService, Redis, Model)
-│   └── db/             # 数据库操作相关头文件 (MySQL, ConnectionPool)
-├── src/                # 源文件 (.cpp)
-│   ├── server/         # 封装网络库回调、启动事件循环
-│   ├── service/        # 编写单聊、群聊、登录等业务逻辑
-│   ├── db/             # 数据库连接逻辑、SQL 执行封装
-│   ├── model/          # 数据对象映射 (User, Group, Friend)
-│   └── main.cpp        # 程序入口：解析配置、初始化并启动服务器
-├── test/               # 测试代码 (可以使用 GTest 或简单的客户端模拟)
-├── sql/                # 数据库初始化脚本 (.sql 文件)
-├── thirdparty/         # 第三方库头文件 (如 json.hpp)
-├── CMakeLists.txt      # 顶层 CMake 构建脚本
-└── README.md           # 项目说明文档
+.
+├── mymuduo/             # 网络基础设施
+├── chatserver/          # 聊天服务器业务代码
+│   ├── include/         # 业务层头文件
+│   │   ├── ChatServer.hpp    # 封装 TcpServer 处理连接和读写
+│   │   ├── ChatService.hpp   # 核心业务单例
+│   │   ├── Redis.hpp         # Redis 订阅/发布封装
+│   │   └── db/               # MySQL 操作类
+│   ├── src/             # 业务层源文件
+│   └── main.cpp         # 启动入口
+├── thirdparty/          # 存放 json.hpp 等第三方库
+├── sql/                 # 存放 chat.sql 脚本
+└── CMakeLists.txt       # 顶层 CMake，同时编译 mymuduo 和 chatserver
+
 
 
 ## 🏗️ 快速开始
