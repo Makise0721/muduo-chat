@@ -2,13 +2,18 @@
 
 #include <iostream>
 #include <strings.h>
+#include <netinet/in.h>
 
 InetAddress::InetAddress(uint16_t port, std::string ip)
 {
     bzero(&addr_, sizeof addr_);
     addr_.sin_family = AF_INET;
     addr_.sin_port = htons(port);
-    addr_.sin_addr.s_addr = inet_addr(ip.c_str());
+    if (ip.empty()) {
+        addr_.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else {
+        addr_.sin_addr.s_addr = inet_addr(ip.c_str());
+    }
 }
 
 std::string InetAddress::toIp() const

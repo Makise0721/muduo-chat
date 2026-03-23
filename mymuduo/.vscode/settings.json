@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "iostream": "cpp",
-        "string": "cpp"
-    },
-    "cmake.sourceDirectory": "/home/makise/cpp/mymuduo"
-}

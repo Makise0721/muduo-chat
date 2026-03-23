@@ -1,3 +1,0 @@
-/home/makise/cpp/mymuduo/build/CMakeFiles/mymuduo.dir
-/home/makise/cpp/mymuduo/build/CMakeFiles/edit_cache.dir
-/home/makise/cpp/mymuduo/build/CMakeFiles/rebuild_cache.dir

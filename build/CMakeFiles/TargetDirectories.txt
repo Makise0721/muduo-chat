@@ -1,0 +1,10 @@
+/home/makise/cpp/build/CMakeFiles/ChatServer.dir
+/home/makise/cpp/build/CMakeFiles/ChatClient.dir
+/home/makise/cpp/build/CMakeFiles/TestServer.dir
+/home/makise/cpp/build/CMakeFiles/SimpleMymuduoServer.dir
+/home/makise/cpp/build/CMakeFiles/DebugServer.dir
+/home/makise/cpp/build/CMakeFiles/edit_cache.dir
+/home/makise/cpp/build/CMakeFiles/rebuild_cache.dir
+/home/makise/cpp/build/mymuduo/CMakeFiles/mymuduo.dir
+/home/makise/cpp/build/mymuduo/CMakeFiles/edit_cache.dir
+/home/makise/cpp/build/mymuduo/CMakeFiles/rebuild_cache.dir

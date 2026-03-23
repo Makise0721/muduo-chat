@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <strings.h>
+#include <cstring>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/tcp.h>
@@ -16,7 +17,7 @@ void Socket::bindAddress(const InetAddress &localaddr)
 {
     if (0 != ::bind(sockfd_, (sockaddr *)localaddr.getSockAddrPtr(), sizeof(sockaddr_in)))
     {
-        LOG_FATAL("Socket::bindAddress failed");
+        LOG_FATAL("Socket::bindAddress failed: %s", strerror(errno));
     }
 }
 
@@ -24,7 +25,7 @@ void Socket::listen()
 {
     if (0 != ::listen(sockfd_, SOMAXCONN))
     {
-        LOG_FATAL("Socket::listen failed");
+        LOG_FATAL("Socket::listen failed: %s", strerror(errno));
     }
 }
 
