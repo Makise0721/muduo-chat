@@ -22,7 +22,12 @@ int main(int argc, char** argv) {
     signal(SIGINT, resetHandler);
 
     auto& connPool = ConnectionPool::getInstance();
-    connPool.init("127.0.0.1", "root", "714095", "chat", 3306, 5);
+    const char* dbPassword = getenv("DB_PASSWORD");
+    if (!dbPassword) {
+        std::cerr << "Error: DB_PASSWORD environment variable not set" << std::endl;
+        exit(-1);
+    }
+    connPool.init("127.0.0.1", "root", dbPassword, "chat", 3306, 5);
 
     EventLoop loop;
     InetAddress addr(port, ip);
