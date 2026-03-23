@@ -10,6 +10,9 @@ include_directories(${PROJECT_SOURCE_DIR}/mymuduo)
 include_directories(${PROJECT_SOURCE_DIR}/chatserver/include)
 
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(MYSQL REQUIRED mysqlclient)
+pkg_check_modules(HIREDIS REQUIRED hiredis)
 
 add_subdirectory(mymuduo)
 
@@ -18,5 +21,5 @@ aux_source_directory(chatserver/src CHATSERVER_SRC)
 add_executable(ChatServer chatserver/main.cpp ${CHATSERVER_SRC})
 add_executable(ChatClient chatserver/client.cpp)
 
-target_link_libraries(ChatServer mymuduo mysqlclient hiredis pthread)
+target_link_libraries(ChatServer mymuduo ${MYSQL_LIBRARIES} ${HIREDIS_LIBRARIES} pthread)
 target_link_libraries(ChatClient pthread)
