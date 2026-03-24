@@ -41,5 +41,5 @@ MYSQL_RES* MySQL::query(const std::string& sql) {
         std::cerr << "MySQL query failed: " << mysql_error(conn_) << std::endl;
         return nullptr;
     }
-    return mysql_use_result(conn_);
+    return mysql_store_result(conn_);
 }
