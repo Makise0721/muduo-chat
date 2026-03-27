@@ -1,5 +1,6 @@
 #include "db/MySQL.hpp"
 #include <iostream>
+#include <cstring>
 
 MySQL::MySQL() {
     conn_ = mysql_init(nullptr);
@@ -42,4 +43,54 @@ MYSQL_RES* MySQL::query(const std::string& sql) {
         return nullptr;
     }
     return mysql_store_result(conn_);
+}
+
+MYSQL_STMT* MySQL::prepareStatement(const std::string& sql) {
+    MYSQL_STMT* stmt = mysql_stmt_init(conn_);
+    if (!stmt) {
+        std::cerr << "mysql_stmt_init failed: " << mysql_error(conn_) << std::endl;
+        return nullptr;
+    }
+    if (mysql_stmt_prepare(stmt, sql.c_str(), sql.length())) {
+        std::cerr << "mysql_stmt_prepare failed: " << mysql_stmt_error(stmt) << std::endl;
+        mysql_stmt_close(stmt);
+        return nullptr;
+    }
+    return stmt;
+}
+
+bool MySQL::bindParam(MYSQL_STMT* stmt, int paramIndex, const std::string& value) {
+    MYSQL_BIND bind;
+    memset(&bind, 0, sizeof(bind));
+    bind.buffer_type = MYSQL_TYPE_STRING;
+    bind.buffer = const_cast<char*>(value.c_str());
+    bind.buffer_length = value.length();
+    bind.length = &bind.buffer_length;
+    return mysql_stmt_bind_param(stmt, &bind) == 0;
+}
+
+bool MySQL::bindParam(MYSQL_STMT* stmt, int paramIndex, int value) {
+    MYSQL_BIND bind;
+    memset(&bind, 0, sizeof(bind));
+    bind.buffer_type = MYSQL_TYPE_LONG;
+    bind.buffer = &value;
+    bind.buffer_length = sizeof(value);
+    return mysql_stmt_bind_param(stmt, &bind) == 0;
+}
+
+bool MySQL::execute(MYSQL_STMT* stmt) {
+    return mysql_stmt_execute(stmt) == 0;
+}
+
+MYSQL_RES* MySQL::getResult(MYSQL_STMT* stmt) {
+    if (mysql_stmt_store_result(stmt)) {
+        return nullptr;
+    }
+    return mysql_stmt_result_metadata(stmt);
+}
+
+void MySQL::closeStatement(MYSQL_STMT* stmt) {
+    if (stmt) {
+        mysql_stmt_close(stmt);
+    }
 }

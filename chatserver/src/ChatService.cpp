@@ -3,6 +3,7 @@
 #include <exception>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 namespace {
 // 确保从 ConnectionPool 取出的连接一定会归还，避免连接池耗尽导致阻塞。
@@ -35,12 +36,22 @@ struct MySQLResultGuard {
 // 转义字符串用于 SQL 查询
 std::string escapeString(MYSQL* mysql, const std::string& str) {
     if (!mysql || str.empty()) return str;
-    char* escaped = new char[str.length() * 2 + 1];
-    unsigned long len = mysql_real_escape_string(mysql, escaped, str.c_str(), str.length());
-    std::string result(escaped, len);
-    delete[] escaped;
-    return result;
+    std::vector<char> escaped(str.length() * 2 + 1);
+    unsigned long len = mysql_real_escape_string(mysql, escaped.data(), str.c_str(), str.length());
+    return std::string(escaped.data(), len);
 }
+
+// 预处理语句守护类
+struct PreparedStatementGuard {
+    MYSQL_STMT* stmt;
+    explicit PreparedStatementGuard(MYSQL_STMT* s) : stmt(s) {}
+    ~PreparedStatementGuard() {
+        if (stmt) {
+            mysql_stmt_close(stmt);
+        }
+    }
+    MYSQL_STMT* operator->() { return stmt; }
+};
 
 } // namespace
 
@@ -331,24 +342,45 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
     int groupid = js["groupid"].get<int>();
-    
+
     auto& connPool = ConnectionPool::getInstance();
     MySQLConnectionGuard mysql(connPool, connPool.getConnection());
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "SELECT userid FROM GroupUser WHERE groupid = %d AND userid != %d", groupid, userid);
-    
+
     MYSQL_RES* res = mysql->query(sql);
     if (res != nullptr) {
         MySQLResultGuard guard(res);
+        std::vector<int> toids;
         MYSQL_ROW row;
         while ((row = mysql_fetch_row(res)) != nullptr) {
-            int toid = atoi(row[0]);
+            toids.push_back(atoi(row[0]));
+        }
+
+        // 收集在线用户的连接指针和ID集合
+        std::vector<std::pair<int, TcpConnectionPtr>> onlineUsers;
+        std::unordered_set<int> onlineIds;
+        {
             lock_guard<mutex> lock(_connMutex);
-            auto it = _userConnMap.find(toid);
-            if (it != _userConnMap.end()) {
-                it->second->send(js.dump() + "\n");
-            } else {
-                std::string escapedMsg = escapeString(mysql->getConnection(), js.dump());
+            for (int toid : toids) {
+                auto it = _userConnMap.find(toid);
+                if (it != _userConnMap.end()) {
+                    onlineUsers.emplace_back(toid, it->second);
+                    onlineIds.insert(toid);
+                }
+            }
+        }
+
+        // 发送消息给在线用户
+        std::string msg = js.dump() + "\n";
+        for (auto& userPair : onlineUsers) {
+            userPair.second->send(msg);
+        }
+
+        // 处理离线用户
+        std::string escapedMsg = escapeString(mysql->getConnection(), js.dump());
+        for (int toid : toids) {
+            if (onlineIds.find(toid) == onlineIds.end()) {
                 snprintf(sql, sizeof(sql), "INSERT INTO OfflineMessage VALUES(NULL, %d, '%s')", toid, escapedMsg.c_str());
                 mysql->update(sql);
             }
