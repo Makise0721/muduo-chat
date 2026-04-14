@@ -13,7 +13,6 @@
 │   ├── include/        # 业务层头文件
 │   │   ├── ChatServer.hpp    # 封装 TcpServer
 │   │   ├── ChatService.hpp   # 核心业务单例
-│   │   ├── Redis.hpp         # Redis 订阅/发布封装
 │   │   └── db/               # MySQL 操作类
 │   ├── src/            # 业务层源文件
 │   └── main.cpp        # 程序启动入口
@@ -35,8 +34,6 @@
 - CMake 3.10+
 - Linux系统
 - MySQL 5.7+
-- Redis 5.0+
-- hiredis库
 
 ## 安装依赖
 
@@ -45,12 +42,6 @@
 ```bash
 sudo apt-get update
 sudo apt-get install mysql-server mysql-client libmysqlclient-dev
-```
-
-### 安装Redis
-
-```bash
-sudo apt-get install redis-server hiredis-dev
 ```
 
 ### 安装其他依赖
@@ -67,13 +58,20 @@ sudo apt-get install cmake build-essential
 mysql -u root -p < sql/chat.sql
 ```
 
-2. 修改数据库连接信息：
+2. 设置数据库密码：
 
-编辑 `chatserver/main.cpp`，修改MySQL连接参数：
+服务器通过环境变量 `DB_PASSWORD` 获取MySQL root密码。如果没有设置，默认使用 "123456" 并输出警告。
 
-```cpp
-connPool.init("127.0.0.1", "root", "your_password", "chat", 3306, 5);
+例如：
+```bash
+export DB_PASSWORD=your_password
 ```
+或者在运行服务器时直接设置：
+```bash
+DB_PASSWORD=your_password ./bin/ChatServer 127.0.0.1 6000
+```
+
+如果需要修改其他连接参数（如主机、端口、数据库名等），请编辑 `chatserver/main.cpp` 中的 `connPool.init` 调用。
 
 ## 编译项目
 
@@ -198,19 +196,16 @@ nc 127.0.0.1 6000
 ### ConnectionPool
 MySQL连接池，提高数据库访问效率。
 
-### Redis
-Redis订阅发布封装，用于跨服务器消息同步。
-
 ## 技术架构
 
 - **网络层**：基于mymuduo的Reactor模式，非阻塞IO
 - **业务层**：单例模式的ChatService，消息处理器映射
-- **数据层**：MySQL存储用户数据，Redis用于消息分发
+- **数据层**：MySQL存储用户数据
 - **协议层**：JSON格式的消息协议
 
 ## 注意事项
 
-1. 确保MySQL和Redis服务已启动
+1. 确保MySQL服务已启动
 2. 修改main.cpp中的数据库连接信息
 3. 首次运行需要导入数据库脚本
 4. 服务器默认监听6000端口，可根据需要修改
@@ -220,7 +215,6 @@ Redis订阅发布封装，用于跨服务器消息同步。
 - mymuduo网络库
 - nlohmann/json库
 - MySQL官方文档
-- Redis官方文档
 
 ## 许可证
 

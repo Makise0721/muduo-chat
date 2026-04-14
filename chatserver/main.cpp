@@ -24,8 +24,8 @@ int main(int argc, char** argv) {
     auto& connPool = ConnectionPool::getInstance();
     const char* dbPassword = getenv("DB_PASSWORD");
     if (!dbPassword) {
-        std::cerr << "Error: DB_PASSWORD environment variable not set" << std::endl;
-        exit(-1);
+        dbPassword = "123456";
+        std::cerr << "Warning: DB_PASSWORD environment variable not set, using default password '123456'" << std::endl;
     }
     connPool.init("127.0.0.1", "root", dbPassword, "chat", 3306, 5);
 
