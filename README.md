@@ -212,7 +212,7 @@ MySQL连接池，提高数据库访问效率。
 
 ## 参考资料
 
-- mymuduo网络库
+- muduo网络库
 - nlohmann/json库
 - MySQL官方文档
 
