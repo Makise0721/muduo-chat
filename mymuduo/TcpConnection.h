@@ -53,6 +53,12 @@ public:
         highWaterMark_ = highWaterMark;
     }
 
+    using OutputEncoder = std::function<void(const std::string &message, Buffer *output)>;
+    void setOutputEncoder(const OutputEncoder &cb)
+    {
+        encoder_ = cb;
+    }
+
     void send(std::string message);
     void shutdown();
 
@@ -98,6 +104,8 @@ private:
     HighWaterMarkCallback highWaterMarkCallback_;
 
     size_t highWaterMark_;
+
+    OutputEncoder encoder_;
 
     Buffer inputBuffer_;
     Buffer outputBuffer_;

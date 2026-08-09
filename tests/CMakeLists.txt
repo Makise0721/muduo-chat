@@ -77,8 +77,27 @@ target_include_directories(StreamCodecTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo
 target_link_libraries(StreamCodecTest GTest::gtest_main GTest::gtest)
 set_target_properties(StreamCodecTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(LegacyJsonLineCodecTest
+    unit/LegacyJsonLineCodecTest.cpp
+    ${MYMUDUO_DIR}/LegacyJsonLineCodec.cc
+    ${MYMUDUO_DIR}/Buffer.cc
+)
+target_include_directories(LegacyJsonLineCodecTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(LegacyJsonLineCodecTest GTest::gtest_main GTest::gtest)
+set_target_properties(LegacyJsonLineCodecTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(BinaryFrameCodecTest
+    unit/BinaryFrameCodecTest.cpp
+    ${MYMUDUO_DIR}/BinaryFrameCodec.cc
+    ${MYMUDUO_DIR}/StreamCodec.cc
+    ${MYMUDUO_DIR}/Buffer.cc
+)
+target_include_directories(BinaryFrameCodecTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(BinaryFrameCodecTest GTest::gtest_main GTest::gtest)
+set_target_properties(BinaryFrameCodecTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -87,3 +106,5 @@ gtest_discover_tests(EventLoopThreadPoolTest)
 gtest_discover_tests(TcpConnectionTest)
 gtest_discover_tests(BenchStatsTest)
 gtest_discover_tests(StreamCodecTest)
+gtest_discover_tests(LegacyJsonLineCodecTest)
+gtest_discover_tests(BinaryFrameCodecTest)

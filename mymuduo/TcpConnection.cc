@@ -78,6 +78,13 @@ void TcpConnection::send(std::string message)
 
 void TcpConnection::sendInLoop(std::string message)
 {
+    if (encoder_)
+    {
+        Buffer encoded;
+        encoder_(message, &encoded);
+        sendInLoop(encoded.peek(), encoded.readableBytes());
+        return;
+    }
     sendInLoop(message.data(), message.size());
 }
 

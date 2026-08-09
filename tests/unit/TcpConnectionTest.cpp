@@ -162,6 +162,29 @@ TEST(TcpConnectionTest, WriteCompleteAfterOutputBufferDrained)
     EXPECT_EQ(payload, received);
 }
 
+TEST(TcpConnectionTest, OutputEncoderTransformsSentData)
+{
+    int fds[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    ConnHarness h(fds[1], [](TcpConnection *conn)
+                  {
+                      conn->setOutputEncoder([](const std::string &message, Buffer *output)
+                                             {
+                                                 output->append("ENC[", 4);
+                                                 output->append(message.data(), message.size());
+                                                 output->append("]", 1);
+                                             });
+                  });
+    ASSERT_TRUE(h.waitReady());
+    h.loop->runInLoop([&] { h.conn->send("hello"); });
+    struct pollfd pfd = {fds[0], POLLIN, 0};
+    ASSERT_EQ(1, poll(&pfd, 1, 10000));
+    char buf[64] = {0};
+    ssize_t n = read(fds[0], buf, sizeof buf);
+    ASSERT_GT(n, 0);
+    EXPECT_EQ("ENC[hello]", std::string(buf, static_cast<size_t>(n)));
+}
+
 TEST(TcpConnectionTest, CrossThreadSendOwnsPayloadAndConnection)
 {
     int fds[2];

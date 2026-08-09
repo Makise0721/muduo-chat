@@ -31,11 +31,16 @@ int main(int argc, char** argv) {
 
     EventLoop loop;
     InetAddress addr(port, ip);
-    std::cout << "Server starting on " << ip << ":" << port << std::endl;
-    ChatServer server(&loop, addr, "ChatServer");
+    std::cout << "Server starting on " << ip << ":" << port << " (v1 newline JSON)" << std::endl;
+    ChatServer server(&loop, addr, "ChatServer", ProtocolCodec::LegacyLine);
+
+    InetAddress v2Addr(7000, ip);
+    std::cout << "Server starting on " << ip << ":7000 (v2 binary)" << std::endl;
+    ChatServer v2Server(&loop, v2Addr, "ChatServerV2", ProtocolCodec::BinaryFrame);
 
     std::cout << "Server started, entering event loop" << std::endl;
     server.start();
+    v2Server.start();
     loop.loop();
 
     return 0;

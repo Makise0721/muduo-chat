@@ -27,4 +27,5 @@
 - 8KB payload 断言未覆盖 partial-write 路径（判断项；UAF 检测与 payload 大小无关）
 - libFuzzer 未跑（WSL 无 Clang，CI 前置项；P1-01 以随机输入风暴替代）
 
-| P1-01 StreamCodec 与 v2 framing | VERIFIED | `ctest -R StreamCodecTest` 15/15；Debug 全量 43/43；ASan 43/43；golden bytes 固化；10000 轮随机风暴无报告；未提交（等待授权） |
+| P1-01 StreamCodec 与 v2 framing | VERIFIED | `ctest -R StreamCodecTest` 15/15；Debug 全量 43/43；ASan 43/43；golden bytes 固化；10000 轮随机风暴无报告；已提交 cb8ba00 |
+| P1-02 双协议迁移 | VERIFIED | `ctest -R 'LegacyJsonLineCodec|BinaryFrameCodec|OutputEncoder'` 13/13；Debug 全量 56/56；ASan 56/56；进程级双端口 smoke OK（注册/登录等价）；ChatService 零改动；未提交（等待授权） |
