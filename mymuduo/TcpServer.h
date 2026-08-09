@@ -48,6 +48,10 @@ public:
     {
         writeCompleteCallback_ = cb;
     }
+    void setWriteBufferLimits(const TcpConnection::WriteBufferLimits &limits)
+    {
+        writeBufferLimits_ = limits;
+    }
 
     void start();
     void setThreadNum(int numThreads);
@@ -71,6 +75,8 @@ private:
 
     ThreadInitCallback threadInitCallback_;
     std::atomic_int started_;
+
+    TcpConnection::WriteBufferLimits writeBufferLimits_;
 
     int nextConnId_;
     ConnectionMap connections_;

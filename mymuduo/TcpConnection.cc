@@ -55,51 +55,61 @@ TcpConnection::~TcpConnection()
              peerAddr_.toIpPort().c_str());
 }
 
-void TcpConnection::send(std::string message)
+TcpConnection::SendResult TcpConnection::send(std::string message)
 {
     if (state_ == kConnected)
     {
         if (loop_->isInLoopThread())
         {
-            sendInLoop(std::move(message));
+            return sendInLoop(std::move(message));
         }
         else
         {
-            using SendInLoop = void (TcpConnection::*)(std::string);
+            if (message.size() > limits_.hardLimitBytes)
+            {
+                return SendResult::TooLarge;
+            }
+            using SendInLoop = SendResult (TcpConnection::*)(std::string);
             loop_->runInLoop(std::bind(static_cast<SendInLoop>(&TcpConnection::sendInLoop),
                                        shared_from_this(), std::move(message)));
+            return SendResult::Accepted;
         }
     }
     else
     {
         LOG_ERROR("TcpConnection::send() - Connection [%s] is down, can not send message", name_.c_str());
+        return SendResult::Closed;
     }
 }
 
-void TcpConnection::sendInLoop(std::string message)
+TcpConnection::SendResult TcpConnection::sendInLoop(std::string message)
 {
     if (encoder_)
     {
         Buffer encoded;
         encoder_(message, &encoded);
-        sendInLoop(encoded.peek(), encoded.readableBytes());
-        return;
+        return sendInLoop(encoded.peek(), encoded.readableBytes());
     }
-    sendInLoop(message.data(), message.size());
+    return sendInLoop(message.data(), message.size());
 }
 
-void TcpConnection::sendInLoop(const void *message, size_t len)
+TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t len)
 {
-    ssize_t nwrote = 0;
-    size_t remaining = len;
-    bool faultError = false; 
-
-    if (state_ ==  kDisconnected)
+    if (state_ == kDisconnected)
     {
         LOG_ERROR("TcpConnection::sendInLoop() - Connection [%s] is disconnected, give up writing", name_.c_str());
-        return;
+        return SendResult::Closed;
     }
-    
+
+    if (len > limits_.hardLimitBytes)
+    {
+        return SendResult::TooLarge;
+    }
+
+    ssize_t nwrote = 0;
+    size_t remaining = len;
+    bool faultError = false;
+
     if (!channel_->isWriting() && outputBuffer_.readableBytes() == 0)
     {
         nwrote = ::write(channel_->fd(), message, len);
@@ -108,7 +118,7 @@ void TcpConnection::sendInLoop(const void *message, size_t len)
             remaining = len - nwrote;
             if (remaining == 0 && writeCompleteCallback_)
             {
-                loop_ ->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
+                loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
             }
         }
         else
@@ -124,9 +134,13 @@ void TcpConnection::sendInLoop(const void *message, size_t len)
             }
         }
     }
-    
+
     if (!faultError && remaining > 0)
     {
+        if (outputBuffer_.readableBytes() >= limits_.hardLimitBytes)
+        {
+            return SendResult::Backpressured;
+        }
         size_t oldLen = outputBuffer_.readableBytes();
         if (oldLen + remaining >= highWaterMark_
             && oldLen < highWaterMark_
@@ -139,9 +153,57 @@ void TcpConnection::sendInLoop(const void *message, size_t len)
         {
             channel_->enableWriting();
         }
+        checkPause();
+    }
+    return SendResult::Accepted;
+}
+
+void TcpConnection::checkPause()
+{
+    if (outputBuffer_.readableBytes() >= limits_.pauseReadBytes && reading_)
+    {
+        channel_->disableReading();
+        reading_ = false;
+        startStallTimer();
     }
 }
 
+void TcpConnection::startStallTimer()
+{
+    if (!stallActive_)
+    {
+        TcpConnectionPtr self(shared_from_this());
+        stallTimerId_ = loop_->runAfter(limits_.stallTimeout.count(),
+                                        [self] { self->forceClose(); });
+        stallActive_ = true;
+    }
+}
+
+void TcpConnection::cancelStallTimer()
+{
+    if (stallActive_)
+    {
+        loop_->cancel(stallTimerId_);
+        stallActive_ = false;
+        stallTimerId_ = TimerId();
+    }
+}
+
+void TcpConnection::forceClose()
+{
+    cancelStallTimer();
+    if (state_ == kConnected || state_ == kDisconnecting)
+    {
+        setState(kDisconnected);
+        channel_->disableAll();
+        TcpConnectionPtr guardThis(shared_from_this());
+        connectionCallback_(guardThis);
+        if (closeCallback_)
+        {
+            closeCallback_(guardThis);
+        }
+    }
+}
 void TcpConnection::shutdown()
 {
     if (state_ == kConnected)
@@ -176,6 +238,7 @@ void TcpConnection::connectDestroyed()
         channel_->disableAll();
         connectionCallback_(shared_from_this());
     }
+    cancelStallTimer();
     channel_->remove();
 }
 
@@ -221,6 +284,12 @@ void TcpConnection::handleWrite()
                     shutdownInLoop();
                 }
             }
+            if (!reading_ && outputBuffer_.readableBytes() <= limits_.resumeReadBytes)
+            {
+                channel_->enableReading();
+                reading_ = true;
+                cancelStallTimer();
+            }
         }
         else
         {
@@ -239,6 +308,7 @@ void TcpConnection::handleClose()
              name_.c_str(),
              peerAddr_.toIpPort().c_str(),
              localAddr_.toIpPort().c_str());
+    cancelStallTimer();
     setState(kDisconnected);
     channel_->disableAll();
 

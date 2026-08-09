@@ -115,8 +115,28 @@ target_include_directories(TimerQueueTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(TimerQueueTest GTest::gtest_main GTest::gtest)
 set_target_properties(TimerQueueTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(BackpressureTest
+    unit/BackpressureTest.cpp
+    ${MYMUDUO_DIR}/TcpConnection.cc
+    ${MYMUDUO_DIR}/Socket.cc
+    ${MYMUDUO_DIR}/InetAddress.cc
+    ${MYMUDUO_DIR}/Buffer.cc
+    ${MYMUDUO_DIR}/TimerQueue.cc
+    ${MYMUDUO_DIR}/EventLoop.cc
+    ${MYMUDUO_DIR}/Channel.cc
+    ${MYMUDUO_DIR}/Poller.cc
+    ${MYMUDUO_DIR}/DefaultPoller.cc
+    ${MYMUDUO_DIR}/EPollPoller.cc
+    ${MYMUDUO_DIR}/CurrentThread.cc
+    ${MYMUDUO_DIR}/Timestamp.cc
+    ${MYMUDUO_DIR}/Logger.cc
+)
+target_include_directories(BackpressureTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(BackpressureTest GTest::gtest_main GTest::gtest)
+set_target_properties(BackpressureTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -128,3 +148,4 @@ gtest_discover_tests(StreamCodecTest)
 gtest_discover_tests(LegacyJsonLineCodecTest)
 gtest_discover_tests(BinaryFrameCodecTest)
 gtest_discover_tests(TimerQueueTest)
+gtest_discover_tests(BackpressureTest)

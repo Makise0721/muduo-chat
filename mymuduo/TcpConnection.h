@@ -4,12 +4,15 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <chrono>
 
 #include "noncopyable.h"
 #include "InetAddress.h"
 #include "Callbacks.h"
 #include "Buffer.h"
 #include "Timestamp.h"
+#include "TimerQueue.h"
+#include "Logger.h"
 
 class Channel;
 class EventLoop;
@@ -18,6 +21,22 @@ class Socket;
 class TcpConnection : noncopyable, public std::enable_shared_from_this<TcpConnection>
 {
 public:
+    enum class SendResult
+    {
+        Accepted,
+        Backpressured,
+        Closed,
+        TooLarge,
+    };
+
+    struct WriteBufferLimits
+    {
+        size_t pauseReadBytes = 16 * 1024 * 1024;
+        size_t resumeReadBytes = 8 * 1024 * 1024;
+        size_t hardLimitBytes = 64 * 1024 * 1024;
+        std::chrono::milliseconds stallTimeout{5000};
+    };
+
     TcpConnection(EventLoop *loop,
                   const std::string &name,
                   int sockfd,
@@ -59,7 +78,20 @@ public:
         encoder_ = cb;
     }
 
-    void send(std::string message);
+    void setWriteBufferLimits(const WriteBufferLimits &limits)
+    {
+        if (limits.resumeReadBytes < limits.pauseReadBytes &&
+            limits.pauseReadBytes < limits.hardLimitBytes)
+        {
+            limits_ = limits;
+        }
+        else
+        {
+            LOG_ERROR("TcpConnection::setWriteBufferLimits() - invalid limits, ignored");
+        }
+    }
+
+    SendResult send(std::string message);
     void shutdown();
 
     void connectEstablished();
@@ -80,11 +112,13 @@ private:
     void handleClose();
     void handleError();
 
-    
-
-    void sendInLoop(std::string message);
-    void sendInLoop(const void *message, size_t len);
+    SendResult sendInLoop(std::string message);
+    SendResult sendInLoop(const void *message, size_t len);
     void shutdownInLoop();
+    void forceClose();
+    void checkPause();
+    void startStallTimer();
+    void cancelStallTimer();
 
     EventLoop *loop_;
     const std::string name_;
@@ -106,6 +140,9 @@ private:
     size_t highWaterMark_;
 
     OutputEncoder encoder_;
+    WriteBufferLimits limits_;
+    TimerId stallTimerId_;
+    bool stallActive_ = false;
 
     Buffer inputBuffer_;
     Buffer outputBuffer_;
