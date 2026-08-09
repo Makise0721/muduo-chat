@@ -7,3 +7,21 @@ set_target_properties(BufferTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRE
 
 include(GoogleTest)
 gtest_discover_tests(BufferTest)
+
+set(MYMUDUO_DIR ${PROJECT_SOURCE_DIR}/mymuduo)
+
+add_executable(EventLoopTest
+    unit/EventLoopTest.cpp
+    ${MYMUDUO_DIR}/EventLoop.cc
+    ${MYMUDUO_DIR}/Channel.cc
+    ${MYMUDUO_DIR}/Poller.cc
+    ${MYMUDUO_DIR}/DefaultPoller.cc
+    ${MYMUDUO_DIR}/EPollPoller.cc
+    ${MYMUDUO_DIR}/CurrentThread.cc
+    ${MYMUDUO_DIR}/Timestamp.cc
+    ${MYMUDUO_DIR}/Logger.cc
+)
+target_include_directories(EventLoopTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(EventLoopTest GTest::gtest_main GTest::gtest)
+set_target_properties(EventLoopTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+gtest_discover_tests(EventLoopTest)
