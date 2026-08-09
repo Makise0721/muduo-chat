@@ -19,6 +19,18 @@ void ChatServer::start() {
     _server.start();
 }
 
+void ChatServer::stopAccept() {
+    _server.stopAccept();
+}
+
+int ChatServer::connectionCount() const {
+    return _server.connectionCount();
+}
+
+void ChatServer::forceCloseAllConnections() {
+    _server.forceCloseAllConnections();
+}
+
 void ChatServer::onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
         std::cout << "Connection established: " << conn->peerAddress().toIpPort() << std::endl;

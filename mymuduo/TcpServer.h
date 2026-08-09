@@ -69,6 +69,23 @@ public:
         acceptor_->stopListen();
     }
 
+    void forceCloseAllConnections()
+    {
+        loop_->runInLoop([this]
+                         {
+                             std::vector<TcpConnectionPtr> conns;
+                             conns.reserve(connections_.size());
+                             for (const auto &kv : connections_)
+                             {
+                                 conns.push_back(kv.second);
+                             }
+                             for (const auto &conn : conns)
+                             {
+                                 conn->forceClose();
+                             }
+                         });
+    }
+
     void start();
     void setThreadNum(int numThreads);
 

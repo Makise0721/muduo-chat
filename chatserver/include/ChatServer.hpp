@@ -23,6 +23,9 @@ public:
     ~ChatServer();
 
     void start();
+    void stopAccept();
+    int connectionCount() const;
+    void forceCloseAllConnections();
 
     void onConnection(const TcpConnectionPtr& conn);
     void onMessage(const TcpConnectionPtr& conn, Buffer* buffer, Timestamp time);

@@ -93,6 +93,7 @@ public:
 
     SendResult send(std::string message);
     void shutdown();
+    void forceClose();
 
     void connectEstablished();
     void connectDestroyed();
@@ -115,7 +116,6 @@ private:
     SendResult sendInLoop(std::string message);
     SendResult sendInLoop(const void *message, size_t len);
     void shutdownInLoop();
-    void forceClose();
     void checkPause();
     void startStallTimer();
     void cancelStallTimer();

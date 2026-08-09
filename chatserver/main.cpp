@@ -4,11 +4,44 @@
 #include <iostream>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
-void resetHandler(int) {
-    ChatService::instance()->reset();
-    exit(0);
+namespace {
+
+int gSignalFds[2];
+
+void signalHandler(int) {
+    char c = 1;
+    ssize_t n = ::write(gSignalFds[1], &c, 1);
+    (void)n;
 }
+
+void beginShutdown(EventLoop* loop, ChatServer* v1, ChatServer* v2) {
+    std::cout << "Shutdown: stopping accept" << std::endl;
+    v1->stopAccept();
+    v2->stopAccept();
+
+    std::function<void()> check;
+    check = [loop, v1, v2]() {
+        int pending = v1->connectionCount() + v2->connectionCount();
+        if (pending == 0) {
+            std::cout << "DRAINED pending=0" << std::endl;
+            loop->quit();
+        }
+    };
+    loop->runEvery(50, check);
+
+    loop->runAfter(5000, [loop, v1, v2]() {
+        int pending = v1->connectionCount() + v2->connectionCount();
+        std::cout << "DRAIN_TIMEOUT pending=" << pending << std::endl;
+        v1->forceCloseAllConnections();
+        v2->forceCloseAllConnections();
+        loop->quit();
+    });
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -18,8 +51,6 @@ int main(int argc, char** argv) {
 
     char* ip = argv[1];
     uint16_t port = atoi(argv[2]);
-
-    signal(SIGINT, resetHandler);
 
     auto& connPool = ConnectionPool::getInstance();
     const char* dbPassword = getenv("DB_PASSWORD");
@@ -38,10 +69,31 @@ int main(int argc, char** argv) {
     std::cout << "Server starting on " << ip << ":7000 (v2 binary)" << std::endl;
     ChatServer v2Server(&loop, v2Addr, "ChatServerV2", ProtocolCodec::BinaryFrame);
 
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, gSignalFds) < 0) {
+        std::cerr << "socketpair failed" << std::endl;
+        exit(-1);
+    }
+    int sigFlags = fcntl(gSignalFds[0], F_GETFL, 0);
+    fcntl(gSignalFds[0], F_SETFL, sigFlags | O_NONBLOCK);
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+    signal(SIGPIPE, SIG_IGN);
+
+    Channel sigChannel(&loop, gSignalFds[0]);
+    sigChannel.setReadCallback([&loop, &server, &v2Server](Timestamp) {
+        char buf[16];
+        while (::read(gSignalFds[0], buf, sizeof buf) > 0)
+        {
+        }
+        beginShutdown(&loop, &server, &v2Server);
+    });
+    sigChannel.enableReading();
+
     std::cout << "Server started, entering event loop" << std::endl;
     server.start();
     v2Server.start();
     loop.loop();
 
+    std::cout << "Server exited" << std::endl;
     return 0;
 }
