@@ -64,3 +64,11 @@ target_include_directories(TcpConnectionTest PRIVATE ${PROJECT_SOURCE_DIR}/mymud
 target_link_libraries(TcpConnectionTest GTest::gtest_main GTest::gtest)
 set_target_properties(TcpConnectionTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 gtest_discover_tests(TcpConnectionTest)
+
+add_executable(BenchStatsTest unit/BenchStatsTest.cpp)
+target_include_directories(BenchStatsTest PRIVATE
+    ${PROJECT_SOURCE_DIR}/thirdparty
+    ${PROJECT_SOURCE_DIR}/tools/chat-bench)
+target_link_libraries(BenchStatsTest GTest::gtest_main GTest::gtest)
+set_target_properties(BenchStatsTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+gtest_discover_tests(BenchStatsTest)

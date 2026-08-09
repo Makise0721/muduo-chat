@@ -28,6 +28,16 @@ add_executable(ChatClient chatserver/client.cpp)
 target_link_libraries(ChatServer mymuduo ${MYSQL_LIBRARIES} pthread)
 target_link_libraries(ChatClient pthread)
 
+execute_process(COMMAND git rev-parse HEAD
+    OUTPUT_VARIABLE GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT GIT_COMMIT)
+    set(GIT_COMMIT "unknown")
+endif()
+
+add_subdirectory(tools)
+
 if(ENABLE_TESTS)
     add_subdirectory(tests)
 endif()
