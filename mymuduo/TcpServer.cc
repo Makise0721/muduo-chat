@@ -17,6 +17,7 @@ TcpServer::TcpServer(EventLoop *loop,
     : loop_(CheckLoopNotNull(loop)),
       name_(nameArg),
       ipPort_(listenAddr.toIpPort()),
+      listenPort_(listenAddr.toPort()),
       acceptor_(new Acceptor(loop, listenAddr, option == kReusePort)),
       threadPool_(new EventLoopThreadPool(loop, nameArg)),
       started_(0),
@@ -41,6 +42,18 @@ void TcpServer::setThreadNum(int numThreads)
     threadPool_->setThreadNum(numThreads);
 }
 
+int TcpServer::listenPort() const
+{
+    sockaddr_in local;
+    bzero(&local, sizeof local);
+    socklen_t len = sizeof local;
+    if (::getsockname(acceptor_->listenFd(), (sockaddr *)&local, &len) == 0)
+    {
+        return ntohs(local.sin_port);
+    }
+    return listenPort_;
+}
+
 void TcpServer::start()
 {
     if (started_.fetch_add(1) == 0)
@@ -52,6 +65,15 @@ void TcpServer::start()
 
 void TcpServer::newConnection(int sockfd, const InetAddress &peerAddr)
 {
+    if (maxConnections_ > 0 && connectionCount() >= maxConnections_)
+    {
+        ++rejectedConnections_;
+        LOG_ERROR("TcpServer::newConnection [%s] - rejected, connections=%d max=%d",
+                  name_.c_str(), connectionCount(), maxConnections_);
+        ::close(sockfd);
+        return;
+    }
+
     EventLoop *ioLoop = threadPool_->getNextLoop();
     char buf[64] = {0};
     snprintf(buf, sizeof buf, "-%s#%d", ipPort_.c_str(), nextConnId_++);

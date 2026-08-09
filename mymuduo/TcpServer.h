@@ -53,6 +53,22 @@ public:
         writeBufferLimits_ = limits;
     }
 
+    void setMaxConnections(int maxConnections)
+    {
+        maxConnections_ = maxConnections;
+    }
+
+    int connectionCount() const { return static_cast<int>(connections_.size()); }
+
+    int rejectedConnections() const { return rejectedConnections_.load(); }
+
+    int listenPort() const;
+
+    void stopAccept()
+    {
+        acceptor_->stopListen();
+    }
+
     void start();
     void setThreadNum(int numThreads);
 
@@ -66,6 +82,7 @@ private:
     EventLoop *loop_;
     const std::string name_;
     const std::string ipPort_;
+    const int listenPort_;
     std::unique_ptr<Acceptor> acceptor_;
     std::unique_ptr<EventLoopThreadPool> threadPool_;
 
@@ -77,6 +94,8 @@ private:
     std::atomic_int started_;
 
     TcpConnection::WriteBufferLimits writeBufferLimits_;
+    int maxConnections_ = 0;
+    std::atomic_int rejectedConnections_{0};
 
     int nextConnId_;
     ConnectionMap connections_;

@@ -56,10 +56,26 @@ void Acceptor::handleRead()
     else
     {
         LOG_ERROR("in Acceptor::handleRead");
-        if (errno == EMFILE)
+        if (errno == EMFILE || errno == ENFILE)
         {
-            LOG_ERROR("Acceptor::handleRead - EMFILE");
+            ++acceptErrors_;
+            LOG_ERROR("Acceptor::handleRead - fd exhausted, pause accept (%d)", acceptErrors_);
+            if (!acceptPaused_)
+            {
+                acceptPaused_ = true;
+                acceptChannel_.disableReading();
+                loop_->runAfter(100, std::bind(&Acceptor::retryAccept, this));
+            }
         }
     }
-} 
+}
+
+void Acceptor::retryAccept()
+{
+    acceptPaused_ = false;
+    if (listening_)
+    {
+        acceptChannel_.enableReading();
+    }
+}
 

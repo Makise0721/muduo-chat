@@ -18,6 +18,12 @@ public:
     ~Acceptor();
 
     void listen();
+
+    void stopListen()
+    {
+        listening_ = false;
+        acceptChannel_.disableAll();
+    }
     
     void setNewConnectionCallback(const NewConnectionCallback &cb)
     {
@@ -25,12 +31,17 @@ public:
     }
 
     bool listening() const { return listening_; }
+
+    int listenFd() const { return acceptSocket_.fd(); }
 private:
     void handleRead();
+    void retryAccept();
 
     EventLoop *loop_;
     Socket acceptSocket_;
     Channel acceptChannel_;
     NewConnectionCallback newConnectionCallback_;
     bool listening_;
+    bool acceptPaused_ = false;
+    int acceptErrors_ = 0;
 };
