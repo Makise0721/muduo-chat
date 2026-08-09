@@ -53,7 +53,7 @@ public:
         highWaterMark_ = highWaterMark;
     }
 
-    void send(const std::string &message);
+    void send(std::string message);
     void shutdown();
 
     void connectEstablished();
@@ -76,6 +76,7 @@ private:
 
     
 
+    void sendInLoop(std::string message);
     void sendInLoop(const void *message, size_t len);
     void shutdownInLoop();
 

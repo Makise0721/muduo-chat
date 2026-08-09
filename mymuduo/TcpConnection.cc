@@ -55,23 +55,30 @@ TcpConnection::~TcpConnection()
              peerAddr_.toIpPort().c_str());
 }
 
-void TcpConnection::send(const std::string& message)
+void TcpConnection::send(std::string message)
 {
     if (state_ == kConnected)
     {
         if (loop_->isInLoopThread())
         {
-            sendInLoop(message.data(), message.size());
+            sendInLoop(std::move(message));
         }
         else
         {
-            loop_->runInLoop(std::bind(&TcpConnection::sendInLoop, this, message.data(), message.size()));
+            using SendInLoop = void (TcpConnection::*)(std::string);
+            loop_->runInLoop(std::bind(static_cast<SendInLoop>(&TcpConnection::sendInLoop),
+                                       shared_from_this(), std::move(message)));
         }
     }
     else
     {
         LOG_ERROR("TcpConnection::send() - Connection [%s] is down, can not send message", name_.c_str());
     }
+}
+
+void TcpConnection::sendInLoop(std::string message)
+{
+    sendInLoop(message.data(), message.size());
 }
 
 void TcpConnection::sendInLoop(const void *message, size_t len)
@@ -133,7 +140,7 @@ void TcpConnection::shutdown()
     if (state_ == kConnected)
     {
         setState(kDisconnecting);
-        loop_->runInLoop(std::bind(&TcpConnection::shutdownInLoop, this));
+        loop_->runInLoop(std::bind(&TcpConnection::shutdownInLoop, shared_from_this()));
     }
 }
 
