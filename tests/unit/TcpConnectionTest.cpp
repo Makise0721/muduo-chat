@@ -21,12 +21,15 @@ struct ConnHarness
 {
     std::promise<void> readyP;
     std::future<void> readyF;
+    std::promise<void> endedP;
+    std::future<void> endedF;
     EventLoop *loop = nullptr;
     TcpConnectionPtr conn;
     std::thread t;
 
     ConnHarness(int connFd, const std::function<void(TcpConnection *)> &setup)
         : readyF(readyP.get_future()),
+          endedF(endedP.get_future()),
           t([this, connFd, setup]
             {
                 EventLoop l;
@@ -39,6 +42,7 @@ struct ConnHarness
                 conn->connectEstablished();
                 readyP.set_value();
                 l.loop();
+                endedP.set_value();
             })
     {
     }
@@ -50,9 +54,12 @@ struct ConnHarness
 
     ~ConnHarness()
     {
-        if (loop != nullptr)
+        if (loop != nullptr &&
+            readyF.wait_for(std::chrono::seconds(0)) == std::future_status::ready &&
+            endedF.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
         {
-            loop->quit();
+            EventLoop *l = loop;
+            l->queueInLoop([l] { l->quit(); });
         }
         t.join();
     }

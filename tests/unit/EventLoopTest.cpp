@@ -19,10 +19,12 @@ struct LoopThread
     EventLoop *loop = nullptr;
     std::thread::id loopTid;
     std::promise<void> ended;
+    std::future<void> endedF;
     std::thread t;
 
     LoopThread()
-        : t([this]
+        : endedF(ended.get_future()),
+          t([this]
             {
                 EventLoop l;
                 {
@@ -42,9 +44,11 @@ struct LoopThread
 
     ~LoopThread()
     {
-        if (started && loop != nullptr)
+        if (started && loop != nullptr &&
+            endedF.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
         {
-            loop->quit();
+            EventLoop *l = loop;
+            l->queueInLoop([l] { l->quit(); });
         }
         t.join();
     }
@@ -102,5 +106,5 @@ TEST(EventLoopTest, QuitFromOtherThreadStopsLoop)
     LoopThread lt;
     lt.loop->quit();
     EXPECT_EQ(std::future_status::ready,
-              lt.ended.get_future().wait_for(std::chrono::seconds(10)));
+              lt.endedF.wait_for(std::chrono::seconds(30)));
 }

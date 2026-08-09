@@ -6,7 +6,6 @@ target_link_libraries(BufferTest GTest::gtest_main GTest::gtest)
 set_target_properties(BufferTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
 include(GoogleTest)
-gtest_discover_tests(BufferTest)
 
 set(MYMUDUO_DIR ${PROJECT_SOURCE_DIR}/mymuduo)
 
@@ -24,7 +23,6 @@ add_executable(EventLoopTest
 target_include_directories(EventLoopTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(EventLoopTest GTest::gtest_main GTest::gtest)
 set_target_properties(EventLoopTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
-gtest_discover_tests(EventLoopTest)
 
 add_executable(EventLoopThreadPoolTest
     unit/EventLoopThreadPoolTest.cpp
@@ -43,7 +41,6 @@ add_executable(EventLoopThreadPoolTest
 target_include_directories(EventLoopThreadPoolTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(EventLoopThreadPoolTest GTest::gtest_main GTest::gtest)
 set_target_properties(EventLoopThreadPoolTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
-gtest_discover_tests(EventLoopThreadPoolTest)
 
 add_executable(TcpConnectionTest
     unit/TcpConnectionTest.cpp
@@ -63,7 +60,6 @@ add_executable(TcpConnectionTest
 target_include_directories(TcpConnectionTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(TcpConnectionTest GTest::gtest_main GTest::gtest)
 set_target_properties(TcpConnectionTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
-gtest_discover_tests(TcpConnectionTest)
 
 add_executable(BenchStatsTest unit/BenchStatsTest.cpp)
 target_include_directories(BenchStatsTest PRIVATE
@@ -71,4 +67,14 @@ target_include_directories(BenchStatsTest PRIVATE
     ${PROJECT_SOURCE_DIR}/tools/chat-bench)
 target_link_libraries(BenchStatsTest GTest::gtest_main GTest::gtest)
 set_target_properties(BenchStatsTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+gtest_discover_tests(BenchStatsTest)
+
+set(GTEST_EMULATOR "setarch;x86_64;-R")
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest)
+    set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
+endforeach()
+gtest_discover_tests(BufferTest)
+gtest_discover_tests(EventLoopTest)
+gtest_discover_tests(EventLoopThreadPoolTest)
+gtest_discover_tests(TcpConnectionTest)
 gtest_discover_tests(BenchStatsTest)
