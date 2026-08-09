@@ -62,6 +62,9 @@ TEST(BenchStatsTest, ReportSchema)
     report.result.connections_ok = 2;
     report.result.messages_sent = 20;
     report.result.messages_received = 20;
+    report.result.bytes_sent = 1280;
+    report.result.bytes_received = 1280;
+    report.result.early_closes = 1;
     report.result.latency_us.add(100.0);
     report.result.latency_us.add(200.0);
 
@@ -91,6 +94,9 @@ TEST(BenchStatsTest, ReportSchema)
     EXPECT_TRUE(j["result"]["connections_failed"].is_number());
     EXPECT_TRUE(j["result"]["messages_sent"].is_number());
     EXPECT_TRUE(j["result"]["messages_received"].is_number());
+    EXPECT_TRUE(j["result"]["bytes_sent"].is_number());
+    EXPECT_TRUE(j["result"]["bytes_received"].is_number());
+    EXPECT_TRUE(j["result"]["early_closes"].is_number());
     EXPECT_TRUE(j["result"]["latency_us"].is_object());
     EXPECT_TRUE(j["result"]["latency_us"]["p50"].is_number());
     EXPECT_TRUE(j["result"]["latency_us"]["p95"].is_number());

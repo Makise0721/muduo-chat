@@ -76,6 +76,9 @@ struct Result
     int connections_failed = 0;
     uint64_t messages_sent = 0;
     uint64_t messages_received = 0;
+    uint64_t bytes_sent = 0;
+    uint64_t bytes_received = 0;
+    uint64_t early_closes = 0;
     Stats latency_us;
     double msg_per_sec = 0.0;
     double throughput_mbps = 0.0;
@@ -119,6 +122,9 @@ struct BenchReport
             {"connections_failed", result.connections_failed},
             {"messages_sent", result.messages_sent},
             {"messages_received", result.messages_received},
+            {"bytes_sent", result.bytes_sent},
+            {"bytes_received", result.bytes_received},
+            {"early_closes", result.early_closes},
             {"latency_us",
              {
                  {"p50", result.latency_us.percentile(0.50)},

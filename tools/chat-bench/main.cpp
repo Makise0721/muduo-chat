@@ -242,6 +242,10 @@ void runEcho(const Workload &wl, Result *result)
         static_cast<double>(result->messages_sent) * 1000.0 / elapsedMs;
     result->throughput_mbps = static_cast<double>(result->messages_received) *
                               wl.payload_size * 8.0 / elapsedMs / 1000.0;
+    result->bytes_sent =
+        result->messages_sent * static_cast<uint64_t>(wl.payload_size);
+    result->bytes_received =
+        result->messages_received * static_cast<uint64_t>(wl.payload_size);
 }
 
 void runSlowConsumer(const Workload &wl, Result *result)
@@ -277,31 +281,29 @@ void runSlowConsumer(const Workload &wl, Result *result)
                                      }
                                      sent += len;
                                  }
-                                 {
-                                     std::lock_guard<std::mutex> lk(m);
-                                     result->messages_sent += sent;
-                                 }
-                                 int earlyClose = 0;
                                  uint64_t received = 0;
-                                 while (received < sent)
+                                 double deadline = nowMs() + wl.duration_ms;
+                                 while (received < sent && nowMs() < deadline)
                                  {
                                      ssize_t n = ::recv(fd, chunk.data(), chunk.size(), 0);
                                      if (n <= 0)
                                      {
-                                         ++earlyClose;
                                          break;
                                      }
                                      received += static_cast<uint64_t>(n);
-                                     {
-                                         std::lock_guard<std::mutex> lk(m);
-                                         result->messages_received += static_cast<uint64_t>(n);
-                                     }
                                      std::this_thread::sleep_for(
                                          std::chrono::milliseconds(5));
                                  }
                                  {
                                      std::lock_guard<std::mutex> lk(m);
-                                     result->connections_failed += earlyClose;
+                                     result->messages_sent += sent / wl.payload_size;
+                                     result->messages_received += received / wl.payload_size;
+                                     result->bytes_sent += sent;
+                                     result->bytes_received += received;
+                                     if (received < sent)
+                                     {
+                                         ++result->early_closes;
+                                     }
                                  }
                                  ::close(fd);
                              });
