@@ -9,6 +9,7 @@
 #include "noncopyable.h"
 #include "CurrentThread.h"
 #include "Timestamp.h"
+#include "TimerQueue.h"
 
 class Channel;
 class Poller;
@@ -28,6 +29,10 @@ public:
 
     void runInLoop(Functor cb);
     void queueInLoop(Functor cb);
+
+    TimerId runAfter(int64_t delayMs, TimerCallback cb);
+    TimerId runEvery(int64_t intervalMs, TimerCallback cb);
+    void cancel(TimerId id);
 
     void wakeup();
     void updateChannel(Channel *channel);
@@ -58,4 +63,6 @@ private:
     std::atomic_bool callingPendingFunctors_;
     std::vector<Functor> pendingFunctors_;
     std::mutex mutex_;
+
+    std::unique_ptr<TimerQueue> timerQueue_;
 };

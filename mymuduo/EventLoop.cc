@@ -31,7 +31,8 @@ EventLoop::EventLoop()
       wakeupFd_(createEventfd()),
       wakeupChannel_(new Channel(this, wakeupFd_)),
       callingPendingFunctors_(false),
-      currentActiveChannel_(nullptr)
+      currentActiveChannel_(nullptr),
+      timerQueue_(new TimerQueue(this))
 {
     LOG_DEBUG("EventLoop created %p in thread %d", this, threadId_);
     if (t_loopInThisThread)
@@ -54,6 +55,21 @@ EventLoop::~EventLoop()
     wakeupChannel_->remove();
     ::close(wakeupFd_);
     t_loopInThisThread = nullptr;
+}
+
+TimerId EventLoop::runAfter(int64_t delayMs, TimerCallback cb)
+{
+    return timerQueue_->addTimer(std::move(cb), delayMs, 0);
+}
+
+TimerId EventLoop::runEvery(int64_t intervalMs, TimerCallback cb)
+{
+    return timerQueue_->addTimer(std::move(cb), intervalMs, intervalMs);
+}
+
+void EventLoop::cancel(TimerId id)
+{
+    timerQueue_->cancel(id);
 }
 
 void EventLoop::loop()
