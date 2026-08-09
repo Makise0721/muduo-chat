@@ -25,3 +25,6 @@
 - 63a76ed 混入 EVOLUTION_PLAN.md/IMPLEMENTATION_SOP.md（P0-00 允许写集合外，历史提交不回写）
 - b91c9c2 无任务卡（TSan harness 清理，事后记录于此）
 - 8KB payload 断言未覆盖 partial-write 路径（判断项；UAF 检测与 payload 大小无关）
+- libFuzzer 未跑（WSL 无 Clang，CI 前置项；P1-01 以随机输入风暴替代）
+
+| P1-01 StreamCodec 与 v2 framing | VERIFIED | `ctest -R StreamCodecTest` 15/15；Debug 全量 43/43；ASan 43/43；golden bytes 固化；10000 轮随机风暴无报告；未提交（等待授权） |

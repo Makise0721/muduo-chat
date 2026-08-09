@@ -3,7 +3,7 @@
 状态：可执行草案  
 适用基线：`main` @ `1b94d43`  
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)  
-当前活动任务：无；P0-03A 与 TSan harness 清理待提交；TSan 结论已可定位（3 项失败归因在案 Logger/fd 竞态，P1 处理）
+当前活动任务：无；下一任务 P1-02（双协议迁移）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 
