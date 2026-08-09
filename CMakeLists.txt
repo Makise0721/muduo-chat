@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(ChatServer)
 
+option(ENABLE_TESTS "Build unit tests" ON)
+include(CTest)
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -std=c++11")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -24,3 +27,7 @@ add_executable(ChatClient chatserver/client.cpp)
 
 target_link_libraries(ChatServer mymuduo ${MYSQL_LIBRARIES} pthread)
 target_link_libraries(ChatClient pthread)
+
+if(ENABLE_TESTS)
+    add_subdirectory(tests)
+endif()
