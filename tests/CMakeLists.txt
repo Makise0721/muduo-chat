@@ -64,6 +64,11 @@ target_include_directories(LoggerTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(LoggerTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
 set_target_properties(LoggerTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(DualProtocolCharacterizationTest unit/DualProtocolCharacterizationTest.cpp)
+target_include_directories(DualProtocolCharacterizationTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(DualProtocolCharacterizationTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
+set_target_properties(DualProtocolCharacterizationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -82,8 +87,13 @@ add_test(NAME process-fd-exhaustion
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(process-fd-exhaustion PROPERTIES TIMEOUT 90)
 
+add_test(NAME DomainCharacterization
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/domain_characterization_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
+
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -98,3 +108,4 @@ gtest_discover_tests(TimerQueueTest)
 gtest_discover_tests(BackpressureTest)
 gtest_discover_tests(TcpServerTest)
 gtest_discover_tests(LoggerTest)
+gtest_discover_tests(DualProtocolCharacterizationTest)
