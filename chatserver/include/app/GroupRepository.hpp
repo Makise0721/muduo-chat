@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // 群组数据访问 port（P2 应用边界）。
 enum class GroupError {
@@ -24,6 +25,12 @@ struct JoinGroupResult {
     GroupError error = GroupError::StorageFailure;
 };
 
+struct MembersResult {
+    bool ok = false;
+    std::vector<int64_t> userIds;
+    GroupError error = GroupError::StorageFailure;
+};
+
 class GroupRepository {
 public:
     virtual ~GroupRepository() = default;
@@ -34,4 +41,7 @@ public:
 
     // 加入群（role=normal）；重复返回 Duplicate，群/用户不存在返回 TargetNotFound。
     virtual JoinGroupResult join(int64_t groupId, int64_t userId) = 0;
+
+    // 群成员 id 列表（发送者过滤由调用方负责）。
+    virtual MembersResult members(int64_t groupId) = 0;
 };

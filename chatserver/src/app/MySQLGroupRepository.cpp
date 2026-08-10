@@ -161,3 +161,60 @@ JoinGroupResult MySQLGroupRepository::join(int64_t groupId, int64_t userId)
     result.ok = true;
     return result;
 }
+
+MembersResult MySQLGroupRepository::members(int64_t groupId)
+{
+    MembersResult result;
+    ConnectionPool::AcquireResult acq = pool_.acquire(5000);
+    if (!acq.lease) {
+        switch (acq.error) {
+            case ConnectionPool::PoolError::Timeout:
+                result.error = GroupError::Timeout;
+                break;
+            default:
+                result.error = GroupError::Disconnected;
+                break;
+        }
+        return result;
+    }
+    MySQL* mysql = acq.lease.get();
+    PreparedStatementGuard stmt(
+        mysql->prepareStatement("SELECT userid FROM GroupUser WHERE groupid = ?"));
+    if (!stmt.stmt) {
+        result.error = mapGroupError(mysql_errno(mysql->getConnection()));
+        return result;
+    }
+    long long gid = groupId;
+    MYSQL_BIND param;
+    memset(&param, 0, sizeof(param));
+    param.buffer_type = MYSQL_TYPE_LONGLONG;
+    param.buffer = &gid;
+    if (mysql_stmt_bind_param(stmt.stmt, &param) != 0 ||
+        mysql_stmt_execute(stmt.stmt) != 0) {
+        result.error = mapGroupError(mysql_stmt_errno(stmt.stmt));
+        return result;
+    }
+
+    long long outUid = 0;
+    bool isNull = false;
+    MYSQL_BIND out;
+    memset(&out, 0, sizeof(out));
+    out.buffer_type = MYSQL_TYPE_LONGLONG;
+    out.buffer = &outUid;
+    out.is_null = &isNull;
+    if (mysql_stmt_bind_result(stmt.stmt, &out) != 0 ||
+        mysql_stmt_store_result(stmt.stmt) != 0) {
+        result.error = mapGroupError(mysql_stmt_errno(stmt.stmt));
+        return result;
+    }
+    int fetch;
+    while ((fetch = mysql_stmt_fetch(stmt.stmt)) == 0) {
+        result.userIds.push_back(static_cast<int64_t>(outUid));
+    }
+    if (fetch != MYSQL_NO_DATA) {
+        result.error = mapGroupError(mysql_stmt_errno(stmt.stmt));
+        return result;
+    }
+    result.ok = true;
+    return result;
+}

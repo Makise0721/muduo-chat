@@ -15,6 +15,7 @@ public:
     CreateGroupResult create(int64_t ownerId, const std::string& name,
                              const std::string& desc) override;
     JoinGroupResult join(int64_t groupId, int64_t userId) override;
+    MembersResult members(int64_t groupId) override;
 
 private:
     ConnectionPool& pool_;

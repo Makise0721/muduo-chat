@@ -127,6 +127,18 @@ add_executable(FriendGroupApplicationTest unit/FriendGroupApplicationTest.cpp)
 target_link_libraries(FriendGroupApplicationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(FriendGroupApplicationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(MessageRepositoryContractTest unit/MessageRepositoryContractTest.cpp)
+target_link_libraries(MessageRepositoryContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MessageRepositoryContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(OfflineMessageTest unit/OfflineMessageTest.cpp)
+target_link_libraries(OfflineMessageTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(OfflineMessageTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MessageApplicationTest unit/MessageApplicationTest.cpp)
+target_link_libraries(MessageApplicationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MessageApplicationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -150,7 +162,7 @@ add_test(NAME DomainCharacterization
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(BufferTest)
@@ -177,3 +189,6 @@ discover_gtest(SessionApplicationTest)
 discover_gtest(FriendRepositoryContractTest)
 discover_gtest(GroupRepositoryContractTest)
 discover_gtest(FriendGroupApplicationTest)
+discover_gtest(MessageRepositoryContractTest)
+discover_gtest(OfflineMessageTest)
+discover_gtest(MessageApplicationTest)

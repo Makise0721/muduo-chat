@@ -39,3 +39,17 @@ JoinGroupResult InMemoryGroupRepository::join(int64_t groupId, int64_t userId)
     result.ok = true;
     return result;
 }
+
+MembersResult InMemoryGroupRepository::members(int64_t groupId)
+{
+    MembersResult result;
+    auto it = groups_.find(groupId);
+    if (it == groups_.end()) {
+        // 与 MySQL 语义一致：不存在的群 = 空成员列表（群聊按现状不区分）。
+        result.ok = true;
+        return result;
+    }
+    result.ok = true;
+    result.userIds.assign(it->second.members.begin(), it->second.members.end());
+    return result;
+}

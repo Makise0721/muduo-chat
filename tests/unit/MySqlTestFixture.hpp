@@ -57,6 +57,13 @@ public:
             "FOREIGN KEY (groupid) REFERENCES AllGroup(id) ON DELETE CASCADE,"
             "FOREIGN KEY (userid) REFERENCES User(id) ON DELETE CASCADE"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
+        ASSERT_TRUE(admin.update(
+            "CREATE TABLE OfflineMessage("
+            "id INT PRIMARY KEY AUTO_INCREMENT,"
+            "userid INT NOT NULL,"
+            "message VARCHAR(500) NOT NULL,"
+            "FOREIGN KEY (userid) REFERENCES User(id) ON DELETE CASCADE"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
     }
 
     static ConnectionPool& pool()
