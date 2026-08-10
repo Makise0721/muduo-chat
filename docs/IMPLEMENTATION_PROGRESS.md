@@ -32,3 +32,5 @@
 | P1-03 TimerQueue | VERIFIED | `ctest -R TimerQueueTest` 8/8；Debug 全量 64/64；ASan 64/64；无漂移断言通过；测试不读私有容器；已提交 c4be285 |
 | P1-04 背压状态机 | VERIFIED | `ctest -R BackpressureTest` 4/4 ×5 轮；Debug 全量 68/68；ASan 68/68（含 LSan）；slow-consumer smoke 通过；SendResult 四态 + stall 断开断言；已提交 51f9b66 |
 | P1-05 过载保护与优雅退出 | VERIFIED | `ctest -R TcpServerTest` 1/1；Debug 69/69；ASan 69/69；进程级 SIGINT/SIGTERM 双路径 smoke（DRAINED 快路径 + 5s 硬截止 pending=1 打印）；已提交 6fcdf3c + 8c3edf9 |
+| P1-06 异步结构化日志 | VERIFIED | `ctest -R LoggerTest` 4/4；Debug 73/73；ASan 73/73；TSan LoggerTest 干净（在案 #4 关闭）；已提交 3c25557 |
+| P1-06A EventLoop/TimerQueue fd 生命周期竞态修复 | VERIFIED | **TSan 全量 73/73 ×2 轮全绿**（全部在案竞态关闭）；Debug/ASan 73/73；已提交 6f29a1c |

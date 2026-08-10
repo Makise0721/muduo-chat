@@ -3,7 +3,8 @@
 状态：可执行草案  
 适用基线：`main` @ `1b94d43`  
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)  
-当前活动任务：P1-06A `IN_PROGRESS`（EventLoop/TimerQueue fd 生命周期竞态修复）
+当前活动任务：无；P1 全部 VERIFIED（Codec/Timer/背压/过载退出/异步日志 + fd 生命周期）；
+TSan 全量 73/73 全绿（在案竞态全部关闭）；下一任务 P2-01（ChatApplication 纵向切片）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 
