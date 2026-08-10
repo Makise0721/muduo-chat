@@ -85,7 +85,7 @@ TEST(BackpressureTest, SmallSendStaysAccepted)
                       conn->setWriteBufferLimits(limits);
                   });
     ASSERT_TRUE(h.waitReady());
-    TcpConnection::SendResult r = TcpConnection::TcpConnection::SendResult::Closed;
+    TcpConnection::SendResult r = TcpConnection::SendResult::Closed;
     std::promise<void> done;
     h.loop->runInLoop([&]
                       {
@@ -114,7 +114,7 @@ TEST(BackpressureTest, OversizedMessageIsTooLarge)
                       conn->setWriteBufferLimits(limits);
                   });
     ASSERT_TRUE(h.waitReady());
-    TcpConnection::SendResult r = TcpConnection::TcpConnection::SendResult::Accepted;
+    TcpConnection::SendResult r = TcpConnection::SendResult::Accepted;
     std::promise<void> done;
     h.loop->runInLoop([&]
                       {
@@ -265,4 +265,85 @@ TEST(BackpressureTest, PeerResumesReadingRecoversToAccepted)
     close(fds[0]);
     drained.get_future().wait_for(std::chrono::seconds(5));
     EXPECT_GT(received.size(), 0u);
+}
+
+TEST(BackpressureTest, SendAfterForceCloseReturnsClosed)
+{
+    signal(SIGPIPE, SIG_IGN);
+    const int kBufSize = 64 * 1024;
+    int fds[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    setsockopt(fds[1], SOL_SOCKET, SO_SNDBUF, &kBufSize, sizeof kBufSize);
+    setsockopt(fds[0], SOL_SOCKET, SO_RCVBUF, &kBufSize, sizeof kBufSize);
+    TcpConnection::WriteBufferLimits limits;
+    limits.pauseReadBytes = 64 * 1024;
+    limits.resumeReadBytes = 32 * 1024;
+    limits.hardLimitBytes = 256 * 1024;
+    limits.stallTimeout = std::chrono::milliseconds(100);
+    ConnHarness h(fds[1], [limits](TcpConnection *conn)
+                  {
+                      conn->setWriteBufferLimits(limits);
+                  });
+    ASSERT_TRUE(h.waitReady());
+    TcpConnection::SendResult r = TcpConnection::SendResult::Accepted;
+    std::promise<void> done;
+    h.loop->runInLoop([&]
+                      {
+                          h.conn->forceClose();
+                          r = h.conn->send(std::string(16, 'a'));
+                          done.set_value();
+                      });
+    EXPECT_EQ(std::future_status::ready,
+              done.get_future().wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(TcpConnection::SendResult::Closed, r);
+}
+
+TEST(BackpressureTest, HardLimitTriggersStallClose)
+{
+    signal(SIGPIPE, SIG_IGN);
+    const int kBufSize = 64 * 1024;
+    int fds[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    setsockopt(fds[1], SOL_SOCKET, SO_SNDBUF, &kBufSize, sizeof kBufSize);
+    setsockopt(fds[0], SOL_SOCKET, SO_RCVBUF, &kBufSize, sizeof kBufSize);
+    // Deliberately inverted: hardLimitBytes < pauseReadBytes so the stall
+    // close is driven by the hard-limit branch. Here 2*hardLimit <= pause, so
+    // the pre-append hard-limit check fires before any message could cross
+    // pauseReadBytes: checkPause() can never fire, and the close is driven
+    // solely by the startStallTimer() in the hard-limit branch.
+    TcpConnection::WriteBufferLimits limits;
+    limits.pauseReadBytes = 8 * 1024;
+    limits.resumeReadBytes = 2 * 1024;
+    limits.hardLimitBytes = 4 * 1024;
+    limits.stallTimeout = std::chrono::milliseconds(100);
+    std::promise<void> closed;
+    ConnHarness h(fds[1], [limits, &closed](TcpConnection *conn)
+                  {
+                      conn->setWriteBufferLimits(limits);
+                      conn->setCloseCallback(
+                          [&closed](const TcpConnectionPtr &) { closed.set_value(); });
+                  });
+    ASSERT_TRUE(h.waitReady());
+
+    std::vector<TcpConnection::SendResult> results;
+    std::promise<void> sawBackpressured;
+    h.loop->runInLoop([&]
+                      {
+                          for (int i = 0; i < 64; ++i)
+                          {
+                              results.push_back(h.conn->send(std::string(4 * 1024, 'e')));
+                          }
+                          for (TcpConnection::SendResult r : results)
+                          {
+                              if (r == TcpConnection::SendResult::Backpressured)
+                              {
+                                  sawBackpressured.set_value();
+                                  break;
+                              }
+                          }
+                      });
+    EXPECT_EQ(std::future_status::ready,
+              sawBackpressured.get_future().wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(std::future_status::ready,
+              closed.get_future().wait_for(std::chrono::seconds(5)));
 }

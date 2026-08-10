@@ -62,6 +62,8 @@ public:
 
     int rejectedConnections() const { return rejectedConnections_.load(); }
 
+    int acceptErrorCount() const { return acceptor_->acceptErrorCount(); }
+
     int listenPort() const;
 
     void stopAccept()

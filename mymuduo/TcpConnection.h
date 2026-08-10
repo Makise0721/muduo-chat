@@ -80,8 +80,10 @@ public:
 
     void setWriteBufferLimits(const WriteBufferLimits &limits)
     {
+        // hardLimit may be at or below pauseReadBytes (hard-cap-only mode);
+        // resumeReadBytes must stay below both.
         if (limits.resumeReadBytes < limits.pauseReadBytes &&
-            limits.pauseReadBytes < limits.hardLimitBytes)
+            limits.resumeReadBytes < limits.hardLimitBytes)
         {
             limits_ = limits;
         }

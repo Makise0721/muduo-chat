@@ -139,6 +139,7 @@ TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t 
     {
         if (outputBuffer_.readableBytes() >= limits_.hardLimitBytes)
         {
+            startStallTimer();
             return SendResult::Backpressured;
         }
         size_t oldLen = outputBuffer_.readableBytes();

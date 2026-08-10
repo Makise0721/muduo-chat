@@ -54,8 +54,19 @@ void Logger::log(int level, const char *message)
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.size() >= capacity_)
     {
-        dropped_.fetch_add(1);
-        return;
+        if (level == FATAL)
+        {
+            if (!queue_.empty())
+            {
+                queue_.pop_front();
+                dropped_.fetch_add(1);
+            }
+        }
+        else
+        {
+            dropped_.fetch_add(1);
+            return;
+        }
     }
     queue_.emplace_back(level, std::string(message));
     cond_.notify_one();

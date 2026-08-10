@@ -64,10 +64,10 @@
 
 enum LogLevel
 {
+    DEBUG,
     INFO,
     ERROR,
     FATAL,
-    DEBUG,
 };
 
 class Logger : noncopyable

@@ -177,7 +177,7 @@ Normal --达到 pauseRead--> Backpressured --降至 resumeRead--> Normal
 Backpressured --达到 hardLimit 或超时--> Closing
 ```
 
-约束：`resumeReadBytes < pauseReadBytes < hardLimitBytes`。默认值通过 benchmark 确定，不把 brainstorm 中 1/16/64/128 MiB 当成未经验证的事实。`send` 返回 `Accepted / Backpressured / Closed / TooLarge`，让上层停止继续生产，而不是只记录回调后继续堆积。
+约束：`resumeReadBytes < pauseReadBytes` 且 `resumeReadBytes < hardLimitBytes`（一般配置 `resumeReadBytes < pauseReadBytes < hardLimitBytes`）。P1-07 起允许硬上限独占模式 `hardLimitBytes <= pauseReadBytes`：该模式下 hard 分支（达界即启动 stall 定时器）优先于读暂停，Backpressured 即关闭倒计时；当 `2 * hardLimitBytes <= pauseReadBytes` 时达界路径不可能触发 `checkPause`，**无降至 resumeRead 的恢复路径**；否则单条近限消息（append 前检查，最大 overshoot < hardLimitBytes）可能越过 pause 触发读暂停，恢复路径存在（缓冲降至 resumeRead 即取消 stall）——两种子情形由 stall 定时器幂等（stallActive_ 防重）保证语义一致。该模式用于可测试性与"硬上限优先于读暂停"的策略选择。默认值通过 benchmark 确定，不把 brainstorm 中 1/16/64/128 MiB 当成未经验证的事实。`send` 返回 `Accepted / Backpressured / Closed / TooLarge`，让上层停止继续生产，而不是只记录回调后继续堆积。
 
 进程级过载还需覆盖：最大连接数、accept 速率、每用户/连接 token bucket、EventLoop 延迟、任务队列长度、EMFILE idle-fd 处理。优先拒绝新负载，不能让已有连接一起 OOM。
 

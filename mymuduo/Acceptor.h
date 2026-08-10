@@ -33,6 +33,8 @@ public:
     bool listening() const { return listening_; }
 
     int listenFd() const { return acceptSocket_.fd(); }
+
+    int acceptErrorCount() const { return acceptErrors_; }
 private:
     void handleRead();
     void retryAccept();

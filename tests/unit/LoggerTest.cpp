@@ -34,6 +34,17 @@ TEST(LoggerTest, LevelFilterSkipsBelowThreshold)
     EXPECT_NE(std::string::npos, out.find("error visible"));
 }
 
+TEST(LoggerTest, DebugLevelShowsInfoAndError)
+{
+    std::string out = runWithLevel(DEBUG, []
+                                   {
+                                       LOG_INFO("info visible at debug");
+                                       LOG_ERROR("error visible at debug");
+                                   });
+    EXPECT_NE(std::string::npos, out.find("info visible at debug"));
+    EXPECT_NE(std::string::npos, out.find("error visible at debug"));
+}
+
 TEST(LoggerTest, ConcurrentLogsAreCompleteLines)
 {
     Logger::instance().setLogLevel(INFO);
@@ -104,6 +115,26 @@ TEST(LoggerTest, FullQueueDropsAndCounts)
     EXPECT_GT(Logger::instance().droppedCount(), 0u);
     Logger::instance().setOutputStream(nullptr);
     Logger::instance().setQueueCapacity(4096);
+}
+
+TEST(LoggerTest, FatalNotDroppedWhenQueueFull)
+{
+    Logger::instance().setQueueCapacity(1);
+    Logger::instance().setLogLevel(INFO);
+    std::ostringstream sink;
+    Logger::instance().setOutputStream(&sink);
+    for (int i = 0; i < 1000; ++i)
+    {
+        LOG_INFO("bulk-%d", i);
+    }
+    Logger::instance().log(FATAL, "fatal must survive");
+    Logger::instance().flush();
+    std::string out = sink.str();
+    Logger::instance().setOutputStream(nullptr);
+    Logger::instance().setQueueCapacity(4096);
+    Logger::instance().setLogLevel(INFO);
+    EXPECT_NE(std::string::npos, out.find("[FATAL]"));
+    EXPECT_NE(std::string::npos, out.find("fatal must survive"));
 }
 
 TEST(LoggerTest, FlushEmptiesQueue)

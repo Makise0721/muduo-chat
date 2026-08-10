@@ -10,6 +10,7 @@
 namespace {
 
 int gSignalFds[2];
+static bool gShuttingDown = false;
 
 void signalHandler(int) {
     char c = 1;
@@ -18,6 +19,10 @@ void signalHandler(int) {
 }
 
 void beginShutdown(EventLoop* loop, ChatServer* v1, ChatServer* v2) {
+    if (gShuttingDown) {
+        return;
+    }
+    gShuttingDown = true;
     std::cout << "Shutdown: stopping accept" << std::endl;
     v1->stopAccept();
     v2->stopAccept();

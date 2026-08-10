@@ -71,9 +71,14 @@ TimerId TimerQueue::addTimer(TimerCallback cb, int64_t delayMs, int64_t interval
 {
     TimePoint deadline = Clock::now() + std::chrono::milliseconds(delayMs);
     std::shared_ptr<Timer> timer(new Timer(std::move(cb), deadline, intervalMs));
-    TimerId id{timer, nextSequence_++};
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (insert(Entry(deadline, id)))
+    bool inserted = false;
+    TimerId id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        id = TimerId(timer, nextSequence_++);
+        inserted = insert(Entry(deadline, id));
+    }
+    if (inserted)
     {
         resetTimerfd(Clock::now());
     }
@@ -140,6 +145,7 @@ std::vector<TimerId> TimerQueue::getExpired(TimePoint now)
 
 void TimerQueue::resetTimerfd(TimePoint now)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     itimerspec newValue;
     bzero(&newValue, sizeof newValue);
     if (!timers_.empty())

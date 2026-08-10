@@ -135,3 +135,48 @@ TEST(TcpServerTest, RejectsConnectionsBeyondMax)
     close(fd1);
     close(fd2);
 }
+
+TEST(TcpServerTest, AcceptErrorCountStaysZero)
+{
+    ServerThread st([&](TcpServer *srv)
+                    {
+                        srv->setConnectionCallback([](const TcpConnectionPtr &) {});
+                    });
+    ASSERT_TRUE(st.waitReady());
+
+    int port = 0;
+    {
+        std::promise<void> done;
+        st.loop->runInLoop([&]
+                           {
+                               port = st.server->listenPort();
+                               done.set_value();
+                           });
+        done.get_future().wait();
+    }
+
+    std::promise<void> done;
+    int errorsBefore = -1;
+    st.loop->runInLoop([&]
+                       {
+                           errorsBefore = st.server->acceptErrorCount();
+                           done.set_value();
+                       });
+    done.get_future().wait();
+    EXPECT_EQ(0, errorsBefore);
+
+    int fd = connectTo(port);
+    ASSERT_GE(fd, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    std::promise<void> done2;
+    int errorsAfter = -1;
+    st.loop->runInLoop([&]
+                       {
+                           errorsAfter = st.server->acceptErrorCount();
+                           done2.set_value();
+                       });
+    done2.get_future().wait();
+    EXPECT_EQ(0, errorsAfter);
+    close(fd);
+}
