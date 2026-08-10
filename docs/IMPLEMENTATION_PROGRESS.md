@@ -30,4 +30,5 @@
 | P1-01 StreamCodec 与 v2 framing | VERIFIED | `ctest -R StreamCodecTest` 15/15；Debug 全量 43/43；ASan 43/43；golden bytes 固化；10000 轮随机风暴无报告；已提交 cb8ba00 |
 | P1-02 双协议迁移 | VERIFIED | `ctest -R 'LegacyJsonLineCodec|BinaryFrameCodec|OutputEncoder'` 13/13；Debug 全量 56/56；ASan 56/56；进程级双端口 smoke OK（注册/登录等价）；ChatService 零改动；已提交 6334546 |
 | P1-03 TimerQueue | VERIFIED | `ctest -R TimerQueueTest` 8/8；Debug 全量 64/64；ASan 64/64；无漂移断言通过；测试不读私有容器；已提交 c4be285 |
-| P1-04 背压状态机 | VERIFIED | `ctest -R BackpressureTest` 4/4 ×5 轮；Debug 全量 68/68；ASan 68/68（含 LSan）；slow-consumer smoke 通过；SendResult 四态 + stall 断开断言；未提交（等待授权） |
+| P1-04 背压状态机 | VERIFIED | `ctest -R BackpressureTest` 4/4 ×5 轮；Debug 全量 68/68；ASan 68/68（含 LSan）；slow-consumer smoke 通过；SendResult 四态 + stall 断开断言；已提交 51f9b66 |
+| P1-05 过载保护与优雅退出 | VERIFIED | `ctest -R TcpServerTest` 1/1；Debug 69/69；ASan 69/69；进程级 SIGINT/SIGTERM 双路径 smoke（DRAINED 快路径 + 5s 硬截止 pending=1 打印）；已提交 6fcdf3c + 8c3edf9 |

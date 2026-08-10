@@ -176,6 +176,8 @@ TEST(BackpressureTest, PeerResumesReadingRecoversToAccepted)
     const int kBufSize = 64 * 1024;
     int fds[2];
     ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    int flags = fcntl(fds[0], F_GETFL, 0);
+    fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
     setsockopt(fds[1], SOL_SOCKET, SO_SNDBUF, &kBufSize, sizeof kBufSize);
     setsockopt(fds[0], SOL_SOCKET, SO_RCVBUF, &kBufSize, sizeof kBufSize);
     TcpConnection::    WriteBufferLimits limits;
@@ -210,17 +212,24 @@ TEST(BackpressureTest, PeerResumesReadingRecoversToAccepted)
 
     std::string received;
     std::promise<void> drained;
+    std::atomic<bool> stopReader{false};
     std::thread reader([&]
                        {
                            char chunk[65536];
                            for (;;)
                            {
                                ssize_t n = read(fds[0], chunk, sizeof chunk);
-                               if (n <= 0)
+                               if (n > 0)
                                {
-                                   break;
+                                   received.append(chunk, static_cast<size_t>(n));
+                                   continue;
                                }
-                               received.append(chunk, static_cast<size_t>(n));
+                               if (n < 0 && errno == EAGAIN && !stopReader.load())
+                               {
+                                   usleep(500);
+                                   continue;
+                               }
+                               break;
                            }
                            drained.set_value();
                        });
@@ -251,8 +260,9 @@ TEST(BackpressureTest, PeerResumesReadingRecoversToAccepted)
     EXPECT_TRUE(acceptedAfter.load());
     EXPECT_TRUE(sawBackpressured.load());
 
+    stopReader = true;
+    reader.join();
     close(fds[0]);
     drained.get_future().wait_for(std::chrono::seconds(5));
-    reader.join();
     EXPECT_GT(received.size(), 0u);
 }
