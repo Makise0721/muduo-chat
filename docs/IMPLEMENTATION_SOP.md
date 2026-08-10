@@ -5,7 +5,7 @@
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
 收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
 当前活动任务：无；**P1 整体 `VERIFIED`**（P1R-00..P1R-09 闭环，完成性验收通过，REMEDIATION 解除）；
-下一任务 P2-05（迁移用户与会话用例：登录/登出/断开/在线状态经 ChatApplication，session generation 防旧 completion 写入重连后的 session）
+下一任务 P2-06（迁移好友与群组用例：Friend/GroupRepository 返回领域对象/错误，事务边界在 adapter 内）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 
