@@ -4,7 +4,7 @@
 适用基线：`main` @ `00db852`
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
 收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
-当前活动任务：P1 整体为 `REMEDIATION`（见 [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)，执行 P1R-00→P1R-09）；下一任务 P1R-06（过载与 EMFILE）
+当前活动任务：P1 整体为 `REMEDIATION`（见 [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)，执行 P1R-00→P1R-09）；下一任务 P1R-07（Timer 契约）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 

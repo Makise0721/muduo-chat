@@ -77,6 +77,11 @@ add_test(NAME process-signal-shutdown
         20)
 set_tests_properties(process-signal-shutdown PROPERTIES TIMEOUT 60)
 
+add_test(NAME process-fd-exhaustion
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fd_exhaustion_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(process-fd-exhaustion PROPERTIES TIMEOUT 90)
+
 set(GTEST_EMULATOR "setarch;x86_64;-R")
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")

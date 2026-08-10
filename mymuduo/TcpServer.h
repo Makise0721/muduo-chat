@@ -58,9 +58,16 @@ public:
         maxConnections_ = maxConnections;
     }
 
+    void setAcceptRateLimit(double ratePerSecond, int burst)
+    {
+        acceptor_->setAcceptRateLimit(ratePerSecond, burst);
+    }
+
     int connectionCount() const { return static_cast<int>(connections_.size()); }
 
     int rejectedConnections() const { return rejectedConnections_.load(); }
+
+    int rateRejectedCount() const { return acceptor_->rateRejectedCount(); }
 
     int acceptErrorCount() const { return acceptor_->acceptErrorCount(); }
 

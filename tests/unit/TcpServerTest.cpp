@@ -181,6 +181,180 @@ TEST(TcpServerTest, AcceptErrorCountStaysZero)
     close(fd);
 }
 
+TEST(TcpServerTest, AcceptRateLimitAcceptsUpToBurstThenRejects)
+{
+    std::atomic<int> accepts{0};
+    std::promise<void> secondAccepted;
+    ServerThread st([&](TcpServer *srv)
+                    {
+                        srv->setAcceptRateLimit(1, 2);
+                        srv->setConnectionCallback([&](const TcpConnectionPtr &conn)
+                                                   {
+                                                       if (conn->connected())
+                                                       {
+                                                           if (accepts.fetch_add(1) + 1 == 2)
+                                                           {
+                                                               secondAccepted.set_value();
+                                                           }
+                                                       }
+                                                   });
+                    });
+    ASSERT_TRUE(st.waitReady());
+
+    int port = 0;
+    {
+        std::promise<void> done;
+        st.loop->runInLoop([&]
+                           {
+                               port = st.server->listenPort();
+                               done.set_value();
+                           });
+        done.get_future().wait();
+    }
+
+    int fd1 = connectTo(port);
+    ASSERT_GE(fd1, 0);
+    int fd2 = connectTo(port);
+    ASSERT_GE(fd2, 0);
+    ASSERT_EQ(std::future_status::ready,
+              secondAccepted.get_future().wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(2, accepts.load());
+
+    int fd3 = connectTo(port);
+    ASSERT_GE(fd3, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(2, accepts.load());
+
+    std::promise<void> done;
+    int rejected = -1;
+    int maxRejected = -1;
+    st.loop->runInLoop([&]
+                       {
+                           rejected = st.server->rateRejectedCount();
+                           maxRejected = st.server->rejectedConnections();
+                           done.set_value();
+                       });
+    done.get_future().wait();
+    EXPECT_EQ(1, rejected);
+    EXPECT_EQ(0, maxRejected);
+
+    close(fd1);
+    close(fd2);
+    close(fd3);
+}
+
+TEST(TcpServerTest, AcceptRateLimitRecoversAfterRefill)
+{
+    std::atomic<int> accepts{0};
+    std::promise<void> firstAccepted;
+    ServerThread st([&](TcpServer *srv)
+                    {
+                        srv->setAcceptRateLimit(1, 1);
+                        srv->setConnectionCallback([&](const TcpConnectionPtr &conn)
+                                                   {
+                                                       if (conn->connected())
+                                                       {
+                                                           if (accepts.fetch_add(1) == 0)
+                                                           {
+                                                               firstAccepted.set_value();
+                                                           }
+                                                       }
+                                                   });
+                    });
+    ASSERT_TRUE(st.waitReady());
+
+    int port = 0;
+    {
+        std::promise<void> done;
+        st.loop->runInLoop([&]
+                           {
+                               port = st.server->listenPort();
+                               done.set_value();
+                           });
+        done.get_future().wait();
+    }
+
+    int fd1 = connectTo(port);
+    ASSERT_GE(fd1, 0);
+    ASSERT_EQ(std::future_status::ready,
+              firstAccepted.get_future().wait_for(std::chrono::seconds(5)));
+
+    int fd2 = connectTo(port);
+    ASSERT_GE(fd2, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(1, accepts.load());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    int fd3 = connectTo(port);
+    ASSERT_GE(fd3, 0);
+    std::promise<void> done;
+    int acceptedAfter = -1;
+    st.loop->runInLoop([&]
+                       {
+                           acceptedAfter = st.server->connectionCount();
+                           done.set_value();
+                       });
+    done.get_future().wait();
+    EXPECT_EQ(2, acceptedAfter);
+
+    close(fd1);
+    close(fd2);
+    close(fd3);
+}
+
+TEST(TcpServerTest, OverloadCountersAreIndependent)
+{
+    std::atomic<int> accepts{0};
+    ServerThread st([&](TcpServer *srv)
+                    {
+                        srv->setMaxConnections(1);
+                        srv->setConnectionCallback([&](const TcpConnectionPtr &conn)
+                                                   {
+                                                       if (conn->connected())
+                                                       {
+                                                           accepts.fetch_add(1);
+                                                       }
+                                                   });
+                    });
+    ASSERT_TRUE(st.waitReady());
+
+    int port = 0;
+    {
+        std::promise<void> done;
+        st.loop->runInLoop([&]
+                           {
+                               port = st.server->listenPort();
+                               done.set_value();
+                           });
+        done.get_future().wait();
+    }
+
+    int fd1 = connectTo(port);
+    ASSERT_GE(fd1, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(1, accepts.load());
+
+    int fd2 = connectTo(port);
+    ASSERT_GE(fd2, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    std::promise<void> done;
+    int maxRejected = -1;
+    int rateRejected = -1;
+    st.loop->runInLoop([&]
+                       {
+                           maxRejected = st.server->rejectedConnections();
+                           rateRejected = st.server->rateRejectedCount();
+                           done.set_value();
+                       });
+    done.get_future().wait();
+    EXPECT_EQ(1, maxRejected);
+    EXPECT_EQ(0, rateRejected);
+
+    close(fd1);
+    close(fd2);
+}
+
 TEST(TcpServerTest, ForceCloseFromOtherThreadIsIdempotent)
 {
     std::promise<void> accepted;
