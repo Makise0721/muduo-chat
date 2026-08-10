@@ -234,3 +234,71 @@ TEST(TimerQueueTest, CancelInsideCallback)
     EXPECT_EQ(after, count.load());
     EXPECT_GE(after, 2);
 }
+
+TEST(TimerQueueTest, CancelDefaultTimerIdIsNoOp)
+{
+    LoopThread lt;
+    TimerId id;
+    EXPECT_NO_THROW(lt.loop->cancel(id));
+    EXPECT_NO_THROW(lt.loop->cancel(id));
+}
+
+TEST(TimerQueueTest, CancelInsideCallbackTwiceIsIdempotent)
+{
+    LoopThread lt;
+    std::atomic<int> count{0};
+    std::promise<void> done;
+    TimerId id = lt.loop->runEvery(10, [&]
+                                   {
+                                       if (++count >= 2)
+                                       {
+                                           lt.loop->cancel(id);
+                                           lt.loop->cancel(id);
+                                           done.set_value();
+                                       }
+                                   });
+    EXPECT_EQ(std::future_status::ready,
+              done.get_future().wait_for(std::chrono::seconds(5)));
+    int after = count.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    EXPECT_EQ(after, count.load());
+}
+
+TEST(TimerQueueTest, CancelFiredOnceTimerIsNoOp)
+{
+    LoopThread lt;
+    std::atomic<int> count{0};
+    std::promise<void> fired;
+    TimerId id = lt.loop->runAfter(20, [&]
+                                   {
+                                       ++count;
+                                       fired.set_value();
+                                   });
+    EXPECT_EQ(std::future_status::ready,
+              fired.get_future().wait_for(std::chrono::seconds(5)));
+    EXPECT_NO_THROW(lt.loop->cancel(id));
+}
+
+TEST(TimerQueueTest, LongCallbackKeepsPlannedPhase)
+{
+    LoopThread lt;
+    std::atomic<int> count{0};
+    std::promise<void> done;
+    lt.loop->runEvery(50, [&]
+                      {
+                          const int c = ++count;
+                          std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                          if (c == 3)
+                          {
+                              done.set_value();
+                          }
+                      });
+    EXPECT_EQ(std::future_status::ready,
+              done.get_future().wait_for(std::chrono::seconds(5)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const int total = count.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const int totalLater = count.load();
+    EXPECT_LE(total, 4);
+    EXPECT_LE(totalLater, 5);
+}

@@ -22,9 +22,11 @@ void Timer::restart(TimePoint now)
     if (repeat())
     {
         expiration_ += std::chrono::milliseconds(intervalMs_);
-        if (expiration_ < now)
+        if (expiration_ <= now)
         {
-            expiration_ = now + std::chrono::milliseconds(intervalMs_);
+            const auto delta = now - expiration_;
+            const auto skips = delta / std::chrono::milliseconds(intervalMs_) + 1;
+            expiration_ += skips * std::chrono::milliseconds(intervalMs_);
         }
     }
     else
@@ -87,11 +89,12 @@ TimerId TimerQueue::addTimer(TimerCallback cb, int64_t delayMs, int64_t interval
 
 void TimerQueue::cancel(TimerId id)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (id.timer)
+    if (!id.timer)
     {
-        id.timer->cancel();
+        return;
     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    id.timer->cancel();
     timers_.erase(Entry(id.timer->expiration(), id));
 }
 
