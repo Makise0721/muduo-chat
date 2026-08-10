@@ -48,7 +48,7 @@ public:
     explicit StreamCodec(uint32_t maxBodyLength = kDefaultMaxBodyLength);
 
     DecodeResult decode(Buffer *input, Frame *frame);
-    EncodeResult encode(const Frame &frame, Buffer *output);
+    EncodeResult encode(const Frame &frame, Buffer *output) const;
 
 private:
     uint32_t maxBodyLength_;
@@ -60,5 +60,5 @@ public:
     virtual ~OutputCodec() = default;
 
     virtual size_t encodedSize(size_t payloadBytes) const = 0;
-    virtual EncodeResult encode(const std::string &message, Buffer *output) = 0;
+    virtual EncodeResult encode(const std::string &message, Buffer *output) const = 0;
 };

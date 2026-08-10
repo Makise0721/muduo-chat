@@ -20,7 +20,7 @@ public:
     explicit BinaryFrameCodec(uint32_t maxBodyLength = StreamCodec::kDefaultMaxBodyLength);
 
     CodecResult decode(Buffer *input, std::string *message);
-    EncodeResult encode(const std::string &message, Buffer *output) override;
+    EncodeResult encode(const std::string &message, Buffer *output) const override;
     size_t encodedSize(size_t payloadBytes) const override;
 
 private:

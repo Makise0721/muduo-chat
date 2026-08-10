@@ -112,7 +112,7 @@ DecodeResult StreamCodec::decode(Buffer *input, Frame *frame)
     return DecodeResult::FrameReady;
 }
 
-EncodeResult StreamCodec::encode(const Frame &frame, Buffer *output)
+EncodeResult StreamCodec::encode(const Frame &frame, Buffer *output) const
 {
     if (frame.magic != kMagic || frame.version != kVersion ||
         frame.headerLength != kHeaderLength || frame.flags != 0 ||

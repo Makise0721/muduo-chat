@@ -22,13 +22,27 @@ class Socket;
 class TcpConnection : noncopyable, public std::enable_shared_from_this<TcpConnection>
 {
 public:
-    enum class SendResult
+    struct SendOutcome
     {
-        Accepted,
-        Backpressured,
-        Closed,
-        TooLarge,
+        enum class Disposition
+        {
+            Accepted,
+            WouldBlock,
+            Closed,
+            TooLarge,
+        };
+        enum class Pressure
+        {
+            Normal,
+            PauseProducer,
+        };
+        Disposition disposition;
+        Pressure pressure;
+        SendOutcome() : disposition(Disposition::Closed), pressure(Pressure::Normal) {}
+        SendOutcome(Disposition d, Pressure p) : disposition(d), pressure(p) {}
     };
+
+    using PressureCallback = std::function<void()>;
 
     struct WriteBufferLimits
     {
@@ -73,10 +87,15 @@ public:
         highWaterMark_ = highWaterMark;
     }
 
-    using OutputEncoder = std::function<EncodeResult(const std::string &message, Buffer *output)>;
-    void setOutputEncoder(const OutputEncoder &cb)
+    using OutputCodecPtr = const OutputCodec *;
+    void setOutputCodec(const OutputCodec *codec)
     {
-        encoder_ = cb;
+        codec_ = codec;
+    }
+
+    void setPressureCallback(const PressureCallback &cb)
+    {
+        pressureCallback_ = cb;
     }
 
     void setWriteBufferLimits(const WriteBufferLimits &limits)
@@ -94,7 +113,7 @@ public:
         }
     }
 
-    SendResult send(std::string message);
+    SendOutcome send(std::string message);
     void shutdown();
     void forceClose();
 
@@ -116,12 +135,17 @@ private:
     void handleClose();
     void handleError();
 
-    SendResult sendInLoop(std::string message);
-    SendResult sendInLoop(const void *message, size_t len);
+    SendOutcome sendInLoop(std::string message, size_t frameSize);
+    SendOutcome sendInLoop(const void *message, size_t len, size_t frameSize);
     void shutdownInLoop();
     void checkPause();
     void startStallTimer();
     void cancelStallTimer();
+    uint64_t tryReserve(size_t n);
+    void releaseOutstanding(uint64_t n);
+    void resetOutstanding();
+
+    static const uint64_t kReserveFailed;
 
     EventLoop *loop_;
     const std::string name_;
@@ -142,10 +166,13 @@ private:
 
     size_t highWaterMark_;
 
-    OutputEncoder encoder_;
+    const OutputCodec *codec_ = nullptr;
+    PressureCallback pressureCallback_;
     WriteBufferLimits limits_;
     TimerId stallTimerId_;
     bool stallActive_ = false;
+    std::atomic<uint64_t> outstandingBytes_{0};
+    bool lowWaterArmed_ = false;
 
     Buffer inputBuffer_;
     Buffer outputBuffer_;

@@ -26,7 +26,7 @@ CodecResult BinaryFrameCodec::decode(Buffer *input, std::string *message)
     }
 }
 
-EncodeResult BinaryFrameCodec::encode(const std::string &message, Buffer *output)
+EncodeResult BinaryFrameCodec::encode(const std::string &message, Buffer *output) const
 {
     if (message.size() > maxBodyLength_)
     {

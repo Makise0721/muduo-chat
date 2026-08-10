@@ -164,17 +164,26 @@ TEST(TcpConnectionTest, WriteCompleteAfterOutputBufferDrained)
 
 TEST(TcpConnectionTest, OutputEncoderTransformsSentData)
 {
+    struct WrapperCodec : public OutputCodec
+    {
+        EncodeResult encode(const std::string &message, Buffer *output) const override
+        {
+            output->append("ENC[", 4);
+            output->append(message.data(), message.size());
+            output->append("]", 1);
+            return EncodeResult::Ok;
+        }
+        size_t encodedSize(size_t payloadBytes) const override
+        {
+            return payloadBytes + 5;
+        }
+    };
     int fds[2];
     ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
     ConnHarness h(fds[1], [](TcpConnection *conn)
                   {
-                      conn->setOutputEncoder([](const std::string &message, Buffer *output)
-                                             {
-                                                 output->append("ENC[", 4);
-                                                 output->append(message.data(), message.size());
-                                                 output->append("]", 1);
-                                                 return EncodeResult::Ok;
-                                             });
+                      static WrapperCodec codec;
+                      conn->setOutputCodec(&codec);
                   });
     ASSERT_TRUE(h.waitReady());
     h.loop->runInLoop([&] { h.conn->send("hello"); });

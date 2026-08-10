@@ -55,58 +55,121 @@ TcpConnection::~TcpConnection()
              peerAddr_.toIpPort().c_str());
 }
 
-TcpConnection::SendResult TcpConnection::send(std::string message)
+const uint64_t TcpConnection::kReserveFailed = static_cast<uint64_t>(-1);
+
+TcpConnection::SendOutcome TcpConnection::send(std::string message)
 {
-    if (state_ == kConnected)
+    if (state_ != kConnected)
     {
-        if (loop_->isInLoopThread())
-        {
-            return sendInLoop(std::move(message));
-        }
-        else
-        {
-            if (message.size() > limits_.hardLimitBytes)
-            {
-                return SendResult::TooLarge;
-            }
-            using SendInLoop = SendResult (TcpConnection::*)(std::string);
-            loop_->runInLoop(std::bind(static_cast<SendInLoop>(&TcpConnection::sendInLoop),
-                                       shared_from_this(), std::move(message)));
-            return SendResult::Accepted;
-        }
+        LOG_ERROR("TcpConnection::send() - Connection [%s] is down, can not send message", name_.c_str());
+        return {SendOutcome::Disposition::Closed, SendOutcome::Pressure::Normal};
+    }
+
+    const size_t frameSize = std::max<size_t>(1, codec_ != nullptr
+                                                      ? codec_->encodedSize(message.size())
+                                                      : message.size());
+    if (frameSize > limits_.hardLimitBytes)
+    {
+        return {SendOutcome::Disposition::TooLarge, SendOutcome::Pressure::Normal};
+    }
+
+    const uint64_t after = tryReserve(frameSize);
+    if (after == kReserveFailed)
+    {
+        loop_->runInLoop(std::bind(&TcpConnection::startStallTimer, shared_from_this()));
+        return {SendOutcome::Disposition::WouldBlock, SendOutcome::Pressure::PauseProducer};
+    }
+    const bool overPause = after > limits_.pauseReadBytes;
+
+    if (loop_->isInLoopThread())
+    {
+        sendInLoop(std::move(message), frameSize);
     }
     else
     {
-        LOG_ERROR("TcpConnection::send() - Connection [%s] is down, can not send message", name_.c_str());
-        return SendResult::Closed;
+        using SendInLoopFn = SendOutcome (TcpConnection::*)(std::string, size_t);
+        loop_->runInLoop(std::bind(static_cast<SendInLoopFn>(&TcpConnection::sendInLoop),
+                                   shared_from_this(),
+                                   std::move(message),
+                                   frameSize));
     }
+    return {SendOutcome::Disposition::Accepted,
+            overPause ? SendOutcome::Pressure::PauseProducer
+                      : SendOutcome::Pressure::Normal};
 }
 
-TcpConnection::SendResult TcpConnection::sendInLoop(std::string message)
+uint64_t TcpConnection::tryReserve(size_t n)
 {
-    if (encoder_)
+    uint64_t cur = outstandingBytes_.load(std::memory_order_relaxed);
+    for (;;)
     {
-        Buffer encoded;
-        if (encoder_(message, &encoded) != EncodeResult::Ok)
+        if (cur > limits_.hardLimitBytes - n)
         {
-            return SendResult::TooLarge;
+            return kReserveFailed;
         }
-        return sendInLoop(encoded.peek(), encoded.readableBytes());
+        if (outstandingBytes_.compare_exchange_weak(cur, cur + n,
+                                                    std::memory_order_relaxed))
+        {
+            return cur + n;
+        }
     }
-    return sendInLoop(message.data(), message.size());
 }
 
-TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t len)
+void TcpConnection::releaseOutstanding(uint64_t n)
+{
+    const uint64_t before = outstandingBytes_.fetch_sub(n, std::memory_order_relaxed);
+    const uint64_t after = before - n;
+    if (lowWaterArmed_ && before > limits_.resumeReadBytes &&
+        after <= limits_.resumeReadBytes)
+    {
+        lowWaterArmed_ = false;
+        if (pressureCallback_)
+        {
+            pressureCallback_();
+        }
+    }
+}
+
+void TcpConnection::resetOutstanding()
+{
+    outstandingBytes_.store(0, std::memory_order_relaxed);
+    lowWaterArmed_ = false;
+}
+
+TcpConnection::SendOutcome TcpConnection::sendInLoop(std::string message, size_t frameSize)
 {
     if (state_ == kDisconnected)
     {
         LOG_ERROR("TcpConnection::sendInLoop() - Connection [%s] is disconnected, give up writing", name_.c_str());
-        return SendResult::Closed;
+        releaseOutstanding(frameSize);
+        return {SendOutcome::Disposition::Closed, SendOutcome::Pressure::Normal};
     }
 
-    if (len > limits_.hardLimitBytes)
+    Buffer encoded;
+    if (codec_ != nullptr)
     {
-        return SendResult::TooLarge;
+        if (codec_->encode(message, &encoded) != EncodeResult::Ok)
+        {
+            releaseOutstanding(frameSize);
+            return {SendOutcome::Disposition::TooLarge, SendOutcome::Pressure::Normal};
+        }
+        return sendInLoop(encoded.peek(), encoded.readableBytes(), frameSize);
+    }
+    return sendInLoop(message.data(), message.size(), frameSize);
+}
+
+TcpConnection::SendOutcome TcpConnection::sendInLoop(const void *message, size_t len, size_t frameSize)
+{
+    if (state_ == kDisconnected)
+    {
+        LOG_ERROR("TcpConnection::sendInLoop() - Connection [%s] is disconnected, give up writing", name_.c_str());
+        releaseOutstanding(frameSize);
+        return {SendOutcome::Disposition::Closed, SendOutcome::Pressure::Normal};
+    }
+
+    if (outstandingBytes_.load(std::memory_order_relaxed) > limits_.resumeReadBytes)
+    {
+        lowWaterArmed_ = true;
     }
 
     ssize_t nwrote = 0;
@@ -119,6 +182,7 @@ TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t 
         if (nwrote >= 0)
         {
             remaining = len - nwrote;
+            releaseOutstanding(static_cast<uint64_t>(nwrote));
             if (remaining == 0 && writeCompleteCallback_)
             {
                 loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
@@ -140,11 +204,6 @@ TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t 
 
     if (!faultError && remaining > 0)
     {
-        if (outputBuffer_.readableBytes() >= limits_.hardLimitBytes)
-        {
-            startStallTimer();
-            return SendResult::Backpressured;
-        }
         size_t oldLen = outputBuffer_.readableBytes();
         if (oldLen + remaining >= highWaterMark_
             && oldLen < highWaterMark_
@@ -159,7 +218,7 @@ TcpConnection::SendResult TcpConnection::sendInLoop(const void *message, size_t 
         }
         checkPause();
     }
-    return SendResult::Accepted;
+    return {SendOutcome::Disposition::Accepted, SendOutcome::Pressure::Normal};
 }
 
 void TcpConnection::checkPause()
@@ -176,9 +235,14 @@ void TcpConnection::startStallTimer()
 {
     if (!stallActive_)
     {
-        TcpConnectionPtr self(shared_from_this());
+        std::weak_ptr<TcpConnection> weakSelf(shared_from_this());
         stallTimerId_ = loop_->runAfter(limits_.stallTimeout.count(),
-                                        [self] { self->forceClose(); });
+                                        [weakSelf] {
+                                            if (std::shared_ptr<TcpConnection> self = weakSelf.lock())
+                                            {
+                                                self->forceClose();
+                                            }
+                                        });
         stallActive_ = true;
     }
 }
@@ -200,6 +264,7 @@ void TcpConnection::forceClose()
     {
         setState(kDisconnected);
         channel_->disableAll();
+        resetOutstanding();
         TcpConnectionPtr guardThis(shared_from_this());
         connectionCallback_(guardThis);
         if (closeCallback_)
@@ -243,6 +308,7 @@ void TcpConnection::connectDestroyed()
         connectionCallback_(shared_from_this());
     }
     cancelStallTimer();
+    resetOutstanding();
     channel_->remove();
 }
 
@@ -275,6 +341,7 @@ void TcpConnection::handleWrite()
         if (n > 0)
         {
             outputBuffer_.retrieve(n);
+            releaseOutstanding(static_cast<uint64_t>(n));
             if (outputBuffer_.readableBytes() == 0)
             {
                 channel_->disableWriting();
