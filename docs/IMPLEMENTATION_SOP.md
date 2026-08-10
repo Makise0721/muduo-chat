@@ -5,7 +5,7 @@
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
 收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
 当前活动任务：无；**P1 整体 `VERIFIED`**（P1R-00..P1R-09 闭环，完成性验收通过，REMEDIATION 解除）；
-下一任务 P2-02（安全的 MySQL UserRepository：prepared statements、事务边界、断线/timeout 映射）
+下一任务 P2-03（有界 BlockingExecutor：submit(task, completion) -> SubmitResult，慢任务不阻塞 EventLoop）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 

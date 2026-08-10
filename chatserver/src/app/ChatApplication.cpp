@@ -45,6 +45,9 @@ void ChatApplication::registerUser(const Command& cmd, Reply* reply)
     } else if (result.error == UserError::NameExists) {
         reply->errnoCode = 1;
         reply->errmsg = kErrMsgNameExists;
+    } else if (result.error == UserError::InvalidInput) {
+        reply->errnoCode = 1;
+        reply->errmsg = "invalid input!";
     } else {
         reply->errnoCode = 1;
         reply->errmsg = kErrMsgRegisterFailed;

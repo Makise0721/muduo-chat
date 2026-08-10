@@ -7,6 +7,9 @@
 enum class UserError {
     NameExists,
     StorageFailure,
+    Disconnected,
+    Timeout,
+    InvalidInput,
 };
 
 struct CreateUserResult {

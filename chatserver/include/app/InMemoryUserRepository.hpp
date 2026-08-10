@@ -18,3 +18,6 @@ private:
     std::map<std::string, User> users_;
     int64_t nextId_ = 1;
 };
+
+// 与 MySQL adapter 一致的防御式输入检查（契约：NUL 与超长 → InvalidInput）。
+bool isRepositoryInputValid(const std::string& name, const std::string& password);

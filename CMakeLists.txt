@@ -23,15 +23,19 @@ add_subdirectory(mymuduo)
 
 add_library(chatserver_core STATIC
     chatserver/src/app/ChatApplication.cpp
-    chatserver/src/app/InMemoryUserRepository.cpp)
+    chatserver/src/app/InMemoryUserRepository.cpp
+    chatserver/src/app/MySQLUserRepository.cpp
+    chatserver/src/db/ConnectionPool.cpp
+    chatserver/src/db/MySQL.cpp)
 target_include_directories(chatserver_core PUBLIC
     ${PROJECT_SOURCE_DIR}/chatserver/include
     ${PROJECT_SOURCE_DIR}/mymuduo)
 target_compile_features(chatserver_core PUBLIC cxx_std_11)
+target_link_libraries(chatserver_core PUBLIC ${MYSQL_LIBRARIES})
 
 aux_source_directory(chatserver/src CHATSERVER_SRC)
 
-add_executable(ChatServer chatserver/main.cpp ${CHATSERVER_SRC} chatserver/src/LegacyUserRepository.cpp)
+add_executable(ChatServer chatserver/main.cpp ${CHATSERVER_SRC})
 add_executable(ChatClient chatserver/client.cpp)
 
 target_link_libraries(ChatServer mymuduo chatserver_core ${MYSQL_LIBRARIES} pthread)

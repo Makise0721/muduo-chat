@@ -1,5 +1,4 @@
 #include "ChatService.hpp"
-#include "LegacyUserRepository.hpp"
 #include "app/ChatApplication.hpp"
 #include "db/MySQLGuards.hpp"
 #include <iostream>
@@ -11,7 +10,8 @@
 namespace {
 } // namespace
 
-ChatService::ChatService() : _app(&_legacyUsers) {
+ChatService::ChatService()
+    : _mysqlUsers(ConnectionPool::getInstance()), _app(&_mysqlUsers) {
     _msgHandlerMap.insert({LOGIN_MSG, bind(&ChatService::login, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({REG_MSG, bind(&ChatService::reg, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({LOGINOUT_MSG, bind(&ChatService::loginout, this, placeholders::_1, placeholders::_2, placeholders::_3)});

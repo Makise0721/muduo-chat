@@ -73,6 +73,14 @@ add_executable(ChatApplicationRegistrationTest unit/ChatApplicationRegistrationT
 target_link_libraries(ChatApplicationRegistrationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(ChatApplicationRegistrationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(UserRepositoryContractTest unit/UserRepositoryContractTest.cpp)
+target_link_libraries(UserRepositoryContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(UserRepositoryContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MySQLUserRepositoryTest unit/MySQLUserRepositoryTest.cpp)
+target_link_libraries(MySQLUserRepositoryTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MySQLUserRepositoryTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -97,7 +105,7 @@ add_test(NAME DomainCharacterization
 set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
 
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -114,3 +122,5 @@ gtest_discover_tests(TcpServerTest)
 gtest_discover_tests(LoggerTest)
 gtest_discover_tests(DualProtocolCharacterizationTest)
 gtest_discover_tests(ChatApplicationRegistrationTest)
+gtest_discover_tests(UserRepositoryContractTest)
+gtest_discover_tests(MySQLUserRepositoryTest)
