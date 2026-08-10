@@ -97,10 +97,13 @@ int main(int argc, char** argv) {
     sigChannel.enableReading();
 
     std::cout << "Server started, entering event loop" << std::endl;
+    ChatService::instance()->bindLoop(&loop);
     server.start();
     v2Server.start();
     loop.loop();
 
+    // worker 有界退出（在 EventLoop 对象销毁前）。
+    ChatService::instance()->shutdownApp();
     std::cout << "Server exited" << std::endl;
     return 0;
 }

@@ -2,6 +2,7 @@
 
 #include <unordered_map>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include "../mymuduo/TcpConnection.h"
 #include "../mymuduo/Buffer.h"
@@ -10,6 +11,7 @@
 #include "db/MySQL.hpp"
 #include "db/ConnectionPool.hpp"
 #include "app/ChatApplication.hpp"
+#include "app/BlockingExecutor.hpp"
 #include "app/MySQLUserRepository.hpp"
 
 using json = nlohmann::json;
@@ -45,6 +47,11 @@ public:
     void clientCloseException(const TcpConnectionPtr& conn);
     void reset();
 
+    // P2-05：EventLoop 绑定与阻塞执行器（main 在服务器启动前调用；
+    // 退出前调用 shutdownApp 使 worker 有界退出）。
+    void bindLoop(EventLoop* loop);
+    void shutdownApp();
+
 private:
     ChatService();
     ChatService(const ChatService&) = delete;
@@ -55,4 +62,6 @@ private:
     mutex _connMutex;
     MySQLUserRepository _mysqlUsers;
     ChatApplication _app;
+    EventLoop* _loop = nullptr;
+    std::unique_ptr<BlockingExecutor> _executor;
 };

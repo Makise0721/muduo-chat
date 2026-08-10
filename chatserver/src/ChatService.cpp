@@ -52,13 +52,90 @@ void ChatService::handler(const TcpConnectionPtr& conn, string& msg, Timestamp t
     it->second(conn, js, time);
 }
 
+namespace {
+
+// P2-05 登录用例的 worker 线程 DB 结果（认证 + 好友 + 离线消息一次取齐）。
+struct FriendDetail {
+    int friendid;
+    std::string name;
+    std::string state;
+};
+
+struct LoginDbResult {
+    AuthResult auth;
+    std::vector<std::string> friendNames;
+    std::vector<FriendDetail> friendDetails;
+    std::vector<std::string> offlineMessages;
+};
+
+// 在 worker 线程执行：认证通过后查询好友列表与离线消息（SQL 与 P2-05 前一致）。
+void loadLoginExtras(LoginDbResult* r)
+{
+    auto& connPool = ConnectionPool::getInstance();
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
+    char sql[1024] = {0};
+    snprintf(sql, sizeof(sql),
+             "SELECT friendid, name, state FROM Friend, User "
+             "WHERE Friend.userid = %d AND Friend.friendid = User.id",
+             static_cast<int>(r->auth.id));
+    MYSQL_RES* resFriends = mysql->query(sql);
+    if (resFriends) {
+        MySQLResultGuard guardFriends(resFriends);
+        MYSQL_ROW rowFriend;
+        while ((rowFriend = mysql_fetch_row(resFriends)) != nullptr) {
+            if (rowFriend[1]) {
+                r->friendNames.push_back(rowFriend[1]);
+            }
+            FriendDetail d;
+            d.friendid = rowFriend[0] ? atoi(rowFriend[0]) : 0;
+            d.name = rowFriend[1] ? rowFriend[1] : "";
+            d.state = rowFriend[2] ? rowFriend[2] : "";
+            r->friendDetails.push_back(d);
+        }
+    }
+
+    snprintf(sql, sizeof(sql), "SELECT message FROM OfflineMessage WHERE userid = %d",
+             static_cast<int>(r->auth.id));
+    MYSQL_RES* resOffline = mysql->query(sql);
+    if (resOffline) {
+        MySQLResultGuard guardOffline(resOffline);
+        MYSQL_ROW rowOff;
+        while ((rowOff = mysql_fetch_row(resOffline)) != nullptr) {
+            if (rowOff[0]) {
+                r->offlineMessages.push_back(rowOff[0]);
+            }
+        }
+    }
+
+    snprintf(sql, sizeof(sql), "DELETE FROM OfflineMessage WHERE userid = %d",
+             static_cast<int>(r->auth.id));
+    mysql->update(sql);
+}
+
+} // namespace
+
+void ChatService::bindLoop(EventLoop* loop)
+{
+    _loop = loop;
+    _executor.reset(new BlockingExecutor(loop, 2, 64));
+}
+
+void ChatService::shutdownApp()
+{
+    if (_executor) {
+        _executor->shutdown();
+    }
+}
+
 void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int id = js["id"].get<int>();
     std::string pwd = js["password"].get<std::string>();
 
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+    if (!_executor) {
         json response;
         response["msgid"] = LOGIN_MSG_ACK;
         response["errno"] = 1;
@@ -66,96 +143,69 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    std::string escapedPwd = escapeString(mysql->getConnection(), pwd);
-    char sql[1024] = {0};
-    snprintf(sql, sizeof(sql), "SELECT id, name, password, state FROM User WHERE id = %d AND password = '%s'", id, escapedPwd.c_str());
 
-    MYSQL_RES* resUser = mysql->query(sql);
-    if (!resUser) {
-        json response;
-        response["msgid"] = LOGIN_MSG_ACK;
-        response["errno"] = 1;
-        response["errmsg"] = "userid or password is invalid!";
-        conn->send(response.dump() + "\n");
-        return;
-    }
-    MySQLResultGuard guardUser(resUser);
-
-    MYSQL_ROW rowUser = mysql_fetch_row(resUser);
-    if (!rowUser) {
-        json response;
-        response["msgid"] = LOGIN_MSG_ACK;
-        response["errno"] = 1;
-        response["errmsg"] = "userid or password is invalid!";
-        conn->send(response.dump() + "\n");
-        return;
-    }
-
-    std::string state = rowUser[3] ? rowUser[3] : "";
-    if (state == "online") {
-        json response;
-        response["msgid"] = LOGIN_MSG_ACK;
-        response["errno"] = 2;
-        response["errmsg"] = "this account is using, input another!";
-        conn->send(response.dump() + "\n");
-        return;
-    }
-
-    {
-        lock_guard<mutex> lock(_connMutex);
-        _userConnMap.insert({id, conn});
-    }
-
-    snprintf(sql, sizeof(sql), "UPDATE User SET state = 'online' WHERE id = %d", id);
-    mysql->update(sql);
-
-    json response;
-    response["msgid"] = LOGIN_MSG_ACK;
-    response["errno"] = 0;
-    response["id"] = id;
-    response["name"] = rowUser[1] ? rowUser[1] : "";
-
-    // 好友列表
-    snprintf(sql, sizeof(sql), "SELECT friendid, name, state FROM Friend, User WHERE Friend.userid = %d AND Friend.friendid = User.id", id);
-    MYSQL_RES* resFriends = mysql->query(sql);
-    if (resFriends) {
-        MySQLResultGuard guardFriends(resFriends);
-        vector<string> vec;
-        json friendDetails = json::array();
-        MYSQL_ROW rowFriend;
-        while ((rowFriend = mysql_fetch_row(resFriends)) != nullptr) {
-            if (rowFriend[1]) {
-                vec.push_back(rowFriend[1]);
+    // 会话代次：登录尝试登记，旧异步 completion 不得覆盖重连后的会话。
+    int64_t gen = _app.beginSessionAttempt(id);
+    auto result = std::make_shared<LoginDbResult>();
+    _executor->submit(
+        [this, id, pwd, gen, result] {
+            result->auth = _app.authenticate(id, pwd);
+            // state 只读不改：单会话以 _userConnMap（活动连接）为真相，
+            // 断开残留的 DB online 由 completion 区分处理。
+            if (result->auth.ok && _app.isSessionCurrent(id, gen)) {
+                loadLoginExtras(result.get());
             }
-            json friendInfo;
-            friendInfo["friendid"] = rowFriend[0] ? atoi(rowFriend[0]) : 0;
-            friendInfo["name"] = rowFriend[1] ? rowFriend[1] : "";
-            friendInfo["state"] = rowFriend[2] ? rowFriend[2] : "";
-            friendDetails.push_back(friendInfo);
-        }
-        response["friends"] = vec;
-        response["friendDetails"] = friendDetails;
-    }
-
-    // 先回登录应答，客户端更容易按顺序处理
-    conn->send(response.dump() + "\n");
-
-    // 离线消息下发
-    snprintf(sql, sizeof(sql), "SELECT message FROM OfflineMessage WHERE userid = %d", id);
-    MYSQL_RES* resOffline = mysql->query(sql);
-    if (resOffline) {
-        MySQLResultGuard guardOffline(resOffline);
-        MYSQL_ROW rowOff;
-        while ((rowOff = mysql_fetch_row(resOffline)) != nullptr) {
-            if (rowOff[0]) {
-                conn->send(std::string(rowOff[0]) + "\n");
+        },
+        [this, conn, id, gen, result] {
+            // stale：会话已被登出/断开/新登录取代，不写状态、不响应。
+            if (!_app.isSessionCurrent(id, gen)) {
+                return;
             }
-        }
-    }
+            json response;
+            response["msgid"] = LOGIN_MSG_ACK;
+            if (!result->auth.ok) {
+                response["errno"] = 1;
+                response["errmsg"] = "userid or password is invalid!";
+                conn->send(response.dump() + "\n");
+                return;
+            }
+            {
+                lock_guard<mutex> lock(_connMutex);
+                if (_userConnMap.find(id) != _userConnMap.end()) {
+                    // 真重复登录：该用户已有活动会话。
+                    response["errno"] = 2;
+                    response["errmsg"] = "this account is using, input another!";
+                    conn->send(response.dump() + "\n");
+                    return;
+                }
+                _userConnMap.insert({id, conn});
+            }
+            // DB 状态影子异步落库（登录成功后必须是 online）。
+            _executor->submit(
+                [this, id] { _app.updateUserState(id, UserState::Online); },
+                [] {});
+            response["errno"] = 0;
+            response["id"] = id;
+            response["name"] = result->auth.name;
+            response["friends"] = result->friendNames;
+            json friendDetails = json::array();
+            for (size_t i = 0; i < result->friendDetails.size(); ++i) {
+                json friendInfo;
+                friendInfo["friendid"] = result->friendDetails[i].friendid;
+                friendInfo["name"] = result->friendDetails[i].name;
+                friendInfo["state"] = result->friendDetails[i].state;
+                friendDetails.push_back(friendInfo);
+            }
+            response["friendDetails"] = friendDetails;
 
-    snprintf(sql, sizeof(sql), "DELETE FROM OfflineMessage WHERE userid = %d", id);
-    mysql->update(sql);
+            // 先回登录应答，客户端更容易按顺序处理
+            conn->send(response.dump() + "\n");
+
+            // 离线消息下发（补投后 OfflineMessage 已在 worker 清空）
+            for (size_t i = 0; i < result->offlineMessages.size(); ++i) {
+                conn->send(result->offlineMessages[i] + "\n");
+            }
+        });
 }
 
 void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -189,21 +239,25 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
             _userConnMap.erase(it);
         }
     }
-    
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
-        return;
-    }
-    MySQL* mysql = acq.lease.get();
-    char sql[1024] = {0};
-    snprintf(sql, sizeof(sql), "UPDATE User SET state = 'offline' WHERE id = %d", userid);
-    mysql->update(sql);
 
-    json response;
-    response["msgid"] = LOGINOUT_MSG;
-    response["errno"] = 0;
-    conn->send(response.dump() + "\n");
+    // 会话代次递增：在途登录 completion 不再生效。
+    _app.beginSessionAttempt(userid);
+    if (_executor) {
+        _executor->submit(
+            [this, userid] { _app.updateUserState(userid, UserState::Offline); },
+            [conn, userid] {
+                json response;
+                response["msgid"] = LOGINOUT_MSG;
+                response["errno"] = 0;
+                conn->send(response.dump() + "\n");
+            });
+    } else {
+        json response;
+        response["msgid"] = LOGINOUT_MSG;
+        response["errno"] = 1;
+        response["errmsg"] = "db unavailable!";
+        conn->send(response.dump() + "\n");
+    }
 }
 
 void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -395,15 +449,13 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
     }
     
     if (userid != -1) {
-        auto& connPool = ConnectionPool::getInstance();
-        ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-        if (!acq.lease) {
-            return;
+        // 会话代次递增：在途登录 completion 不再生效。
+        _app.beginSessionAttempt(userid);
+        if (_executor) {
+            _executor->submit(
+                [this, userid] { _app.updateUserState(userid, UserState::Offline); },
+                [] {});
         }
-        MySQL* mysql = acq.lease.get();
-        char sql[1024] = {0};
-        snprintf(sql, sizeof(sql), "UPDATE User SET state = 'offline' WHERE id = %d", userid);
-        mysql->update(sql);
     }
 }
 
