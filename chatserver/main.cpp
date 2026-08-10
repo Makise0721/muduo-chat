@@ -56,6 +56,14 @@ int main(int argc, char** argv) {
 
     char* ip = argv[1];
     uint16_t port = atoi(argv[2]);
+    // 可选第三参数：I/O 线程数（P2-08 多 Reactor；默认 1）。
+    int threadNum = 1;
+    if (argc >= 4) {
+        threadNum = atoi(argv[3]);
+        if (threadNum < 1) {
+            threadNum = 1;
+        }
+    }
 
     auto& connPool = ConnectionPool::getInstance();
     const char* dbPassword = getenv("DB_PASSWORD");
@@ -69,10 +77,12 @@ int main(int argc, char** argv) {
     InetAddress addr(port, ip);
     std::cout << "Server starting on " << ip << ":" << port << " (v1 newline JSON)" << std::endl;
     ChatServer server(&loop, addr, "ChatServer", ProtocolCodec::LegacyLine);
+    server.setThreadNum(threadNum);
 
     InetAddress v2Addr(7000, ip);
     std::cout << "Server starting on " << ip << ":7000 (v2 binary)" << std::endl;
     ChatServer v2Server(&loop, v2Addr, "ChatServerV2", ProtocolCodec::BinaryFrame);
+    v2Server.setThreadNum(threadNum);
 
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, gSignalFds) < 0) {
         std::cerr << "socketpair failed" << std::endl;

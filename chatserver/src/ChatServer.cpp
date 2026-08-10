@@ -31,6 +31,10 @@ void ChatServer::forceCloseAllConnections() {
     _server.forceCloseAllConnections();
 }
 
+void ChatServer::setThreadNum(int numThreads) {
+    _server.setThreadNum(numThreads);
+}
+
 void ChatServer::onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
         std::cout << "Connection established: " << conn->peerAddress().toIpPort() << std::endl;
