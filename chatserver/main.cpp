@@ -1,6 +1,8 @@
 #include "ChatServer.hpp"
 #include "ChatService.hpp"
+#include "app/Config.hpp"
 #include "db/ConnectionPool.hpp"
+#include <chrono>
 #include <iostream>
 #include <signal.h>
 #include <unistd.h>
@@ -18,71 +20,145 @@ void signalHandler(int) {
     (void)n;
 }
 
-void beginShutdown(EventLoop* loop, ChatServer* v1, ChatServer* v2) {
+int64_t nowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// P2-09 关闭顺序：STOP_ACCEPT -> drain network（DRAINED/DRAIN_TIMEOUT）->
+// EXECUTOR_SHUTDOWN（stop submissions + drain）-> POOL_SHUTDOWN -> QUIT_LOOPS -> EXITED。
+// finishShutdown 在 loop 线程执行：executor shutdown 的 worker join 期间 completion
+// 仅 queueInLoop 入队不阻塞；pool shutdown 在 worker join 后（租约已全归还）立即返回。
+struct ShutdownFlow {
+    bool forced = false;
+    bool done = false;
+    int64_t startMs = 0;
+    int64_t forceAtMs = 0;
+};
+
+void finishShutdown(EventLoop* loop, ShutdownFlow* flow)
+{
+    if (flow->done) {
+        return;
+    }
+    flow->done = true;
+    std::cout << "EXECUTOR_SHUTDOWN" << std::endl;
+    ChatService::instance()->shutdownApp();
+    std::cout << "POOL_SHUTDOWN" << std::endl;
+    ConnectionPool::getInstance().shutdown();
+    std::cout << "QUIT_LOOPS" << std::endl;
+    loop->quit();
+}
+
+void beginShutdown(EventLoop* loop, ChatServer* v1, ChatServer* v2,
+                   int timeoutMs, ShutdownFlow* flow)
+{
     if (gShuttingDown) {
         return;
     }
     gShuttingDown = true;
-    std::cout << "Shutdown: stopping accept" << std::endl;
+    std::cout << "STOP_ACCEPT" << std::endl;
     v1->stopAccept();
     v2->stopAccept();
+    flow->startMs = nowMs();
 
-    std::function<void()> check;
-    check = [loop, v1, v2]() {
+    loop->runEvery(50, [loop, v1, v2, timeoutMs, flow]() {
         int pending = v1->connectionCount() + v2->connectionCount();
         if (pending == 0) {
             std::cout << "DRAINED pending=0" << std::endl;
-            loop->quit();
+            finishShutdown(loop, flow);
+            return;
         }
-    };
-    loop->runEvery(50, check);
+        if (flow->forced && nowMs() - flow->forceAtMs > timeoutMs) {
+            // forceClose 后仍不清零：防御性强制（连接卡死）。
+            finishShutdown(loop, flow);
+        }
+    });
 
-    loop->runAfter(5000, [loop, v1, v2]() {
+    loop->runAfter(timeoutMs, [loop, v1, v2, flow]() {
         int pending = v1->connectionCount() + v2->connectionCount();
         std::cout << "DRAIN_TIMEOUT pending=" << pending << std::endl;
         v1->forceCloseAllConnections();
         v2->forceCloseAllConnections();
-        loop->quit();
+        flow->forced = true;
+        flow->forceAtMs = nowMs();
     });
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "command invalid! example: ./ChatServer 127.0.0.1 6000" << std::endl;
+    // 位置参数：ip port [threadNum]；可选 --config <path>（任意位置）。
+    const char* posIp = nullptr;
+    const char* posPort = nullptr;
+    const char* posThreads = nullptr;
+    std::string configPath;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--config") {
+            if (i + 1 >= argc) {
+                std::cerr << "config error: missing value for --config" << std::endl;
+                exit(1);
+            }
+            configPath = argv[++i];
+        } else if (arg.size() > 0 && arg[0] == '-' && arg.size() > 1) {
+            std::cerr << "config error: unknown option '" << arg << "'" << std::endl;
+            exit(1);
+        } else if (!posIp) {
+            posIp = argv[i];
+        } else if (!posPort) {
+            posPort = argv[i];
+        } else if (!posThreads) {
+            posThreads = argv[i];
+        } else {
+            std::cerr << "config error: too many positional arguments" << std::endl;
+            exit(1);
+        }
+    }
+    if (!posIp || !posPort) {
+        std::cerr << "command invalid! example: ./ChatServer 127.0.0.1 6000"
+                     " [threadNum] [--config config.json]" << std::endl;
         exit(-1);
     }
 
-    char* ip = argv[1];
-    uint16_t port = atoi(argv[2]);
-    // 可选第三参数：I/O 线程数（P2-08 多 Reactor；默认 1）。
-    int threadNum = 1;
-    if (argc >= 4) {
-        threadNum = atoi(argv[3]);
-        if (threadNum < 1) {
-            threadNum = 1;
+    AppConfig cfg;
+    std::string err;
+    if (!configPath.empty() && !config::loadConfigFile(configPath, &cfg, &err)) {
+        std::cerr << err << std::endl;
+        exit(1);
+    }
+    if (!config::applyCliOverrides(&cfg, posIp, posPort, posThreads, &err)) {
+        std::cerr << err << std::endl;
+        exit(1);
+    }
+    config::applyEnvOverrides(&cfg);
+
+    auto& connPool = ConnectionPool::getInstance();
+    connPool.init(cfg.db.host, cfg.db.user, cfg.db.password, cfg.db.dbname,
+                  cfg.db.port, cfg.db.poolSize);
+
+    int shutdownTimeoutMs = 5000;
+    const char* timeoutEnv = getenv("CHAT_SHUTDOWN_TIMEOUT_MS");
+    if (timeoutEnv) {
+        int v = atoi(timeoutEnv);
+        if (v > 0) {
+            shutdownTimeoutMs = v;
         }
     }
 
-    auto& connPool = ConnectionPool::getInstance();
-    const char* dbPassword = getenv("DB_PASSWORD");
-    if (!dbPassword) {
-        dbPassword = "123456";
-        std::cerr << "Warning: DB_PASSWORD environment variable not set, using default password '123456'" << std::endl;
-    }
-    connPool.init("127.0.0.1", "root", dbPassword, "chat", 3306, 5);
-
     EventLoop loop;
-    InetAddress addr(port, ip);
-    std::cout << "Server starting on " << ip << ":" << port << " (v1 newline JSON)" << std::endl;
+    InetAddress addr(cfg.v1.port, cfg.v1.ip.c_str());
+    std::cout << "Server starting on " << cfg.v1.ip << ":" << cfg.v1.port
+              << " (v1 newline JSON, threads=" << cfg.v1.threads << ")" << std::endl;
     ChatServer server(&loop, addr, "ChatServer", ProtocolCodec::LegacyLine);
-    server.setThreadNum(threadNum);
+    server.setThreadNum(cfg.v1.threads);
 
-    InetAddress v2Addr(7000, ip);
-    std::cout << "Server starting on " << ip << ":7000 (v2 binary)" << std::endl;
+    InetAddress v2Addr(cfg.v2.port, cfg.v2.ip.c_str());
+    std::cout << "Server starting on " << cfg.v2.ip << ":" << cfg.v2.port
+              << " (v2 binary, threads=" << cfg.v1.threads << ")" << std::endl;
     ChatServer v2Server(&loop, v2Addr, "ChatServerV2", ProtocolCodec::BinaryFrame);
-    v2Server.setThreadNum(threadNum);
+    v2Server.setThreadNum(cfg.v1.threads);
 
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, gSignalFds) < 0) {
         std::cerr << "socketpair failed" << std::endl;
@@ -96,24 +172,24 @@ int main(int argc, char** argv) {
     signal(SIGTERM, signalHandler);
     signal(SIGPIPE, SIG_IGN);
 
+    ShutdownFlow flow;
     Channel sigChannel(&loop, gSignalFds[0]);
-    sigChannel.setReadCallback([&loop, &server, &v2Server](Timestamp) {
+    sigChannel.setReadCallback([&loop, &server, &v2Server, shutdownTimeoutMs, &flow](Timestamp) {
         char buf[16];
         while (::read(gSignalFds[0], buf, sizeof buf) > 0)
         {
         }
-        beginShutdown(&loop, &server, &v2Server);
+        beginShutdown(&loop, &server, &v2Server, shutdownTimeoutMs, &flow);
     });
     sigChannel.enableReading();
 
     std::cout << "Server started, entering event loop" << std::endl;
-    ChatService::instance()->bindLoop(&loop);
+    ChatService::instance()->bindLoop(&loop, cfg.executor.workers,
+                                      cfg.executor.queueCapacity);
     server.start();
     v2Server.start();
     loop.loop();
 
-    // worker 有界退出（在 EventLoop 对象销毁前）。
-    ChatService::instance()->shutdownApp();
-    std::cout << "Server exited" << std::endl;
+    std::cout << "EXITED" << std::endl;
     return 0;
 }

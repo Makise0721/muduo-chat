@@ -52,7 +52,8 @@ public:
 
     // P2-05：EventLoop 绑定与阻塞执行器（main 在服务器启动前调用；
     // 退出前调用 shutdownApp 使 worker 有界退出）。
-    void bindLoop(EventLoop* loop);
+    // P2-09：executor 容量来自配置（workers/queueCapacity，>=1）。
+    void bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity);
     void shutdownApp();
 
 private:

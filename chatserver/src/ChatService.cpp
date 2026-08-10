@@ -112,12 +112,12 @@ void loadLoginExtras(ChatApplication* app, LoginDbResult* r)
 
 } // namespace
 
-void ChatService::bindLoop(EventLoop* loop)
+void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity)
 {
     _loop = loop;
     // 单 worker：同一连接的串行依赖（如 addFriend 后立即重复 add）按提交顺序
     // 执行；多 worker 会乱序破坏业务语义（P2-10 性能评估后再分片扩并）。
-    _executor.reset(new BlockingExecutor(loop, 1, 64));
+    _executor.reset(new BlockingExecutor(loop, executorWorkers, executorQueueCapacity));
 }
 
 void ChatService::shutdownApp()

@@ -24,6 +24,7 @@ add_subdirectory(mymuduo)
 add_library(chatserver_core STATIC
     chatserver/src/app/BlockingExecutor.cpp
     chatserver/src/app/ChatApplication.cpp
+    chatserver/src/app/Config.cpp
     chatserver/src/app/InMemoryFriendRepository.cpp
     chatserver/src/app/InMemoryGroupRepository.cpp
     chatserver/src/app/InMemoryMessageRepository.cpp

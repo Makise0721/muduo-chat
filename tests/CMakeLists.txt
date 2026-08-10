@@ -144,6 +144,10 @@ target_include_directories(MultiReactorTest PRIVATE ${PROJECT_SOURCE_DIR}/mymudu
 target_link_libraries(MultiReactorTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
 set_target_properties(MultiReactorTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(ConfigTest unit/ConfigTest.cpp)
+target_link_libraries(ConfigTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(ConfigTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -172,7 +176,17 @@ add_test(NAME MultiReactorProcess
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(MultiReactorProcess PROPERTIES TIMEOUT 360)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest)
+add_test(NAME shutdown-order
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/shutdown_order_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(shutdown-order PROPERTIES TIMEOUT 90)
+
+add_test(NAME config-fail-fast
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/config_fail_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(config-fail-fast PROPERTIES TIMEOUT 90)
+
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(BufferTest)
@@ -203,3 +217,4 @@ discover_gtest(MessageRepositoryContractTest)
 discover_gtest(OfflineMessageTest)
 discover_gtest(MessageApplicationTest)
 discover_gtest(MultiReactorTest)
+discover_gtest(ConfigTest)
