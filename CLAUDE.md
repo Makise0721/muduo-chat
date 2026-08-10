@@ -11,16 +11,29 @@ This repository contains a chat server system built on a custom C++ networking l
 The project uses CMake (3.10+) and requires C++11. Dependencies: MySQL client library, pthreads.
 
 ### Standard Build
+
+Out-of-source builds only; the repo tree must stay clean before/after building. Build in WSL (Ubuntu); all artifacts go to the binary tree:
+
 ```bash
-mkdir build && cd build
-cmake ..
-make
+# from the repo root (WSL), after a `sleep 2` following any edit to /mnt/d files
+cmake --fresh -S . -B ~/muduo-chat-build/debug -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON
+cmake --build ~/muduo-chat-build/debug --parallel
+ctest --test-dir ~/muduo-chat-build/debug --output-on-failure
 ```
 
-Outputs:
-- `bin/ChatServer` - main chat server executable
-- `bin/ChatClient` - simple test client
-- `mymuduo/lib/libmymuduo.so` - networking library shared object
+Outputs (inside the binary tree, never the source tree):
+- `~/muduo-chat-build/debug/bin/ChatServer` - main chat server executable
+- `~/muduo-chat-build/debug/bin/ChatClient` - simple test client
+- `~/muduo-chat-build/debug/lib/libmymuduo.so` - networking library shared object
+
+### Test & Sanitizer Gates
+
+- Unit tests: GoogleTest via CTest (test targets are compiled with C++14 because gtest 1.14 requires it).
+- ASan+UBSan tree: `~/muduo-chat-build/asan` with `-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer` (+ matching linker flags).
+- TSan tree: `~/muduo-chat-build/tsan` with `-fsanitize=thread`; **must run** `setarch x86_64 -R ctest --test-dir ~/muduo-chat-build/tsan ...` (WSL needs ASLR disabled).
+- Every task follows the RED→GREEN→full-regression→sanitizer→`git diff --check` gates in `docs/IMPLEMENTATION_SOP.md`; the build dirs move to `~/muduo-chat-build/*` (a WSL instance recycle wiped the old `/tmp/muduo-chat-build/*`).
+- Transient GCC 13.3 ICEs in `ChatService.cpp` (JSON template) are known; rerun the build.
+- `git diff --check` must pass with no trailing whitespace (Markdown hard-break double-spaces were removed); use `git diff --check -- <scope>`.
 
 ### Build Notes
 - The top-level `CMakeLists.txt` compiles both `mymuduo` (as a shared library) and `chatserver` (executable) together.

@@ -1,9 +1,10 @@
 # muduo-chat 实施标准与执行手册
 
-状态：可执行草案  
-适用基线：`main` @ `1b94d43`  
-上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)  
-当前活动任务：P1-07 `VERIFIED`（五轮对抗审查通过，待提交）；下一任务 P2-01（ChatApplication 纵向切片）
+状态：可执行草案
+适用基线：`main` @ `00db852`
+上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
+收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
+当前活动任务：P1 整体为 `REMEDIATION`（见 [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)，执行 P1R-00→P1R-09）；下一任务 P1R-00
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 
@@ -116,13 +117,14 @@ WSL 默认 Git 当前把大量 CRLF 工作树文件识别为修改，而 Windows
 
 ### 4.2 P0-00 后的标准构建位置
 
-所有构建写到 WSL ext4 临时目录，避免污染仓库并减少 `/mnt/d` 的小文件 I/O：
+所有构建写到 WSL ext4 目录（2026-08-09 WSL 实例回收 `/tmp` 后，从 `/tmp/muduo-chat-build/*`
+迁移至 `~/muduo-chat-build/*`；历史 `/tmp` 构建树已丢失，勿再引用）：
 
 ```text
-/tmp/muduo-chat-build/debug
-/tmp/muduo-chat-build/asan
-/tmp/muduo-chat-build/tsan
-/tmp/muduo-chat-build/release
+~/muduo-chat-build/debug
+~/muduo-chat-build/asan
+~/muduo-chat-build/tsan
+~/muduo-chat-build/release
 ```
 
 CMake 的 runtime/library/archive 输出必须位于对应 binary tree，例如：
@@ -248,25 +250,28 @@ flowchart LR
 
 以下命令从 PowerShell 执行；P0-00 完成前只运行 configure。
 
+通用注记：编辑 `/mnt/d`（DrvFs）文件后先 `sleep 2` 再构建（mtime 秒级精度，make 可能误判
+up-to-date）；GCC 13.3 在 `ChatService.cpp`（JSON 模板）偶发 transient ICE，重试构建即可。
+
 ### 7.1 Debug
 
 ```powershell
 wsl.exe -d Ubuntu --cd /mnt/d/agent_learning/muduo-chat `
-  cmake --fresh -S . -B /tmp/muduo-chat-build/debug `
+  cmake --fresh -S . -B ~/muduo-chat-build/debug `
   -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON
 
 wsl.exe -d Ubuntu -- `
-  cmake --build /tmp/muduo-chat-build/debug --parallel
+  cmake --build ~/muduo-chat-build/debug --parallel
 
 wsl.exe -d Ubuntu -- `
-  ctest --test-dir /tmp/muduo-chat-build/debug --output-on-failure
+  ctest --test-dir ~/muduo-chat-build/debug --output-on-failure
 ```
 
 ### 7.2 聚焦测试
 
 ```powershell
 wsl.exe -d Ubuntu -- `
-  ctest --test-dir /tmp/muduo-chat-build/debug `
+  ctest --test-dir ~/muduo-chat-build/debug `
   -R 'Buffer|EventLoop|TcpConnection' --output-on-failure
 ```
 
@@ -276,36 +281,39 @@ wsl.exe -d Ubuntu -- `
 
 ```powershell
 wsl.exe -d Ubuntu --cd /mnt/d/agent_learning/muduo-chat `
-  cmake --fresh -S . -B /tmp/muduo-chat-build/asan `
+  cmake --fresh -S . -B ~/muduo-chat-build/asan `
   -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON `
   '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' `
   '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined' `
   '-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined'
 
 wsl.exe -d Ubuntu -- `
-  cmake --build /tmp/muduo-chat-build/asan --parallel
+  cmake --build ~/muduo-chat-build/asan --parallel
 
 wsl.exe -d Ubuntu -- `
-  ctest --test-dir /tmp/muduo-chat-build/asan --output-on-failure
+  ctest --test-dir ~/muduo-chat-build/asan --output-on-failure
 ```
 
 ### 7.4 TSan
 
 ```powershell
 wsl.exe -d Ubuntu --cd /mnt/d/agent_learning/muduo-chat `
-  cmake --fresh -S . -B /tmp/muduo-chat-build/tsan `
+  cmake --fresh -S . -B ~/muduo-chat-build/tsan `
   -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON `
   '-DCMAKE_CXX_FLAGS=-fsanitize=thread -fno-omit-frame-pointer' `
   '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread' `
   '-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread'
 
 wsl.exe -d Ubuntu -- `
-  cmake --build /tmp/muduo-chat-build/tsan --parallel
+  cmake --build ~/muduo-chat-build/tsan --parallel
 
 wsl.exe -d Ubuntu -- `
-  ctest --test-dir /tmp/muduo-chat-build/tsan `
+  setarch x86_64 -R ctest --test-dir ~/muduo-chat-build/tsan `
   -L concurrency --output-on-failure
 ```
+
+TSan 运行必须加 `setarch x86_64 -R`（禁用 WSL 地址随机化，否则 TSan 报影子内存
+不兼容）；关键并发套件建议 `--repeat until-fail:20`。
 
 ASan 与 TSan 不混在同一 binary tree。若 TSan 在 WSL 内核上出现运行时自身不兼容，必须保存原始错误并转移到 Linux CI/裸机验证，不能标记通过。
 
@@ -337,6 +345,9 @@ CMake 中使用 `find_package(GTest CONFIG REQUIRED)`；不要同时维护“系
 
 ## 9. P0 可执行队列
 
+> 注：P0 已全部完成并提交（`63a76ed`..`703ef9f`），本节保留为历史基线；状态、证据与
+> 提交见 `IMPLEMENTATION_PROGRESS.md`。
+
 P0 的任务顺序固定如下：
 
 ```text
@@ -349,7 +360,7 @@ P0-00 构建产物隔离
 
 ### 9.1 P0-00 构建产物隔离
 
-状态：`PLANNED`，下一任务。
+状态：`VERIFIED`（提交 63a76ed；本节为历史计划保留）。
 
 **目的**
 

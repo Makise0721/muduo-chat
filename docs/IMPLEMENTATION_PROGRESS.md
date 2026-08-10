@@ -34,4 +34,10 @@
 | P1-05 过载保护与优雅退出 | VERIFIED | `ctest -R TcpServerTest` 1/1；Debug 69/69；ASan 69/69；进程级 SIGINT/SIGTERM 双路径 smoke（DRAINED 快路径 + 5s 硬截止 pending=1 打印）；已提交 6fcdf3c + 8c3edf9 |
 | P1-06 异步结构化日志 | VERIFIED | `ctest -R LoggerTest` 4/4；Debug 73/73；ASan 73/73；TSan LoggerTest 干净（在案 #4 关闭）；已提交 3c25557 |
 | P1-06A EventLoop/TimerQueue fd 生命周期竞态修复 | VERIFIED | **TSan 全量 73/73 ×2 轮全绿**（全部在案竞态关闭）；Debug/ASan 73/73；已提交 6f29a1c |
-| P1-07 对抗审查修复批次 | VERIFIED | Debug/ASan 78/78；TSan 78/78 ×2 无 WARNING；**五轮双轴对抗审查闭环通过**（TimerQueue 竞争、Logger 级别语义、FATAL 不可丢、hard 关闭路径、Closed 断言、acceptErrorCount、幂等退出）；待提交 |
+| P1-07 对抗审查修复批次 | VERIFIED | Debug/ASan 78/78；TSan 78/78 ×2 无 WARNING；**五轮双轴对抗审查闭环通过**（TimerQueue 竞争、Logger 级别语义、FATAL 不可丢、hard 关闭路径、Closed 断言、acceptErrorCount、幂等退出）；已提交 00db852 |
+
+> **P1 整体状态：`REMEDIATION`**（2026-08-10 完成性审查判不通过，见
+> [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)；
+> 整改计划 [POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)，
+> 执行 P1R-00→P1R-09 后重新验收。上表各 P1 任务的历史验证记录保持有效，
+> 不代表 P1 整体完成性验收通过。）
