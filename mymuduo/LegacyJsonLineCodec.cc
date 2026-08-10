@@ -39,8 +39,14 @@ bool LegacyJsonLineCodec::decode(Buffer *input, std::string *message)
     }
 }
 
-void LegacyJsonLineCodec::encode(const std::string &message, Buffer *output)
+EncodeResult LegacyJsonLineCodec::encode(const std::string &message, Buffer *output)
 {
     output->append(message.data(), message.size());
     output->append("\n", 1);
+    return EncodeResult::Ok;
+}
+
+size_t LegacyJsonLineCodec::encodedSize(size_t payloadBytes) const
+{
+    return payloadBytes + 1;
 }

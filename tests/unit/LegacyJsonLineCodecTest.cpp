@@ -68,6 +68,7 @@ TEST(LegacyJsonLineCodecTest, EncodeAppendsNewline)
 {
     LegacyJsonLineCodec codec;
     Buffer out;
-    codec.encode("{\"msgid\":1}", &out);
+    EXPECT_EQ(EncodeResult::Ok, codec.encode("{\"msgid\":1}", &out));
     EXPECT_EQ("{\"msgid\":1}\n", out.retrieveAllAsString());
+    EXPECT_EQ(11u, codec.encodedSize(10));
 }

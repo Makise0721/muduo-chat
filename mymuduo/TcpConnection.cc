@@ -87,7 +87,10 @@ TcpConnection::SendResult TcpConnection::sendInLoop(std::string message)
     if (encoder_)
     {
         Buffer encoded;
-        encoder_(message, &encoded);
+        if (encoder_(message, &encoded) != EncodeResult::Ok)
+        {
+            return SendResult::TooLarge;
+        }
         return sendInLoop(encoded.peek(), encoded.readableBytes());
     }
     return sendInLoop(message.data(), message.size());

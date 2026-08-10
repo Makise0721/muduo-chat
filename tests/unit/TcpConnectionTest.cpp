@@ -173,6 +173,7 @@ TEST(TcpConnectionTest, OutputEncoderTransformsSentData)
                                                  output->append("ENC[", 4);
                                                  output->append(message.data(), message.size());
                                                  output->append("]", 1);
+                                                 return EncodeResult::Ok;
                                              });
                   });
     ASSERT_TRUE(h.waitReady());

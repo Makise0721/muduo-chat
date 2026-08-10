@@ -67,7 +67,7 @@ TEST(StreamCodecTest, EncodeGoldenBytes)
     frame.requestId = 0x01020304;
     frame.body = {'a', 'b', 'c', 'd'};
     Buffer out;
-    codec.encode(frame, &out);
+    EXPECT_EQ(EncodeResult::Ok, codec.encode(frame, &out));
     std::string got = out.retrieveAllAsString();
     const std::string expect(
         "\x4D\x43\x48\x54"
@@ -221,6 +221,112 @@ TEST(StreamCodecTest, NonZeroReservedIsProtocolError)
     Buffer buf = makeFrameBytes(2, 0, 20, 0, 1, 1, 1, 0);
     Frame frame;
     EXPECT_EQ(DecodeResult::ProtocolError, codec.decode(&buf, &frame));
+}
+
+TEST(StreamCodecTest, NonJsonContentTypeIsProtocolError)
+{
+    StreamCodec codec;
+    Buffer buf = makeFrameBytes(2, 0, 20, 0, 1, 0, 0, 0);
+    Frame frame;
+    EXPECT_EQ(DecodeResult::ProtocolError, codec.decode(&buf, &frame));
+}
+
+TEST(StreamCodecTest, EncodeBodyOverLimitIsTooLarge)
+{
+    StreamCodec codec;
+    Frame frame;
+    frame.magic = 0x4D434854;
+    frame.version = 2;
+    frame.flags = 0;
+    frame.headerLength = 20;
+    frame.bodyLength = 1024 * 1024 + 1;
+    frame.messageType = 1;
+    frame.contentType = 1;
+    frame.reserved = 0;
+    frame.requestId = 0;
+    frame.body.assign(1024 * 1024 + 1, 'x');
+    Buffer out;
+    EXPECT_EQ(EncodeResult::TooLarge, codec.encode(frame, &out));
+    EXPECT_EQ(0u, out.readableBytes());
+}
+
+TEST(StreamCodecTest, EncodeBodyLengthMismatchIsInvalidFrame)
+{
+    StreamCodec codec;
+    Frame frame;
+    frame.magic = 0x4D434854;
+    frame.version = 2;
+    frame.flags = 0;
+    frame.headerLength = 20;
+    frame.bodyLength = 4;
+    frame.messageType = 1;
+    frame.contentType = 1;
+    frame.reserved = 0;
+    frame.requestId = 0;
+    frame.body = {'a', 'b', 'c'};
+    Buffer out;
+    EXPECT_EQ(EncodeResult::InvalidFrame, codec.encode(frame, &out));
+    EXPECT_EQ(0u, out.readableBytes());
+}
+
+TEST(StreamCodecTest, EncodeRejectsBadHeaderFieldsWithoutTouchingOutput)
+{
+    StreamCodec codec;
+    struct Case
+    {
+        uint32_t magic;
+        uint8_t version;
+        uint8_t flags;
+        uint16_t headerLength;
+        uint8_t contentType;
+        uint8_t reserved;
+    };
+    const Case cases[] = {
+        {0xDEADBEEF, 2, 0, 20, 1, 0},
+        {0x4D434854, 1, 0, 20, 1, 0},
+        {0x4D434854, 2, 1, 20, 1, 0},
+        {0x4D434854, 2, 0, 21, 1, 0},
+        {0x4D434854, 2, 0, 20, 0, 0},
+        {0x4D434854, 2, 0, 20, 1, 1},
+    };
+    for (const Case &c : cases)
+    {
+        Frame frame;
+        frame.magic = c.magic;
+        frame.version = c.version;
+        frame.flags = c.flags;
+        frame.headerLength = c.headerLength;
+        frame.bodyLength = 1;
+        frame.messageType = 1;
+        frame.contentType = c.contentType;
+        frame.reserved = c.reserved;
+        frame.requestId = 0;
+        frame.body = {'z'};
+        Buffer out;
+        out.append("PRE", 3);
+        EXPECT_EQ(EncodeResult::InvalidFrame, codec.encode(frame, &out));
+        EXPECT_EQ(3u, out.readableBytes());
+        EXPECT_EQ("PRE", out.retrieveAllAsString());
+    }
+}
+
+TEST(StreamCodecTest, EncodeBodyAtLimitIsOk)
+{
+    StreamCodec codec;
+    Frame frame;
+    frame.magic = 0x4D434854;
+    frame.version = 2;
+    frame.flags = 0;
+    frame.headerLength = 20;
+    frame.bodyLength = 1024 * 1024;
+    frame.messageType = 1;
+    frame.contentType = 1;
+    frame.reserved = 0;
+    frame.requestId = 0;
+    frame.body.assign(1024 * 1024, 'x');
+    Buffer out;
+    EXPECT_EQ(EncodeResult::Ok, codec.encode(frame, &out));
+    EXPECT_EQ(1024 * 1024u + 20, out.readableBytes());
 }
 
 TEST(StreamCodecTest, RandomInputStormDoesNotCrash)

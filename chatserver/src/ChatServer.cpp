@@ -36,7 +36,7 @@ void ChatServer::onConnection(const TcpConnectionPtr& conn) {
         std::cout << "Connection established: " << conn->peerAddress().toIpPort() << std::endl;
         if (_codec == ProtocolCodec::BinaryFrame) {
             conn->setOutputEncoder([this](const std::string &message, Buffer *output) {
-                _frameCodec.encode(message, output);
+                return _frameCodec.encode(message, output);
             });
         }
     } else {
@@ -54,7 +54,7 @@ void ChatServer::onMessage(const TcpConnectionPtr& conn, Buffer* buffer, Timesta
             if (r == CodecResult::Message) {
                 ChatService::instance()->handler(conn, message, time);
             } else if (r == CodecResult::ProtocolError) {
-                conn->shutdown();
+                conn->forceClose();
                 return;
             } else {
                 return;

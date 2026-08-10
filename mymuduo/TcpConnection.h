@@ -10,6 +10,7 @@
 #include "InetAddress.h"
 #include "Callbacks.h"
 #include "Buffer.h"
+#include "StreamCodec.h"
 #include "Timestamp.h"
 #include "TimerQueue.h"
 #include "Logger.h"
@@ -72,7 +73,7 @@ public:
         highWaterMark_ = highWaterMark;
     }
 
-    using OutputEncoder = std::function<void(const std::string &message, Buffer *output)>;
+    using OutputEncoder = std::function<EncodeResult(const std::string &message, Buffer *output)>;
     void setOutputEncoder(const OutputEncoder &cb)
     {
         encoder_ = cb;

@@ -10,7 +10,7 @@ TEST(BinaryFrameCodecTest, EncodeDecodeRoundTrip)
 {
     BinaryFrameCodec codec;
     Buffer out;
-    codec.encode("{\"msgid\":1}", &out);
+    EXPECT_EQ(EncodeResult::Ok, codec.encode("{\"msgid\":1}", &out));
     std::string msg;
     EXPECT_EQ(CodecResult::Message, codec.decode(&out, &msg));
     EXPECT_EQ("{\"msgid\":1}", msg);
@@ -77,8 +77,26 @@ TEST(BinaryFrameCodecTest, EquivalenceWithLegacyContent)
 {
     BinaryFrameCodec codec;
     Buffer out;
-    codec.encode("{\"msgid\":1,\"name\":\"a\"}", &out);
+    EXPECT_EQ(EncodeResult::Ok, codec.encode("{\"msgid\":1,\"name\":\"a\"}", &out));
     std::string wire = out.retrieveAllAsString();
     EXPECT_GT(wire.size(), 20u);
     EXPECT_EQ('}', wire.back());
+}
+
+TEST(BinaryFrameCodecTest, EncodeOverLimitIsTooLargeWithoutOutput)
+{
+    BinaryFrameCodec codec(16);
+    Buffer out;
+    out.append("PRE", 3);
+    EXPECT_EQ(EncodeResult::TooLarge, codec.encode(std::string(17, 'x'), &out));
+    EXPECT_EQ(3u, out.readableBytes());
+    EXPECT_EQ("PRE", out.retrieveAllAsString());
+}
+
+TEST(BinaryFrameCodecTest, EncodedSizeIsPredictable)
+{
+    BinaryFrameCodec codec(1024);
+    EXPECT_EQ(24u, codec.encodedSize(4));
+    EXPECT_EQ(1024u + 20, codec.encodedSize(1024));
+    EXPECT_EQ(static_cast<size_t>(-1), codec.encodedSize(1025));
 }

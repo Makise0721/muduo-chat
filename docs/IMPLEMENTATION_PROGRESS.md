@@ -43,4 +43,5 @@
 > 不代表 P1 整体完成性验收通过。）
 
 | P1R-00 恢复事实、任务状态与审计边界 | VERIFIED | `git diff --check` exit 0；状态唯一（P1R-00 唯一 IN_PROGRESS→VERIFIED）；SOP 构建路径/TSan setarch/CLAUDE.md 同步；已提交 0156395 |
-| P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；待提交 |
+| P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；已提交 8e2673f |
+| P1R-02 Codec/编码结果契约 | VERIFIED | EncodeResult + OutputCodec（encodedSize/encode）；encode 全字段自校验（bodyLength==body.size、16MiB 上限、失败不改 output）；decode 拒非 JSON contentType；协议错误 force-close；Debug/ASan/TSan 86/86 ×TSan 两轮无 WARNING；进程 smoke ALL_PASS（坏帧 EOF + v1/v2 注册登录等价）；待提交 |

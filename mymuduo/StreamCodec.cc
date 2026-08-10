@@ -89,6 +89,10 @@ DecodeResult StreamCodec::decode(Buffer *input, Frame *frame)
     {
         return DecodeResult::ProtocolError;
     }
+    if (contentType != kContentTypeJson)
+    {
+        return DecodeResult::ProtocolError;
+    }
     if (input->readableBytes() < kHeaderLength + bodyLength)
     {
         return DecodeResult::NeedMore;
@@ -108,8 +112,23 @@ DecodeResult StreamCodec::decode(Buffer *input, Frame *frame)
     return DecodeResult::FrameReady;
 }
 
-void StreamCodec::encode(const Frame &frame, Buffer *output)
+EncodeResult StreamCodec::encode(const Frame &frame, Buffer *output)
 {
+    if (frame.magic != kMagic || frame.version != kVersion ||
+        frame.headerLength != kHeaderLength || frame.flags != 0 ||
+        frame.reserved != 0 || frame.contentType != kContentTypeJson)
+    {
+        return EncodeResult::InvalidFrame;
+    }
+    if (frame.bodyLength != frame.body.size())
+    {
+        return EncodeResult::InvalidFrame;
+    }
+    if (frame.body.size() > maxBodyLength_)
+    {
+        return EncodeResult::TooLarge;
+    }
+
     char header[20] = {0};
     writeBe32(header, frame.magic);
     header[4] = static_cast<char>(frame.version);
@@ -125,4 +144,5 @@ void StreamCodec::encode(const Frame &frame, Buffer *output)
     {
         output->append(frame.body.data(), frame.body.size());
     }
+    return EncodeResult::Ok;
 }

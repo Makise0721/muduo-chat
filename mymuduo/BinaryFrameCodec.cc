@@ -3,7 +3,10 @@
 #include "Buffer.h"
 
 BinaryFrameCodec::BinaryFrameCodec(uint32_t maxBodyLength)
-    : codec_(maxBodyLength)
+    : codec_(maxBodyLength),
+      maxBodyLength_(maxBodyLength < StreamCodec::kHardMaxBodyLength
+                         ? maxBodyLength
+                         : StreamCodec::kHardMaxBodyLength)
 {
 }
 
@@ -23,8 +26,12 @@ CodecResult BinaryFrameCodec::decode(Buffer *input, std::string *message)
     }
 }
 
-void BinaryFrameCodec::encode(const std::string &message, Buffer *output)
+EncodeResult BinaryFrameCodec::encode(const std::string &message, Buffer *output)
 {
+    if (message.size() > maxBodyLength_)
+    {
+        return EncodeResult::TooLarge;
+    }
     Frame frame;
     frame.magic = StreamCodec::kMagic;
     frame.version = StreamCodec::kVersion;
@@ -35,5 +42,14 @@ void BinaryFrameCodec::encode(const std::string &message, Buffer *output)
     frame.reserved = 0;
     frame.requestId = 0;
     frame.body.assign(message.begin(), message.end());
-    codec_.encode(frame, output);
+    return codec_.encode(frame, output);
+}
+
+size_t BinaryFrameCodec::encodedSize(size_t payloadBytes) const
+{
+    if (payloadBytes > maxBodyLength_)
+    {
+        return static_cast<size_t>(-1);
+    }
+    return StreamCodec::kHeaderLength + payloadBytes;
 }

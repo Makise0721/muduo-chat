@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 #include "StreamCodec.h"
@@ -13,14 +14,16 @@ enum class CodecResult
     ProtocolError,
 };
 
-class BinaryFrameCodec
+class BinaryFrameCodec : public OutputCodec
 {
 public:
     explicit BinaryFrameCodec(uint32_t maxBodyLength = StreamCodec::kDefaultMaxBodyLength);
 
     CodecResult decode(Buffer *input, std::string *message);
-    void encode(const std::string &message, Buffer *output);
+    EncodeResult encode(const std::string &message, Buffer *output) override;
+    size_t encodedSize(size_t payloadBytes) const override;
 
 private:
     StreamCodec codec_;
+    uint32_t maxBodyLength_;
 };

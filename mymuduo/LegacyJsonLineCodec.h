@@ -1,12 +1,16 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
+
+#include "StreamCodec.h"
 
 class Buffer;
 
-class LegacyJsonLineCodec
+class LegacyJsonLineCodec : public OutputCodec
 {
 public:
     bool decode(Buffer *input, std::string *message);
-    void encode(const std::string &message, Buffer *output);
+    EncodeResult encode(const std::string &message, Buffer *output) override;
+    size_t encodedSize(size_t payloadBytes) const override;
 };

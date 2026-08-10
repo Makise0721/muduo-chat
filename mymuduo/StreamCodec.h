@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 class Buffer;
@@ -11,6 +12,13 @@ enum class DecodeResult
     FrameReady,
     UnsupportedVersion,
     ProtocolError,
+};
+
+enum class EncodeResult
+{
+    Ok,
+    TooLarge,
+    InvalidFrame,
 };
 
 struct Frame
@@ -40,8 +48,17 @@ public:
     explicit StreamCodec(uint32_t maxBodyLength = kDefaultMaxBodyLength);
 
     DecodeResult decode(Buffer *input, Frame *frame);
-    void encode(const Frame &frame, Buffer *output);
+    EncodeResult encode(const Frame &frame, Buffer *output);
 
 private:
     uint32_t maxBodyLength_;
+};
+
+class OutputCodec
+{
+public:
+    virtual ~OutputCodec() = default;
+
+    virtual size_t encodedSize(size_t payloadBytes) const = 0;
+    virtual EncodeResult encode(const std::string &message, Buffer *output) = 0;
 };
