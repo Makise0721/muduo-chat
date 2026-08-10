@@ -15,6 +15,7 @@
 #include "app/MySQLUserRepository.hpp"
 #include "app/MySQLFriendRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
+#include "app/MySQLMessageRepository.hpp"
 
 using json = nlohmann::json;
 using namespace std;
@@ -65,6 +66,7 @@ private:
     MySQLUserRepository _mysqlUsers;
     MySQLFriendRepository _mysqlFriends;
     MySQLGroupRepository _mysqlGroups;
+    MySQLMessageRepository _mysqlMessages;
     ChatApplication _app;
     EventLoop* _loop = nullptr;
     std::unique_ptr<BlockingExecutor> _executor;

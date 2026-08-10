@@ -3,18 +3,21 @@
 #include "app/Command.hpp"
 #include "app/FriendRepository.hpp"
 #include "app/GroupRepository.hpp"
+#include "app/MessageRepository.hpp"
 #include "app/Reply.hpp"
 #include "app/UserRepository.hpp"
 
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <vector>
 
 // 应用边界（P2 纵向切片入口）：网络层只转 codec 到 SessionContext/Command，
 // 不接触 MySQL 类型；用例编排在本层。
 class ChatApplication {
 public:
-    ChatApplication(UserRepository* users, FriendRepository* friends, GroupRepository* groups);
+    ChatApplication(UserRepository* users, FriendRepository* friends,
+                    GroupRepository* groups, MessageRepository* messages);
 
     void handle(const SessionContext& ctx, const Command& cmd, Reply* reply);
 
@@ -30,6 +33,9 @@ public:
     CreateGroupResult createGroup(int64_t ownerId, const std::string& name,
                                   const std::string& desc);
     JoinGroupResult joinGroup(int64_t groupId, int64_t userId);
+    MembersResult groupMembers(int64_t groupId);
+    StoreResult storeOfflineMessage(int64_t userId, const std::string& payload);
+    std::vector<OfflineMessage> takeOfflineMessages(int64_t userId);
 
 private:
     void registerUser(const Command& cmd, Reply* reply);
@@ -37,6 +43,7 @@ private:
     UserRepository* users_;
     FriendRepository* friends_;
     GroupRepository* groups_;
+    MessageRepository* messages_;
     mutable std::mutex sessionMutex_;
     std::map<int64_t, int64_t> generations_;
 };

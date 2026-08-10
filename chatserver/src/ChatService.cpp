@@ -14,7 +14,8 @@ ChatService::ChatService()
     : _mysqlUsers(ConnectionPool::getInstance()),
       _mysqlFriends(ConnectionPool::getInstance()),
       _mysqlGroups(ConnectionPool::getInstance()),
-      _app(&_mysqlUsers, &_mysqlFriends, &_mysqlGroups) {
+      _mysqlMessages(ConnectionPool::getInstance()),
+      _app(&_mysqlUsers, &_mysqlFriends, &_mysqlGroups, &_mysqlMessages) {
     _msgHandlerMap.insert({LOGIN_MSG, bind(&ChatService::login, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({REG_MSG, bind(&ChatService::reg, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({LOGINOUT_MSG, bind(&ChatService::loginout, this, placeholders::_1, placeholders::_2, placeholders::_3)});
@@ -71,8 +72,10 @@ struct LoginDbResult {
     std::vector<std::string> offlineMessages;
 };
 
-// 在 worker 线程执行：认证通过后查询好友列表与离线消息（SQL 与 P2-05 前一致）。
-void loadLoginExtras(LoginDbResult* r)
+// 在 worker 线程执行：认证通过后查询好友列表与离线消息。
+// 好友列表查询为 P2-06 后遗留的原生 SQL；离线消息经 MessageRepository 读取
+// （补投后队列清空）。
+void loadLoginExtras(ChatApplication* app, LoginDbResult* r)
 {
     auto& connPool = ConnectionPool::getInstance();
     ConnectionPool::AcquireResult acq = connPool.acquire(5000);
@@ -101,22 +104,10 @@ void loadLoginExtras(LoginDbResult* r)
         }
     }
 
-    snprintf(sql, sizeof(sql), "SELECT message FROM OfflineMessage WHERE userid = %d",
-             static_cast<int>(r->auth.id));
-    MYSQL_RES* resOffline = mysql->query(sql);
-    if (resOffline) {
-        MySQLResultGuard guardOffline(resOffline);
-        MYSQL_ROW rowOff;
-        while ((rowOff = mysql_fetch_row(resOffline)) != nullptr) {
-            if (rowOff[0]) {
-                r->offlineMessages.push_back(rowOff[0]);
-            }
-        }
+    std::vector<OfflineMessage> offline = app->takeOfflineMessages(r->auth.id);
+    for (size_t i = 0; i < offline.size(); ++i) {
+        r->offlineMessages.push_back(offline[i].payload);
     }
-
-    snprintf(sql, sizeof(sql), "DELETE FROM OfflineMessage WHERE userid = %d",
-             static_cast<int>(r->auth.id));
-    mysql->update(sql);
 }
 
 } // namespace
@@ -158,7 +149,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
             // state 只读不改：单会话以 _userConnMap（活动连接）为真相，
             // 断开残留的 DB online 由 completion 区分处理。
             if (result->auth.ok && _app.isSessionCurrent(id, gen)) {
-                loadLoginExtras(result.get());
+                loadLoginExtras(&_app, result.get());
             }
         },
         [this, conn, id, gen, result] {
@@ -271,6 +262,7 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
         lock_guard<mutex> lock(_connMutex);
         auto it = _userConnMap.find(toid);
         if (it != _userConnMap.end()) {
+            // 目标在线：原样转发（内存操作，无 SQL），随后回发送者确认。
             it->second->send(js.dump() + "\n");
             json response = js;
             response["errno"] = 0;
@@ -278,25 +270,23 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
             return;
         }
     }
-    
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+
+    // 目标离线：异步入队（Reply errno=0 表示"服务器已接受"，非"对端已收到"）。
+    if (!_executor) {
         json response = js;
         response["errno"] = 1;
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    
-    char sql[1024] = {0};
-    std::string escapedMsg = escapeString(mysql->getConnection(), js.dump());
-    snprintf(sql, sizeof(sql), "INSERT INTO OfflineMessage VALUES(NULL, %d, '%s')", toid, escapedMsg.c_str());
-    bool ok = mysql->update(sql);
-
-    json response = js;
-    response["errno"] = ok ? 0 : 1;
-    conn->send(response.dump() + "\n");
+    std::string payload = js.dump();
+    auto result = std::make_shared<StoreResult>();
+    _executor->submit(
+        [this, toid, payload, result] { *result = _app.storeOfflineMessage(toid, payload); },
+        [conn, js, result] {
+            json response = js;
+            response["errno"] = result->ok ? 0 : 1;
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -375,61 +365,51 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
     int userid = js["id"].get<int>();
     int groupid = js["groupid"].get<int>();
 
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+    if (!_executor) {
         json response = js;
         response["errno"] = 1;
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    char sql[1024] = {0};
-    snprintf(sql, sizeof(sql), "SELECT userid FROM GroupUser WHERE groupid = %d AND userid != %d", groupid, userid);
-
-    MYSQL_RES* res = mysql->query(sql);
-    if (res != nullptr) {
-        MySQLResultGuard guard(res);
-        std::vector<int> toids;
-        MYSQL_ROW row;
-        while ((row = mysql_fetch_row(res)) != nullptr) {
-            toids.push_back(atoi(row[0]));
-        }
-
-        // 收集在线用户的连接指针和ID集合
-        std::vector<std::pair<int, TcpConnectionPtr>> onlineUsers;
-        std::unordered_set<int> onlineIds;
-        {
-            lock_guard<mutex> lock(_connMutex);
-            for (int toid : toids) {
-                auto it = _userConnMap.find(toid);
-                if (it != _userConnMap.end()) {
-                    onlineUsers.emplace_back(toid, it->second);
-                    onlineIds.insert(toid);
+    auto members = std::make_shared<MembersResult>();
+    _executor->submit(
+        [this, groupid, members] { *members = _app.groupMembers(groupid); },
+        [this, conn, js, userid, members] {
+            std::string payload = js.dump();
+            // 在线成员：锁内拷贝连接后原样转发（内存操作，无 SQL）。
+            std::vector<TcpConnectionPtr> onlineUsers;
+            std::unordered_set<int64_t> onlineIds;
+            {
+                lock_guard<mutex> lock(_connMutex);
+                for (int64_t toid : members->userIds) {
+                    if (toid == userid) {
+                        continue;  // 发送者不接收
+                    }
+                    auto it = _userConnMap.find(toid);
+                    if (it != _userConnMap.end()) {
+                        onlineUsers.push_back(it->second);
+                        onlineIds.insert(toid);
+                    }
                 }
             }
-        }
-
-        // 发送消息给在线用户
-        std::string msg = js.dump() + "\n";
-        for (auto& userPair : onlineUsers) {
-            userPair.second->send(msg);
-        }
-
-        // 处理离线用户
-        std::string escapedMsg = escapeString(mysql->getConnection(), js.dump());
-        for (int toid : toids) {
-            if (onlineIds.find(toid) == onlineIds.end()) {
-                snprintf(sql, sizeof(sql), "INSERT INTO OfflineMessage VALUES(NULL, %d, '%s')", toid, escapedMsg.c_str());
-                mysql->update(sql);
+            std::string msg = payload + "\n";
+            for (const TcpConnectionPtr& target : onlineUsers) {
+                target->send(msg);
             }
-        }
-    }
-
-    // 给群聊发送者一个确认，避免客户端阻塞等待
-    json response = js;
-    response["errno"] = 0;
-    conn->send(response.dump() + "\n");
+            // 离线成员：异步入队（每条一个任务，单 worker FIFO 保序）。
+            for (int64_t toid : members->userIds) {
+                if (toid == userid || onlineIds.find(toid) != onlineIds.end()) {
+                    continue;
+                }
+                _executor->submit(
+                    [this, toid, payload] { _app.storeOfflineMessage(toid, payload); },
+                    [] {});
+            }
+            // 给群聊发送者一个确认，避免客户端阻塞等待（B-19：查询失败也回 0）。
+            json response = js;
+            response["errno"] = 0;
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::clientCloseException(const TcpConnectionPtr& conn) {

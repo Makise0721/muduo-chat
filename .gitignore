@@ -4,3 +4,4 @@ mymuduo/lib/
 .vscode/
 *.o
 *.py
+!tests/scripts/*.py

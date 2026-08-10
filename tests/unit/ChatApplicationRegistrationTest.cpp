@@ -1,6 +1,7 @@
 #include "app/ChatApplication.hpp"
 #include "app/InMemoryFriendRepository.hpp"
 #include "app/InMemoryGroupRepository.hpp"
+#include "app/InMemoryMessageRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
 #include "app/UserRepository.hpp"
 
@@ -25,7 +26,8 @@ TEST(ChatApplicationRegistrationTest, RegistersUserWithFreshId)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand("alice", "pw"), &reply);
@@ -43,7 +45,8 @@ TEST(ChatApplicationRegistrationTest, DuplicateNameRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand("alice", "pw"), &reply);
@@ -59,7 +62,8 @@ TEST(ChatApplicationRegistrationTest, EmptyNameRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand("", "pw"), &reply);
@@ -71,7 +75,8 @@ TEST(ChatApplicationRegistrationTest, EmptyPasswordRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand("alice", ""), &reply);
@@ -83,7 +88,8 @@ TEST(ChatApplicationRegistrationTest, OversizedNameRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand(std::string(51, 'n'), "pw"), &reply);
@@ -116,7 +122,8 @@ TEST(ChatApplicationRegistrationTest, RepositoryFailureMapsToRegisterFailed)
     InMemoryUserRepository dummyUsers;
     InMemoryFriendRepository dummyFriends(dummyUsers);
     InMemoryGroupRepository dummyGroups(dummyUsers);
-    ChatApplication app(&users, &dummyFriends, &dummyGroups);
+    InMemoryMessageRepository dummyMessages;
+    ChatApplication app(&users, &dummyFriends, &dummyGroups, &dummyMessages);
     SessionContext ctx;
     Reply reply;
     app.handle(ctx, registerCommand("alice", "pw"), &reply);
@@ -129,7 +136,8 @@ TEST(ChatApplicationRegistrationTest, UnsupportedCommandRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    ChatApplication app(&users, &friends, &groups);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
     SessionContext ctx;
     Command cmd;
     cmd.type = Command::Type::Login;
