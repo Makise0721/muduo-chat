@@ -41,3 +41,6 @@
 > 整改计划 [POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)，
 > 执行 P1R-00→P1R-09 后重新验收。上表各 P1 任务的历史验证记录保持有效，
 > 不代表 P1 整体完成性验收通过。）
+
+| P1R-00 恢复事实、任务状态与审计边界 | VERIFIED | `git diff --check` exit 0；状态唯一（P1R-00 唯一 IN_PROGRESS→VERIFIED）；SOP 构建路径/TSan setarch/CLAUDE.md 同步；已提交 0156395 |
+| P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；待提交 |

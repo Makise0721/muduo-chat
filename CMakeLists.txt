@@ -3,6 +3,7 @@ project(ChatServer)
 
 option(ENABLE_TESTS "Build unit tests" ON)
 include(CTest)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -std=c++11")
 
