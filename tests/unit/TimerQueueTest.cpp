@@ -279,6 +279,20 @@ TEST(TimerQueueTest, CancelFiredOnceTimerIsNoOp)
     EXPECT_NO_THROW(lt.loop->cancel(id));
 }
 
+TEST(TimerQueueTest, CancelFiredTimerRepeatedlyIsSafe)
+{
+    LoopThread lt;
+    for (int round = 0; round < 500; ++round)
+    {
+        std::promise<void> fired;
+        TimerId id = lt.loop->runAfter(1, [&fired] { fired.set_value(); });
+        EXPECT_EQ(std::future_status::ready,
+                  fired.get_future().wait_for(std::chrono::seconds(5)));
+        lt.loop->cancel(id);
+        lt.loop->cancel(id);
+    }
+}
+
 TEST(TimerQueueTest, LongCallbackKeepsPlannedPhase)
 {
     LoopThread lt;

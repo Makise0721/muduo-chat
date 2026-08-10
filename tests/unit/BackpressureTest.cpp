@@ -378,7 +378,7 @@ TEST(BackpressureTest, SendAfterForceCloseReturnsClosed)
     EXPECT_EQ(Disposition::Closed, r.disposition);
 }
 
-TEST(BackpressureTest, EmptyMessagesStillCountTowardBudget)
+TEST(BackpressureTest, EmptyMessagesDoNotLeakBudget)
 {
     signal(SIGPIPE, SIG_IGN);
     int fds[2];
@@ -396,14 +396,14 @@ TEST(BackpressureTest, EmptyMessagesStillCountTowardBudget)
     ASSERT_TRUE(h.waitReady());
 
     std::promise<void> done;
-    bool blocked = false;
+    bool blockedDuringEmpty = false;
     h.loop->runInLoop([&]
                       {
                           for (int i = 0; i < 4096; ++i)
                           {
                               if (isWouldBlock(h.conn->send(std::string())))
                               {
-                                  blocked = true;
+                                  blockedDuringEmpty = true;
                                   break;
                               }
                           }
@@ -411,7 +411,18 @@ TEST(BackpressureTest, EmptyMessagesStillCountTowardBudget)
                       });
     EXPECT_EQ(std::future_status::ready,
               done.get_future().wait_for(std::chrono::seconds(5)));
-    EXPECT_TRUE(blocked);
+    EXPECT_FALSE(blockedDuringEmpty);
+
+    TcpConnection::SendOutcome r;
+    std::promise<void> done2;
+    h.loop->runInLoop([&]
+                      {
+                          r = h.conn->send(std::string(1024, 'z'));
+                          done2.set_value();
+                      });
+    EXPECT_EQ(std::future_status::ready,
+              done2.get_future().wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(Disposition::Accepted, r.disposition);
 }
 
 TEST(BackpressureTest, HardLimitCapOnlyModeStallsThenCloses)

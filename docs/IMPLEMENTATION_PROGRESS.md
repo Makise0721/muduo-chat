@@ -36,11 +36,10 @@
 | P1-06A EventLoop/TimerQueue fd 生命周期竞态修复 | VERIFIED | **TSan 全量 73/73 ×2 轮全绿**（全部在案竞态关闭）；Debug/ASan 73/73；已提交 6f29a1c |
 | P1-07 对抗审查修复批次 | VERIFIED | Debug/ASan 78/78；TSan 78/78 ×2 无 WARNING；**五轮双轴对抗审查闭环通过**（TimerQueue 竞争、Logger 级别语义、FATAL 不可丢、hard 关闭路径、Closed 断言、acceptErrorCount、幂等退出）；已提交 00db852 |
 
-> **P1 整体状态：`REMEDIATION`**（2026-08-10 完成性审查判不通过，见
-> [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)；
-> 整改计划 [POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)，
-> 执行 P1R-00→P1R-09 后重新验收。上表各 P1 任务的历史验证记录保持有效，
-> 不代表 P1 整体完成性验收通过。）
+> **P1 整体状态：`VERIFIED`**（2026-08-10 P1R-00..P1R-09 整改闭环，双轴最终审查无
+> P0/P1 未决项；见 [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)
+> 与 [POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)。P1 完成性
+> 验收通过，允许 P2 开始。上表各 P1/P1R 任务验证记录保持有效。）
 
 | P1R-00 恢复事实、任务状态与审计边界 | VERIFIED | `git diff --check` exit 0；状态唯一（P1R-00 唯一 IN_PROGRESS→VERIFIED）；SOP 构建路径/TSan setarch/CLAUDE.md 同步；已提交 0156395 |
 | P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；已提交 8e2673f |
@@ -51,3 +50,4 @@
 | P1R-06 过载与 EMFILE | VERIFIED | accept token bucket（rate/burst 独立计数 rateRejected）+ maxConnections 独立计数；EMFILE idle-fd 恢复（/dev/null 借还 + 退避）；进程 CTest fd-exhaustion（CONNECTED=123 真耗尽 → RECOVERED=5）；reconnect storm 30× 稳定连接登录 PASS；Debug/ASan/TSan 96/96；已提交 5b3e27f |
 | P1R-07 Timer 契约 | VERIFIED | cancel(TimerId{})/已取消/已触发均幂等 no-op（A-01）；重复 timer planned phase 保持 + 跳周期不漂移（F-05，120ms 回调 × 50ms interval 600ms 内 ≤5）；Debug/ASan/TSan 100/100 ×TSan 两轮；TimerQueue 3×5 轮稳定；已提交 62f36be |
 | P1R-08 结构化日志 | VERIFIED | LogEvent 值对象（timestamp/level/threadId/component/eventName/message 入队前固定）；批量取队列（≤64）+ '\n' 移除逐条 flush（F-06）；test recorder sink 断言字段/顺序/线程不串扰；logger-bench + 报告 97c0311（async p50≈250ns、dropped 可查、无未解释回退）；Debug/ASan/TSan 103/103；已提交 97c0311 |
+| P1R-09 P1 独立验收 | VERIFIED | 全新 4 树 + 并发套件 20 轮 + 进程矩阵（信号风暴双场景 CTest/fd-exhaustion/v1v2 等价/storm/FATAL 退出）；双轴最终审查无 P0/P1 未决项（TimerId UAF claim 判误报 + 500 轮强化证明；空消息预算泄漏修复；16MiB 边界测试；硬截止 CTest 补齐）；Debug/ASan/TSan 105/105 ×TSan 两轮；**P1 整体 VERIFIED，REMEDIATION 解除** |

@@ -182,7 +182,8 @@ TcpConnection::SendOutcome TcpConnection::sendInLoop(const void *message, size_t
         if (nwrote >= 0)
         {
             remaining = len - nwrote;
-            releaseOutstanding(static_cast<uint64_t>(nwrote));
+            releaseOutstanding(remaining == 0 ? frameSize
+                                              : static_cast<uint64_t>(nwrote));
             if (remaining == 0 && writeCompleteCallback_)
             {
                 loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));

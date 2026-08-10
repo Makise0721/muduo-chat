@@ -100,3 +100,18 @@ TEST(BinaryFrameCodecTest, EncodedSizeIsPredictable)
     EXPECT_EQ(1024u + 20, codec.encodedSize(1024));
     EXPECT_EQ(static_cast<size_t>(-1), codec.encodedSize(1025));
 }
+
+TEST(BinaryFrameCodecTest, HardLimitBoundary)
+{
+    BinaryFrameCodec codec(StreamCodec::kHardMaxBodyLength);
+    Buffer out;
+    out.append("PRE", 3);
+    std::string atLimit(StreamCodec::kHardMaxBodyLength, 'x');
+    EXPECT_EQ(EncodeResult::Ok, codec.encode(atLimit, &out));
+    EXPECT_EQ(StreamCodec::kHardMaxBodyLength + 20u + 3, out.readableBytes());
+    out.retrieve(StreamCodec::kHardMaxBodyLength + 20u);
+
+    std::string overLimit(StreamCodec::kHardMaxBodyLength + 1, 'x');
+    EXPECT_EQ(EncodeResult::TooLarge, codec.encode(overLimit, &out));
+    EXPECT_EQ(3u, out.readableBytes());
+}
