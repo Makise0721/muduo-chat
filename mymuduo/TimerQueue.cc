@@ -57,7 +57,14 @@ TimerQueue::~TimerQueue()
 {
     timerfdChannel_.disableAll();
     timerfdChannel_.remove();
-    ::close(timerfd_);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (timerfd_ >= 0)
+        {
+            ::close(timerfd_);
+            timerfd_ = -1;
+        }
+    }
 }
 
 TimerId TimerQueue::addTimer(TimerCallback cb, int64_t delayMs, int64_t intervalMs)
@@ -149,7 +156,7 @@ void TimerQueue::resetTimerfd(TimePoint now)
         ts.tv_nsec = static_cast<long>(ns % 1000000000);
         newValue.it_value = ts;
     }
-    if (::timerfd_settime(timerfd_, 0, &newValue, nullptr) < 0)
+    if (timerfd_ >= 0 && ::timerfd_settime(timerfd_, 0, &newValue, nullptr) < 0)
     {
         LOG_ERROR("TimerQueue::resetTimerfd() failed");
     }

@@ -3,7 +3,7 @@
 状态：可执行草案  
 适用基线：`main` @ `1b94d43`  
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)  
-当前活动任务：P1-06 `PLANNED`（异步结构化日志）
+当前活动任务：P1-06A `IN_PROGRESS`（EventLoop/TimerQueue fd 生命周期竞态修复）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 

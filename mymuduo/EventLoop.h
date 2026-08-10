@@ -55,6 +55,7 @@ private:
     std::unique_ptr<Poller> poller_;
 
     int wakeupFd_;
+    std::mutex wakeupMutex_;
     std::unique_ptr<Channel> wakeupChannel_;
 
     ChannelList activeChannels_;

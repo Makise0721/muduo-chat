@@ -53,7 +53,14 @@ EventLoop::~EventLoop()
     LOG_DEBUG("EventLoop %p of thread %d destructed", this, threadId_);
     wakeupChannel_->disableAll();
     wakeupChannel_->remove();
-    ::close(wakeupFd_);
+    {
+        std::lock_guard<std::mutex> lock(wakeupMutex_);
+        if (wakeupFd_ >= 0)
+        {
+            ::close(wakeupFd_);
+            wakeupFd_ = -1;
+        }
+    }
     t_loopInThisThread = nullptr;
 }
 
@@ -120,6 +127,11 @@ void EventLoop::handleRead()
 void EventLoop::wakeup()
 {
     uint64_t one = 1;
+    std::lock_guard<std::mutex> lock(wakeupMutex_);
+    if (wakeupFd_ < 0)
+    {
+        return;
+    }
     ssize_t n = ::write(wakeupFd_, &one, sizeof one);
     if (n != sizeof one)
     {

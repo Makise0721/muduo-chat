@@ -76,7 +76,7 @@ private:
     bool insert(const Entry &entry);
 
     EventLoop *loop_;
-    const int timerfd_;
+    int timerfd_;
     Channel timerfdChannel_;
     std::mutex mutex_;
     std::set<Entry> timers_;
