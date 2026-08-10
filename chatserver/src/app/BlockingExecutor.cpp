@@ -34,9 +34,11 @@ SubmitResult BlockingExecutor::submit(const std::function<void()>& task,
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (shuttingDown_) {
+            ++droppedShutdown_;
             return SubmitResult::RejectedShutdown;
         }
         if (static_cast<int>(queue_.size()) >= queueCapacity_) {
+            ++droppedFull_;
             return SubmitResult::RejectedFull;
         }
         Pending p;
@@ -68,6 +70,22 @@ void BlockingExecutor::shutdown()
             w.join();
         }
     }
+}
+
+int BlockingExecutor::queueDepth() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int>(queue_.size());
+}
+
+uint64_t BlockingExecutor::droppedFull() const
+{
+    return droppedFull_.load();
+}
+
+uint64_t BlockingExecutor::droppedShutdown() const
+{
+    return droppedShutdown_.load();
 }
 
 void BlockingExecutor::workerLoop()

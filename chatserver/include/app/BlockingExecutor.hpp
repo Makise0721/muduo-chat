@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -32,6 +33,11 @@ public:
 
     void shutdown();
 
+    // P2-10 运行期观测（快照语义）：队列深度与累计拒绝计数。
+    int queueDepth() const;
+    uint64_t droppedFull() const;
+    uint64_t droppedShutdown() const;
+
 private:
     struct Pending {
         std::function<void()> task;
@@ -46,10 +52,12 @@ private:
     int workerCount_;
     int queueCapacity_;
     std::vector<std::thread> workers_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cond_;
     std::deque<Pending> queue_;
     bool shuttingDown_ = false;
+    std::atomic<uint64_t> droppedFull_{0};
+    std::atomic<uint64_t> droppedShutdown_{0};
 };
 
 // 测试/开发用 inline adapter：同一提交接口，同步执行（completion 同步回调）。
@@ -59,4 +67,7 @@ public:
                         const std::function<void()>& completion,
                         int64_t deadlineMs = 0);
     void shutdown();
+    int queueDepth() const { return 0; }
+    uint64_t droppedFull() const { return 0; }
+    uint64_t droppedShutdown() const { return 0; }
 };

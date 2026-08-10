@@ -5,7 +5,7 @@
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
 收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
 当前活动任务：无；**P1 整体 `VERIFIED`**（P1R-00..P1R-09 闭环，完成性验收通过，REMEDIATION 解除）；
-下一任务 P2-10（多 Reactor 性能评估：chat-bench 完整矩阵 connect/echo/slow-consumer × 1/2/4/8 loops，吞吐/消息延迟/DB pool wait/executor queue/drop，完成后决定 executor worker 扩并或保持单 worker）
+下一任务 P3（可靠消息语义：先 ADR 区分 request id/message id/conversation sequence/server accepted/persisted/delivered/client ACK，再 migration 与持久化+幂等接受事务，离线投递/ACK/重试/重连续传，故障注入；M3 闸门=同 request 不产生两消息、至少一次投递下业务去重成立、不宣称 exactly-once；executor 分片扩并待 P3 语义定稿后评估）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 

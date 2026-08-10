@@ -153,3 +153,43 @@ TEST(BlockingExecutorTest, InlineExecutorRunsSynchronously)
     ex.shutdown();
     EXPECT_EQ(SubmitResult::Accepted, ex.submit([] {}, [] {}));
 }
+
+TEST(BlockingExecutorTest, MetricsCountQueueDepthAndDrops)
+{
+    LoopThread lt;
+    BlockingExecutor ex(lt.loop, 1, 2);
+
+    std::promise<void> slowStarted;
+    std::promise<void> slowRelease;
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit([&slowStarted, &slowRelease] {
+                            slowStarted.set_value();
+                            slowRelease.get_future().wait();
+                        },
+                        [] {}));
+    EXPECT_EQ(std::future_status::ready,
+              slowStarted.get_future().wait_for(std::chrono::seconds(5)));
+
+    EXPECT_EQ(SubmitResult::Accepted, ex.submit([] {}, [] {}));
+    EXPECT_EQ(SubmitResult::Accepted, ex.submit([] {}, [] {}));
+    EXPECT_EQ(2, ex.queueDepth());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(SubmitResult::RejectedFull, ex.submit([] {}, [] {}));
+    }
+    EXPECT_EQ(3u, ex.droppedFull());
+    EXPECT_EQ(0u, ex.droppedShutdown());
+
+    slowRelease.set_value();
+    ex.shutdown();
+    EXPECT_EQ(SubmitResult::RejectedShutdown, ex.submit([] {}, [] {}));
+    EXPECT_EQ(1u, ex.droppedShutdown());
+    EXPECT_EQ(0, ex.queueDepth());
+}
+
+TEST(BlockingExecutorTest, InlineExecutorMetricsAreZero)
+{
+    InlineBlockingExecutor ex;
+    EXPECT_EQ(0, ex.queueDepth());
+    EXPECT_EQ(0u, ex.droppedFull());
+    EXPECT_EQ(0u, ex.droppedShutdown());
+}

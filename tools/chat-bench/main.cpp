@@ -270,30 +270,40 @@ void runSlowConsumer(const Workload &wl, Result *result)
                                      std::lock_guard<std::mutex> lk(m);
                                      ++result->connections_ok;
                                  }
-                                 std::vector<char> chunk(4096);
-                                 uint64_t sent = 0;
-                                 while (sent < burstBytes)
-                                 {
-                                     size_t len = std::min(burstBytes - sent, payload.size());
-                                     if (!sendAll(fd, payload.data(), len))
-                                     {
-                                         break;
-                                     }
-                                     sent += len;
-                                 }
-                                 uint64_t received = 0;
-                                 double deadline = nowMs() + wl.duration_ms;
-                                 while (received < sent && nowMs() < deadline)
-                                 {
-                                     ssize_t n = ::recv(fd, chunk.data(), chunk.size(), 0);
-                                     if (n <= 0)
-                                     {
-                                         break;
-                                     }
-                                     received += static_cast<uint64_t>(n);
-                                     std::this_thread::sleep_for(
-                                         std::chrono::milliseconds(5));
-                                 }
+                                  std::vector<char> chunk(4096);
+                                  struct timeval tv;
+                                  tv.tv_sec = 0;
+                                  tv.tv_usec = 100000;
+                                  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv,
+                                             sizeof tv);
+                                  uint64_t sent = 0;
+                                  while (sent < burstBytes)
+                                  {
+                                      size_t len = std::min(burstBytes - sent, payload.size());
+                                      if (!sendAll(fd, payload.data(), len))
+                                      {
+                                          break;
+                                      }
+                                      sent += len;
+                                  }
+                                  uint64_t received = 0;
+                                  double deadline = nowMs() + wl.duration_ms;
+                                  while (received < sent && nowMs() < deadline)
+                                  {
+                                      ssize_t n = ::recv(fd, chunk.data(), chunk.size(), 0);
+                                      if (n < 0 &&
+                                          (errno == EAGAIN || errno == EWOULDBLOCK))
+                                      {
+                                          continue;  // 接收超时：回到 deadline 检查
+                                      }
+                                      if (n <= 0)
+                                      {
+                                          break;
+                                      }
+                                      received += static_cast<uint64_t>(n);
+                                      std::this_thread::sleep_for(
+                                          std::chrono::milliseconds(5));
+                                  }
                                  {
                                      std::lock_guard<std::mutex> lk(m);
                                      result->messages_sent += sent / wl.payload_size;

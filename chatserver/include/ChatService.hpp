@@ -56,6 +56,11 @@ public:
     void bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity);
     void shutdownApp();
 
+    // P2-10：executor 运行期指标（未绑定/空 executor 时返回 0）。
+    int executorQueueDepth() const;
+    uint64_t executorDroppedFull() const;
+    uint64_t executorDroppedShutdown() const;
+
 private:
     ChatService();
     ChatService(const ChatService&) = delete;

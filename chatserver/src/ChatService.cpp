@@ -127,6 +127,21 @@ void ChatService::shutdownApp()
     }
 }
 
+int ChatService::executorQueueDepth() const
+{
+    return _executor ? _executor->queueDepth() : 0;
+}
+
+uint64_t ChatService::executorDroppedFull() const
+{
+    return _executor ? _executor->droppedFull() : 0;
+}
+
+uint64_t ChatService::executorDroppedShutdown() const
+{
+    return _executor ? _executor->droppedShutdown() : 0;
+}
+
 void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int id = js["id"].get<int>();
     std::string pwd = js["password"].get<std::string>();

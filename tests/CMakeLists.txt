@@ -186,6 +186,11 @@ add_test(NAME config-fail-fast
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(config-fail-fast PROPERTIES TIMEOUT 90)
 
+add_test(NAME server-metrics
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/metrics_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(server-metrics PROPERTIES TIMEOUT 60)
+
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()

@@ -14,8 +14,8 @@ namespace {
 int gSignalFds[2];
 static bool gShuttingDown = false;
 
-void signalHandler(int) {
-    char c = 1;
+void signalHandler(int sig) {
+    char c = (sig == SIGUSR1) ? 2 : 1;
     ssize_t n = ::write(gSignalFds[1], &c, 1);
     (void)n;
 }
@@ -170,16 +170,31 @@ int main(int argc, char** argv) {
     }
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
+    signal(SIGUSR1, signalHandler);
     signal(SIGPIPE, SIG_IGN);
 
     ShutdownFlow flow;
     Channel sigChannel(&loop, gSignalFds[0]);
     sigChannel.setReadCallback([&loop, &server, &v2Server, shutdownTimeoutMs, &flow](Timestamp) {
         char buf[16];
-        while (::read(gSignalFds[0], buf, sizeof buf) > 0)
-        {
+        ssize_t n;
+        while ((n = ::read(gSignalFds[0], buf, sizeof buf)) > 0) {
+            for (ssize_t i = 0; i < n; ++i) {
+                if (buf[i] == 2) {
+                    // P2-10：SIGUSR1 = 快照一次运行期指标（pool + executor）。
+                    ConnectionPool::Metrics m = ConnectionPool::getInstance().metrics();
+                    std::cout << "METRICS pool_total=" << m.total
+                              << " pool_idle=" << m.idle
+                              << " pool_active=" << m.active
+                              << " executor_queue=" << ChatService::instance()->executorQueueDepth()
+                              << " executor_drop_full=" << ChatService::instance()->executorDroppedFull()
+                              << " executor_drop_shutdown=" << ChatService::instance()->executorDroppedShutdown()
+                              << std::endl;
+                } else {
+                    beginShutdown(&loop, &server, &v2Server, shutdownTimeoutMs, &flow);
+                }
+            }
         }
-        beginShutdown(&loop, &server, &v2Server, shutdownTimeoutMs, &flow);
     });
     sigChannel.enableReading();
 
