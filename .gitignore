@@ -5,3 +5,4 @@ mymuduo/lib/
 *.o
 *.py
 !tests/scripts/*.py
+!tools/chat_load.py
