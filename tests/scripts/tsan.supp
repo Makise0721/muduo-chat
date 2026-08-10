@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the process-level signal shutdown test.
+# OpenSSL/libcrypto maintains global allocator bookkeeping during
+# ConnectionPool::init (BIO_free/CRYPTO_* on the main thread). TSan reports
+# these as single-thread races inside an uninstrumented third-party library;
+# they are not races in muduo-chat code.
+race:libcrypto.so
+race:libssl.so

@@ -70,6 +70,13 @@ add_test(NAME single-compile-check
         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_single_compile.py
         ${CMAKE_BINARY_DIR}/compile_commands.json)
 
+find_program(BASH_EXECUTABLE bash REQUIRED)
+add_test(NAME process-signal-shutdown
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/signal_shutdown_test.sh
+        $<TARGET_FILE:ChatServer>
+        20)
+set_tests_properties(process-signal-shutdown PROPERTIES TIMEOUT 60)
+
 set(GTEST_EMULATOR "setarch;x86_64;-R")
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")

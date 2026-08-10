@@ -78,8 +78,10 @@ int main(int argc, char** argv) {
         std::cerr << "socketpair failed" << std::endl;
         exit(-1);
     }
-    int sigFlags = fcntl(gSignalFds[0], F_GETFL, 0);
-    fcntl(gSignalFds[0], F_SETFL, sigFlags | O_NONBLOCK);
+    for (int i = 0; i < 2; ++i) {
+        int flags = fcntl(gSignalFds[i], F_GETFL, 0);
+        fcntl(gSignalFds[i], F_SETFL, flags | O_NONBLOCK | FD_CLOEXEC);
+    }
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     signal(SIGPIPE, SIG_IGN);
