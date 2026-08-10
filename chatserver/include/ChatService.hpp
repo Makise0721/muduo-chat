@@ -9,6 +9,8 @@
 #include "../thirdparty/json.hpp"
 #include "db/MySQL.hpp"
 #include "db/ConnectionPool.hpp"
+#include "app/ChatApplication.hpp"
+#include "LegacyUserRepository.hpp"
 
 using json = nlohmann::json;
 using namespace std;
@@ -51,4 +53,6 @@ private:
     unordered_map<int, MsgHandler> _msgHandlerMap;
     unordered_map<int, TcpConnectionPtr> _userConnMap;
     mutex _connMutex;
+    LegacyUserRepository _legacyUsers;
+    ChatApplication _app;
 };

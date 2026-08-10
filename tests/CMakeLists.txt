@@ -69,6 +69,10 @@ target_include_directories(DualProtocolCharacterizationTest PRIVATE ${PROJECT_SO
 target_link_libraries(DualProtocolCharacterizationTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
 set_target_properties(DualProtocolCharacterizationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(ChatApplicationRegistrationTest unit/ChatApplicationRegistrationTest.cpp)
+target_link_libraries(ChatApplicationRegistrationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(ChatApplicationRegistrationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -93,7 +97,7 @@ add_test(NAME DomainCharacterization
 set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
 
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -109,3 +113,4 @@ gtest_discover_tests(BackpressureTest)
 gtest_discover_tests(TcpServerTest)
 gtest_discover_tests(LoggerTest)
 gtest_discover_tests(DualProtocolCharacterizationTest)
+gtest_discover_tests(ChatApplicationRegistrationTest)

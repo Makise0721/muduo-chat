@@ -16,7 +16,7 @@
 | B-01 | 协议防御：非法 JSON | 静默丢弃，无 Reply，连接保持 | chatserver/src/ChatService.cpp:74-81 | 稳定 |
 | B-02 | 协议防御：无 msgid | 静默丢弃，无 Reply | ChatService.cpp:83-86 | 稳定 |
 | B-03 | 协议防御：未知 msgid | 静默丢弃，无 Reply | ChatService.cpp:90-94 | 稳定 |
-| B-04 | 注册成功 | REG_MSG_ACK errno=0 + 自增 id；不自动登录 | ChatService.cpp:197-234 | 稳定 |
+| B-04 | 注册成功 | REG_MSG_ACK errno=0 + 自增 id；不自动登录；P2-01 起空名/空密码/超长名（>50 字符）→ errno=1 "invalid input!"（输入校验在 ChatApplication） | ChatService.cpp:197-234；app/ChatApplication.cpp | 稳定 |
 | B-05 | 注册重名 | errno=1 "this name is already exist!" | ChatService.cpp:208-220 | 稳定 |
 | B-06 | 登录成功 | errno=0 + id + name + friends（名字数组）+ friendDetails（friendid/name/state 数组） | ChatService.cpp:149-175 | 待ADR（friends/friendDetails 冗余双字段） |
 | B-07 | 登录失败（id/密码不匹配） | errno=1 "userid or password is invalid!" | ChatService.cpp:121-129 | 稳定 |
