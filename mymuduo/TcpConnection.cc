@@ -259,6 +259,12 @@ void TcpConnection::cancelStallTimer()
 
 void TcpConnection::forceClose()
 {
+    loop_->runInLoop(
+        std::bind(&TcpConnection::forceCloseInLoop, shared_from_this()));
+}
+
+void TcpConnection::forceCloseInLoop()
+{
     cancelStallTimer();
     if (state_ == kConnected || state_ == kDisconnecting)
     {

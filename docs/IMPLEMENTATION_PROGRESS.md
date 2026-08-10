@@ -45,4 +45,5 @@
 | P1R-00 恢复事实、任务状态与审计边界 | VERIFIED | `git diff --check` exit 0；状态唯一（P1R-00 唯一 IN_PROGRESS→VERIFIED）；SOP 构建路径/TSan setarch/CLAUDE.md 同步；已提交 0156395 |
 | P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；已提交 8e2673f |
 | P1R-02 Codec/编码结果契约 | VERIFIED | EncodeResult + OutputCodec（encodedSize/encode）；encode 全字段自校验（bodyLength==body.size、16MiB 上限、失败不改 output）；decode 拒非 JSON contentType；协议错误 force-close；Debug/ASan/TSan 86/86 ×TSan 两轮无 WARNING；进程 smoke ALL_PASS（坏帧 EOF + v1/v2 注册登录等价）；已提交 f76b750 |
-| P1R-03 有界发送准入 | VERIFIED | SendOutcome{disposition,pressure} 无歧义语义（AcceptedPaused/WouldBlock 区分）；连接级原子预算 CAS 准入（任意线程）；低水位恢复回调一次；空消息 1B 帧开销不绕过；stall timer weak_ptr 断环（LSan）；Debug/ASan/TSan 89/89 ×TSan 两轮无 WARNING；进程 smoke ALL_PASS；待提交 |
+| P1R-03 有界发送准入 | VERIFIED | SendOutcome{disposition,pressure} 无歧义语义（AcceptedPaused/WouldBlock 区分）；连接级原子预算 CAS 准入（任意线程）；低水位恢复回调一次；空消息 1B 帧开销不绕过；stall timer weak_ptr 断环（LSan）；Debug/ASan/TSan 89/89 ×TSan 两轮无 WARNING；进程 smoke ALL_PASS；已提交 b325472 |
+| P1R-04 loop-affine 关闭 | VERIFIED | forceClose() 任意线程安全（queueInLoop 调度到所属 loop + shared_from_this）；forceCloseInLoop 私有；跨线程重复 forceClose 幂等、回调一次；threadNum=2 + 3 连接 forceCloseAll 无 TSan 报告；Debug/ASan/TSan 91/91；SIGTERM 挂连接退出 smoke PASS；待提交 |

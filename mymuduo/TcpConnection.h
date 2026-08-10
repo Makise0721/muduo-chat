@@ -135,6 +135,7 @@ private:
     void handleClose();
     void handleError();
 
+    void forceCloseInLoop();
     SendOutcome sendInLoop(std::string message, size_t frameSize);
     SendOutcome sendInLoop(const void *message, size_t len, size_t frameSize);
     void shutdownInLoop();
