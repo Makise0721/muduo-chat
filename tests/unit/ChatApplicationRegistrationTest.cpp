@@ -88,6 +88,14 @@ public:
         r.error = UserError::StorageFailure;
         return r;
     }
+    AuthResult authenticate(int64_t, const std::string&) override
+    {
+        return AuthResult();
+    }
+    bool updateState(int64_t, UserState) override
+    {
+        return false;
+    }
 };
 
 TEST(ChatApplicationRegistrationTest, RepositoryFailureMapsToRegisterFailed)
