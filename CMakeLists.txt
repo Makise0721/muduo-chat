@@ -22,6 +22,7 @@ pkg_check_modules(MYSQL REQUIRED mysqlclient)
 add_subdirectory(mymuduo)
 
 add_library(chatserver_core STATIC
+    chatserver/src/app/BlockingExecutor.cpp
     chatserver/src/app/ChatApplication.cpp
     chatserver/src/app/InMemoryUserRepository.cpp
     chatserver/src/app/MySQLUserRepository.cpp

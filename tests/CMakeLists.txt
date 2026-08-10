@@ -81,6 +81,16 @@ add_executable(MySQLUserRepositoryTest unit/MySQLUserRepositoryTest.cpp)
 target_link_libraries(MySQLUserRepositoryTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(MySQLUserRepositoryTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(BlockingExecutorTest unit/BlockingExecutorTest.cpp)
+target_include_directories(BlockingExecutorTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(BlockingExecutorTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(BlockingExecutorTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(EventLoopResponsivenessTest unit/EventLoopResponsivenessTest.cpp)
+target_include_directories(EventLoopResponsivenessTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(EventLoopResponsivenessTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(EventLoopResponsivenessTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -105,7 +115,7 @@ add_test(NAME DomainCharacterization
 set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
 
 set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 gtest_discover_tests(BufferTest)
@@ -124,3 +134,5 @@ gtest_discover_tests(DualProtocolCharacterizationTest)
 gtest_discover_tests(ChatApplicationRegistrationTest)
 gtest_discover_tests(UserRepositoryContractTest)
 gtest_discover_tests(MySQLUserRepositoryTest)
+gtest_discover_tests(BlockingExecutorTest)
+gtest_discover_tests(EventLoopResponsivenessTest)
