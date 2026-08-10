@@ -1,27 +1,9 @@
 #pragma once
 
-#include "db/ConnectionPool.hpp"
 #include "db/MySQL.hpp"
 
-#include <memory>
 #include <string>
 #include <vector>
-
-// 确保从 ConnectionPool 取出的连接一定会归还，避免连接池耗尽导致阻塞。
-struct MySQLConnectionGuard {
-    ConnectionPool& pool;
-    std::shared_ptr<MySQL> mysql;
-
-    MySQLConnectionGuard(ConnectionPool& p, std::shared_ptr<MySQL> c)
-        : pool(p), mysql(std::move(c)) {}
-
-    ~MySQLConnectionGuard() {
-        pool.releaseConnection(mysql);
-    }
-
-    MySQL* operator->() { return mysql.get(); }
-    const MySQL* operator->() const { return mysql.get(); }
-};
 
 // 确保 mysql_use_result() 产生的结果集会释放。
 struct MySQLResultGuard {

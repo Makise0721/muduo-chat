@@ -5,6 +5,22 @@
 #include <cstring>
 #include <mysql/mysql.h>
 
+namespace {
+
+UserError mapPoolError(ConnectionPool::PoolError err)
+{
+    switch (err) {
+        case ConnectionPool::PoolError::Timeout:
+            return UserError::Timeout;
+        case ConnectionPool::PoolError::Shutdown:
+        case ConnectionPool::PoolError::ConnectionFailed:
+        default:
+            return UserError::Disconnected;
+    }
+}
+
+} // namespace
+
 UserError mapMySqlError(unsigned int err)
 {
     switch (err) {
@@ -39,7 +55,12 @@ CreateUserResult MySQLUserRepository::create(const std::string& name, const std:
         return result;
     }
 
-    MySQLConnectionGuard mysql(pool_, pool_.getConnection());
+    ConnectionPool::AcquireResult acq = pool_.acquire(5000);
+    if (!acq.lease) {
+        result.error = mapPoolError(acq.error);
+        return result;
+    }
+    MySQL* mysql = acq.lease.get();
     PreparedStatementGuard stmt(
         mysql->prepareStatement("INSERT INTO User(name, password) VALUES(?, ?)"));
     if (!stmt.stmt) {

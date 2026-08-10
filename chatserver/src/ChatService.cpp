@@ -57,8 +57,16 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
     std::string pwd = js["password"].get<std::string>();
 
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
-
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response;
+        response["msgid"] = LOGIN_MSG_ACK;
+        response["errno"] = 1;
+        response["errmsg"] = "db unavailable!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     std::string escapedPwd = escapeString(mysql->getConnection(), pwd);
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "SELECT id, name, password, state FROM User WHERE id = %d AND password = '%s'", id, escapedPwd.c_str());
@@ -183,7 +191,11 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
     }
     
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "UPDATE User SET state = 'offline' WHERE id = %d", userid);
     mysql->update(sql);
@@ -209,7 +221,14 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
     }
     
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response = js;
+        response["errno"] = 1;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     
     char sql[1024] = {0};
     std::string escapedMsg = escapeString(mysql->getConnection(), js.dump());
@@ -226,7 +245,14 @@ void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp ti
     int friendid = js["friendid"].get<int>();
     
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response = js;
+        response["errno"] = 1;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "INSERT INTO Friend VALUES(%d, %d)", userid, friendid);
     bool ok = mysql->update(sql);
@@ -242,7 +268,16 @@ void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp 
     string groupdesc = js["groupdesc"];
     
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response;
+        response["msgid"] = CREATE_GROUP_MSG;
+        response["id"] = userid;
+        response["errno"] = 1;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     char sql[1024] = {0};
     std::string escapedGroupname = escapeString(mysql->getConnection(), groupname);
     std::string escapedGroupdesc = escapeString(mysql->getConnection(), groupdesc);
@@ -268,7 +303,14 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
     int groupid = js["groupid"].get<int>();
     
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response = js;
+        response["errno"] = 1;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "INSERT INTO GroupUser VALUES(%d, %d, 'normal')", groupid, userid);
     bool ok = mysql->update(sql);
@@ -283,7 +325,14 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
     int groupid = js["groupid"].get<int>();
 
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        json response = js;
+        response["errno"] = 1;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     char sql[1024] = {0};
     snprintf(sql, sizeof(sql), "SELECT userid FROM GroupUser WHERE groupid = %d AND userid != %d", groupid, userid);
 
@@ -347,7 +396,11 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
     
     if (userid != -1) {
         auto& connPool = ConnectionPool::getInstance();
-        MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+        ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+        if (!acq.lease) {
+            return;
+        }
+        MySQL* mysql = acq.lease.get();
         char sql[1024] = {0};
         snprintf(sql, sizeof(sql), "UPDATE User SET state = 'offline' WHERE id = %d", userid);
         mysql->update(sql);
@@ -356,6 +409,10 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
 
 void ChatService::reset() {
     auto& connPool = ConnectionPool::getInstance();
-    MySQLConnectionGuard mysql(connPool, connPool.getConnection());
+    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
+    if (!acq.lease) {
+        return;
+    }
+    MySQL* mysql = acq.lease.get();
     mysql->update("UPDATE User SET state = 'offline' WHERE state = 'online'");
 }

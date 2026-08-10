@@ -7,6 +7,17 @@ set_target_properties(BufferTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRE
 
 include(GoogleTest)
 
+# gtest 测试统一注入 TSAN_OPTIONS（libmysqlclient 经 libcrypto 维护全局分配器
+# 记账，TSan 会误报为单线程 race，与 signal/fd/domain 脚本同一 suppression）。
+# 注：gtest_discover_tests 的 PROPERTIES 参数在 CMake 3.28 模块中未写入生成文件，
+# 故经 CROSSCOMPILING_EMULATOR 用 env 注入；非 TSan 树无害。
+set(GTEST_EMULATOR
+    "/usr/bin/env;TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/scripts/tsan.supp;setarch;x86_64;-R")
+
+function(discover_gtest TARGET)
+    gtest_discover_tests(${TARGET})
+endfunction()
+
 add_executable(EventLoopTest unit/EventLoopTest.cpp)
 target_include_directories(EventLoopTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(EventLoopTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
@@ -91,6 +102,14 @@ target_include_directories(EventLoopResponsivenessTest PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(EventLoopResponsivenessTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
 set_target_properties(EventLoopResponsivenessTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(ConnectionPoolTest unit/ConnectionPoolTest.cpp)
+target_link_libraries(ConnectionPoolTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(ConnectionPoolTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MySQLPoolIntegrationTest unit/MySQLPoolIntegrationTest.cpp)
+target_link_libraries(MySQLPoolIntegrationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MySQLPoolIntegrationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -114,25 +133,26 @@ add_test(NAME DomainCharacterization
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
 
-set(GTEST_EMULATOR "setarch;x86_64;-R")
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
-gtest_discover_tests(BufferTest)
-gtest_discover_tests(EventLoopTest)
-gtest_discover_tests(EventLoopThreadPoolTest)
-gtest_discover_tests(TcpConnectionTest)
-gtest_discover_tests(BenchStatsTest)
-gtest_discover_tests(StreamCodecTest)
-gtest_discover_tests(LegacyJsonLineCodecTest)
-gtest_discover_tests(BinaryFrameCodecTest)
-gtest_discover_tests(TimerQueueTest)
-gtest_discover_tests(BackpressureTest)
-gtest_discover_tests(TcpServerTest)
-gtest_discover_tests(LoggerTest)
-gtest_discover_tests(DualProtocolCharacterizationTest)
-gtest_discover_tests(ChatApplicationRegistrationTest)
-gtest_discover_tests(UserRepositoryContractTest)
-gtest_discover_tests(MySQLUserRepositoryTest)
-gtest_discover_tests(BlockingExecutorTest)
-gtest_discover_tests(EventLoopResponsivenessTest)
+discover_gtest(BufferTest)
+discover_gtest(EventLoopTest)
+discover_gtest(EventLoopThreadPoolTest)
+discover_gtest(TcpConnectionTest)
+discover_gtest(BenchStatsTest)
+discover_gtest(StreamCodecTest)
+discover_gtest(LegacyJsonLineCodecTest)
+discover_gtest(BinaryFrameCodecTest)
+discover_gtest(TimerQueueTest)
+discover_gtest(BackpressureTest)
+discover_gtest(TcpServerTest)
+discover_gtest(LoggerTest)
+discover_gtest(DualProtocolCharacterizationTest)
+discover_gtest(ChatApplicationRegistrationTest)
+discover_gtest(UserRepositoryContractTest)
+discover_gtest(MySQLUserRepositoryTest)
+discover_gtest(BlockingExecutorTest)
+discover_gtest(EventLoopResponsivenessTest)
+discover_gtest(ConnectionPoolTest)
+discover_gtest(MySQLPoolIntegrationTest)
