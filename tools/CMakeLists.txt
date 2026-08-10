@@ -5,3 +5,7 @@ target_compile_definitions(chat-bench PRIVATE
     CXX_FLAGS_STRING="${CMAKE_CXX_FLAGS}"
     BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 target_link_libraries(chat-bench pthread)
+
+add_executable(logger-bench logger-bench/main.cpp)
+target_include_directories(logger-bench PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(logger-bench mymuduo Threads::Threads)

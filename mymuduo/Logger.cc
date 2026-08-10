@@ -49,8 +49,25 @@ void Logger::setOutputStream(std::ostream *stream)
     stream_ = stream;
 }
 
-void Logger::log(int level, const char *message)
+void Logger::setSinkCallback(const SinkCallback &cb)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sinkCallback_ = cb;
+}
+
+void Logger::log(int level,
+                 const std::string &component,
+                 const std::string &eventName,
+                 const std::string &message)
+{
+    LogEvent event;
+    event.timestamp = Timestamp::now();
+    event.level = level;
+    event.threadId = std::this_thread::get_id();
+    event.component = component;
+    event.eventName = eventName;
+    event.message = message;
+
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.size() >= capacity_)
     {
@@ -68,7 +85,7 @@ void Logger::log(int level, const char *message)
             return;
         }
     }
-    queue_.emplace_back(level, std::string(message));
+    queue_.emplace_back(std::move(event));
     cond_.notify_one();
 }
 
@@ -82,8 +99,7 @@ void Logger::run()
 {
     for (;;)
     {
-        std::string message;
-        int level;
+        std::vector<LogEvent> batch;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cond_.wait(lock, [this] { return exiting_ || !queue_.empty(); });
@@ -95,38 +111,50 @@ void Logger::run()
                 }
                 continue;
             }
-            level = queue_.front().first;
-            message = std::move(queue_.front().second);
-            queue_.pop_front();
+            while (batch.size() < 64 && !queue_.empty())
+            {
+                batch.push_back(std::move(queue_.front()));
+                queue_.pop_front();
+            }
             writing_ = true;
         }
 
+        SinkCallback sink;
         std::ostream *out = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            sink = sinkCallback_;
             out = stream_;
+        }
+        if (sink)
+        {
+            sink(batch);
         }
         if (out != nullptr)
         {
-            const char *prefix = "[INFO] ";
-            switch (level)
+            for (const LogEvent &event : batch)
             {
-            case INFO:
-                prefix = "[INFO] ";
-                break;
-            case ERROR:
-                prefix = "[ERROR] ";
-                break;
-            case FATAL:
-                prefix = "[FATAL] ";
-                break;
-            case DEBUG:
-                prefix = "[DEBUG] ";
-                break;
-            default:
-                break;
+                const char *prefix = "[INFO] ";
+                switch (event.level)
+                {
+                case INFO:
+                    prefix = "[INFO] ";
+                    break;
+                case ERROR:
+                    prefix = "[ERROR] ";
+                    break;
+                case FATAL:
+                    prefix = "[FATAL] ";
+                    break;
+                case DEBUG:
+                    prefix = "[DEBUG] ";
+                    break;
+                default:
+                    break;
+                }
+                *out << prefix << event.timestamp.toString() << " : "
+                     << event.message << '\n';
             }
-            *out << prefix << Timestamp::now().toString() << " : " << message << std::endl;
         }
 
         {

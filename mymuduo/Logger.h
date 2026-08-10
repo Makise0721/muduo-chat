@@ -1,15 +1,18 @@
 #pragma once
 
 #include "noncopyable.h"
+#include "Timestamp.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
-#include <condition_variable>
+#include <ostream>
 #include <string>
 #include <thread>
-#include <ostream>
+#include <vector>
 
 #define LOG_INFO(LogmsgFormat, ...)                       \
     do                                                    \
@@ -19,7 +22,7 @@
         {                                                 \
             char buf[1024] = {0};                         \
             snprintf(buf, sizeof buf, LogmsgFormat, ##__VA_ARGS__); \
-            logger.log(INFO, buf);                \
+            logger.log(INFO, "", "LOG_INFO", buf);        \
         }                                                 \
     } while (0)
 
@@ -31,7 +34,7 @@
         {                                                 \
             char buf[1024] = {0};                         \
             snprintf(buf, sizeof buf, LogmsgFormat, ##__VA_ARGS__); \
-            logger.log(ERROR, buf);               \
+            logger.log(ERROR, "", "LOG_ERROR", buf);      \
         }                                                 \
     } while (0)
 
@@ -41,7 +44,7 @@
         Logger &logger = Logger::instance();              \
         char buf[1024] = {0};                             \
         snprintf(buf, sizeof buf, LogmsgFormat, ##__VA_ARGS__); \
-        logger.log(FATAL, buf);                   \
+        logger.log(FATAL, "", "LOG_FATAL", buf);          \
         logger.flush();                                   \
         exit(-1);                                         \
     } while (0)
@@ -55,7 +58,7 @@
         {                                                 \
             char buf[1024] = {0};                         \
             snprintf(buf, sizeof buf, LogmsgFormat, ##__VA_ARGS__); \
-            logger.log(DEBUG, buf);               \
+            logger.log(DEBUG, "", "LOG_DEBUG", buf);      \
         }                                                 \
     } while (0)
 #else
@@ -70,9 +73,21 @@ enum LogLevel
     FATAL,
 };
 
+struct LogEvent
+{
+    Timestamp timestamp;
+    int level;
+    std::thread::id threadId;
+    std::string component;
+    std::string eventName;
+    std::string message;
+};
+
 class Logger : noncopyable
 {
 public:
+    using SinkCallback = std::function<void(const std::vector<LogEvent> &)>;
+
     static Logger &instance();
 
     void setLogLevel(int level)
@@ -89,7 +104,12 @@ public:
 
     void setOutputStream(std::ostream *stream);
 
-    void log(int level, const char *message);
+    void setSinkCallback(const SinkCallback &cb);
+
+    void log(int level,
+             const std::string &component,
+             const std::string &eventName,
+             const std::string &message);
 
     void flush();
 
@@ -107,9 +127,10 @@ private:
     std::atomic<uint64_t> dropped_;
     std::mutex mutex_;
     std::condition_variable cond_;
-    std::deque<std::pair<int, std::string>> queue_;
+    std::deque<LogEvent> queue_;
     size_t capacity_;
     std::ostream *stream_;
+    SinkCallback sinkCallback_;
     bool exiting_;
     bool writing_;
     std::thread thread_;
