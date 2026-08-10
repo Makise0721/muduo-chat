@@ -1,6 +1,8 @@
 #pragma once
 
 #include "app/Command.hpp"
+#include "app/FriendRepository.hpp"
+#include "app/GroupRepository.hpp"
 #include "app/Reply.hpp"
 #include "app/UserRepository.hpp"
 
@@ -12,7 +14,7 @@
 // 不接触 MySQL 类型；用例编排在本层。
 class ChatApplication {
 public:
-    explicit ChatApplication(UserRepository* users);
+    ChatApplication(UserRepository* users, FriendRepository* friends, GroupRepository* groups);
 
     void handle(const SessionContext& ctx, const Command& cmd, Reply* reply);
 
@@ -21,14 +23,20 @@ public:
     int64_t beginSessionAttempt(int64_t userId);
     bool isSessionCurrent(int64_t userId, int64_t generation) const;
 
-    // 供阻塞 executor 的 worker 线程调用的认证/状态操作（内部走 repository）。
+    // 供阻塞 executor 的 worker 线程调用的用例操作（内部走 repository）。
     AuthResult authenticate(int64_t userId, const std::string& password);
     bool updateUserState(int64_t userId, UserState state);
+    AddFriendResult addFriend(int64_t userId, int64_t friendId);
+    CreateGroupResult createGroup(int64_t ownerId, const std::string& name,
+                                  const std::string& desc);
+    JoinGroupResult joinGroup(int64_t groupId, int64_t userId);
 
 private:
     void registerUser(const Command& cmd, Reply* reply);
 
     UserRepository* users_;
+    FriendRepository* friends_;
+    GroupRepository* groups_;
     mutable std::mutex sessionMutex_;
     std::map<int64_t, int64_t> generations_;
 };

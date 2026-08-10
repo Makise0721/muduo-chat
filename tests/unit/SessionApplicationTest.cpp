@@ -1,5 +1,7 @@
 #include "app/BlockingExecutor.hpp"
 #include "app/ChatApplication.hpp"
+#include "app/InMemoryFriendRepository.hpp"
+#include "app/InMemoryGroupRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
 #include "EventLoop.h"
 
@@ -91,7 +93,9 @@ TEST(SessionApplicationTest, LoginFlowAuthenticatesAndEstablishesSession)
 {
     LoopThread lt;
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -120,7 +124,9 @@ TEST(SessionApplicationTest, LoginWrongPasswordRejected)
 {
     LoopThread lt;
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -146,7 +152,9 @@ TEST(SessionApplicationTest, DuplicateLoginSeesOnlineState)
 {
     LoopThread lt;
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -174,7 +182,9 @@ TEST(SessionApplicationTest, DuplicateLoginSeesOnlineState)
 TEST(SessionApplicationTest, LogoutMarksUserOffline)
 {
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     app.updateUserState(uid, UserState::Online);
     app.beginSessionAttempt(uid);  // 会话建立
@@ -187,7 +197,9 @@ TEST(SessionApplicationTest, LogoutMarksUserOffline)
 TEST(SessionApplicationTest, DisconnectMarksUserOffline)
 {
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     app.updateUserState(uid, UserState::Online);
     app.beginSessionAttempt(uid);
@@ -199,7 +211,9 @@ TEST(SessionApplicationTest, StaleCompletionAfterLogoutIsDiscarded)
 {
     LoopThread lt;
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -228,7 +242,9 @@ TEST(SessionApplicationTest, FastDisconnectReconnectDiscardsStaleCompletion)
 {
     LoopThread lt;
     InMemoryUserRepository users;
-    ChatApplication app(&users);
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 

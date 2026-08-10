@@ -11,7 +11,10 @@ namespace {
 } // namespace
 
 ChatService::ChatService()
-    : _mysqlUsers(ConnectionPool::getInstance()), _app(&_mysqlUsers) {
+    : _mysqlUsers(ConnectionPool::getInstance()),
+      _mysqlFriends(ConnectionPool::getInstance()),
+      _mysqlGroups(ConnectionPool::getInstance()),
+      _app(&_mysqlUsers, &_mysqlFriends, &_mysqlGroups) {
     _msgHandlerMap.insert({LOGIN_MSG, bind(&ChatService::login, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({REG_MSG, bind(&ChatService::reg, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({LOGINOUT_MSG, bind(&ChatService::loginout, this, placeholders::_1, placeholders::_2, placeholders::_3)});
@@ -121,7 +124,9 @@ void loadLoginExtras(LoginDbResult* r)
 void ChatService::bindLoop(EventLoop* loop)
 {
     _loop = loop;
-    _executor.reset(new BlockingExecutor(loop, 2, 64));
+    // 单 worker：同一连接的串行依赖（如 addFriend 后立即重复 add）按提交顺序
+    // 执行；多 worker 会乱序破坏业务语义（P2-10 性能评估后再分片扩并）。
+    _executor.reset(new BlockingExecutor(loop, 1, 64));
 }
 
 void ChatService::shutdownApp()
@@ -297,33 +302,29 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
 void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
     int friendid = js["friendid"].get<int>();
-    
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+
+    if (!_executor) {
         json response = js;
         response["errno"] = 1;
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    char sql[1024] = {0};
-    snprintf(sql, sizeof(sql), "INSERT INTO Friend VALUES(%d, %d)", userid, friendid);
-    bool ok = mysql->update(sql);
-
-    json response = js;
-    response["errno"] = ok ? 0 : 1;
-    conn->send(response.dump() + "\n");
+    auto result = std::make_shared<AddFriendResult>();
+    _executor->submit(
+        [this, userid, friendid, result] { *result = _app.addFriend(userid, friendid); },
+        [conn, js, result] {
+            json response = js;
+            response["errno"] = result->ok ? 0 : 1;
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
     string groupname = js["groupname"];
     string groupdesc = js["groupdesc"];
-    
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+
+    if (!_executor) {
         json response;
         response["msgid"] = CREATE_GROUP_MSG;
         response["id"] = userid;
@@ -331,47 +332,43 @@ void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp 
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    char sql[1024] = {0};
-    std::string escapedGroupname = escapeString(mysql->getConnection(), groupname);
-    std::string escapedGroupdesc = escapeString(mysql->getConnection(), groupdesc);
-    snprintf(sql, sizeof(sql), "INSERT INTO AllGroup(groupname, groupdesc) VALUES('%s', '%s')", escapedGroupname.c_str(), escapedGroupdesc.c_str());
-    json response;
-    response["msgid"] = CREATE_GROUP_MSG;
-    response["id"] = userid;
-
-    if (mysql->update(sql)) {
-        int groupid = mysql_insert_id(mysql->getConnection());
-        response["groupid"] = groupid;
-        snprintf(sql, sizeof(sql), "INSERT INTO GroupUser VALUES(%d, %d, 'creator')", groupid, userid);
-        bool ok = mysql->update(sql);
-        response["errno"] = ok ? 0 : 1;
-    } else {
-        response["errno"] = 1;
-    }
-    conn->send(response.dump() + "\n");
+    auto result = std::make_shared<CreateGroupResult>();
+    _executor->submit(
+        [this, userid, groupname, groupdesc, result] {
+            *result = _app.createGroup(userid, groupname, groupdesc);
+        },
+        [conn, userid, result] {
+            json response;
+            response["msgid"] = CREATE_GROUP_MSG;
+            response["id"] = userid;
+            if (result->ok) {
+                response["groupid"] = result->groupId;
+                response["errno"] = 0;
+            } else {
+                response["errno"] = 1;
+            }
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
     int groupid = js["groupid"].get<int>();
-    
-    auto& connPool = ConnectionPool::getInstance();
-    ConnectionPool::AcquireResult acq = connPool.acquire(5000);
-    if (!acq.lease) {
+
+    if (!_executor) {
         json response = js;
         response["errno"] = 1;
         conn->send(response.dump() + "\n");
         return;
     }
-    MySQL* mysql = acq.lease.get();
-    char sql[1024] = {0};
-    snprintf(sql, sizeof(sql), "INSERT INTO GroupUser VALUES(%d, %d, 'normal')", groupid, userid);
-    bool ok = mysql->update(sql);
-
-    json response = js;
-    response["errno"] = ok ? 0 : 1;
-    conn->send(response.dump() + "\n");
+    auto result = std::make_shared<JoinGroupResult>();
+    _executor->submit(
+        [this, userid, groupid, result] { *result = _app.joinGroup(groupid, userid); },
+        [conn, js, result] {
+            json response = js;
+            response["errno"] = result->ok ? 0 : 1;
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {

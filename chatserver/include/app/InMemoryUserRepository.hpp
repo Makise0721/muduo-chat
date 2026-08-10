@@ -12,6 +12,9 @@ public:
     AuthResult authenticate(int64_t id, const std::string& password) override;
     bool updateState(int64_t id, UserState state) override;
 
+    // 存在性查询（供 InMemory 好友/群组 adapter 判定 TargetNotFound）。
+    bool userExists(int64_t id) const;
+
 private:
     struct User {
         int64_t id;

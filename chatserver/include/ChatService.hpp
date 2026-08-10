@@ -13,6 +13,8 @@
 #include "app/ChatApplication.hpp"
 #include "app/BlockingExecutor.hpp"
 #include "app/MySQLUserRepository.hpp"
+#include "app/MySQLFriendRepository.hpp"
+#include "app/MySQLGroupRepository.hpp"
 
 using json = nlohmann::json;
 using namespace std;
@@ -61,6 +63,8 @@ private:
     unordered_map<int, TcpConnectionPtr> _userConnMap;
     mutex _connMutex;
     MySQLUserRepository _mysqlUsers;
+    MySQLFriendRepository _mysqlFriends;
+    MySQLGroupRepository _mysqlGroups;
     ChatApplication _app;
     EventLoop* _loop = nullptr;
     std::unique_ptr<BlockingExecutor> _executor;

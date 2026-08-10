@@ -26,13 +26,36 @@ public:
         ASSERT_TRUE(admin.update("DROP DATABASE IF EXISTS chat_test"));
         ASSERT_TRUE(admin.update("CREATE DATABASE chat_test DEFAULT CHARSET utf8"));
         ASSERT_TRUE(admin.update("USE chat_test"));
-        // 与 sql/chat.sql 的 User 表保持一致（migration 从空 schema 执行）。
+        // 与 sql/chat.sql 保持一致（migration 从空 schema 执行）。
         ASSERT_TRUE(admin.update(
             "CREATE TABLE User("
             "id INT PRIMARY KEY AUTO_INCREMENT,"
             "name VARCHAR(50) NOT NULL UNIQUE,"
             "password VARCHAR(50) NOT NULL,"
             "state ENUM('online', 'offline') DEFAULT 'offline'"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
+        ASSERT_TRUE(admin.update(
+            "CREATE TABLE Friend("
+            "userid INT NOT NULL,"
+            "friendid INT NOT NULL,"
+            "PRIMARY KEY(userid, friendid),"
+            "FOREIGN KEY (userid) REFERENCES User(id) ON DELETE CASCADE,"
+            "FOREIGN KEY (friendid) REFERENCES User(id) ON DELETE CASCADE"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
+        ASSERT_TRUE(admin.update(
+            "CREATE TABLE AllGroup("
+            "id INT PRIMARY KEY AUTO_INCREMENT,"
+            "groupname VARCHAR(50) NOT NULL,"
+            "groupdesc VARCHAR(200) DEFAULT ''"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
+        ASSERT_TRUE(admin.update(
+            "CREATE TABLE GroupUser("
+            "groupid INT NOT NULL,"
+            "userid INT NOT NULL,"
+            "grouprole ENUM('creator', 'normal') DEFAULT 'normal',"
+            "PRIMARY KEY(groupid, userid),"
+            "FOREIGN KEY (groupid) REFERENCES AllGroup(id) ON DELETE CASCADE,"
+            "FOREIGN KEY (userid) REFERENCES User(id) ON DELETE CASCADE"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8"));
     }
 

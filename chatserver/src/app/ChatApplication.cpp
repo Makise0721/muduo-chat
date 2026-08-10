@@ -13,8 +13,9 @@ bool validRegistrationInput(const Command& cmd)
 
 } // namespace
 
-ChatApplication::ChatApplication(UserRepository* users)
-    : users_(users)
+ChatApplication::ChatApplication(UserRepository* users, FriendRepository* friends,
+                                 GroupRepository* groups)
+    : users_(users), friends_(friends), groups_(groups)
 {
 }
 
@@ -39,6 +40,22 @@ AuthResult ChatApplication::authenticate(int64_t userId, const std::string& pass
 bool ChatApplication::updateUserState(int64_t userId, UserState state)
 {
     return users_->updateState(userId, state);
+}
+
+AddFriendResult ChatApplication::addFriend(int64_t userId, int64_t friendId)
+{
+    return friends_->add(userId, friendId);
+}
+
+CreateGroupResult ChatApplication::createGroup(int64_t ownerId, const std::string& name,
+                                               const std::string& desc)
+{
+    return groups_->create(ownerId, name, desc);
+}
+
+JoinGroupResult ChatApplication::joinGroup(int64_t groupId, int64_t userId)
+{
+    return groups_->join(groupId, userId);
 }
 
 void ChatApplication::handle(const SessionContext&, const Command& cmd, Reply* reply)

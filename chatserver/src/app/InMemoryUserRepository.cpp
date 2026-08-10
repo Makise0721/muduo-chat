@@ -53,3 +53,8 @@ bool InMemoryUserRepository::updateState(int64_t id, UserState state)
     it->second.state = state;
     return true;
 }
+
+bool InMemoryUserRepository::userExists(int64_t id) const
+{
+    return usersById_.find(id) != usersById_.end();
+}
