@@ -40,6 +40,24 @@ void runCommonUserRepositoryContract(UserRepository& users)
     CreateUserResult tooLong = users.create(std::string(51, 'n'), "pw");
     EXPECT_FALSE(tooLong.ok);
     EXPECT_EQ(UserError::InvalidInput, tooLong.error);
+
+    // 认证与状态契约
+    AuthResult bad = users.authenticate(firstId, "WRONG");
+    EXPECT_FALSE(bad.ok);
+    AuthResult auth = users.authenticate(firstId, "pw");
+    EXPECT_TRUE(auth.ok);
+    EXPECT_EQ(firstId, auth.id);
+    EXPECT_EQ("alice", auth.name);
+    EXPECT_EQ(UserState::Offline, auth.state);
+
+    EXPECT_TRUE(users.updateState(firstId, UserState::Online));
+    AuthResult auth2 = users.authenticate(firstId, "pw");
+    EXPECT_TRUE(auth2.ok);
+    EXPECT_EQ(UserState::Online, auth2.state);
+    EXPECT_TRUE(users.updateState(firstId, UserState::Offline));
+    AuthResult auth3 = users.authenticate(firstId, "pw");
+    EXPECT_TRUE(auth3.ok);
+    EXPECT_EQ(UserState::Offline, auth3.state);
 }
 
 TEST(UserRepositoryContractTest, InMemoryAdapterSatisfiesContract)

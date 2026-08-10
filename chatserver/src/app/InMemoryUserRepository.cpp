@@ -19,12 +19,37 @@ CreateUserResult InMemoryUserRepository::create(const std::string& name, const s
         result.error = UserError::InvalidInput;
         return result;
     }
-    if (users_.find(name) != users_.end()) {
+    if (idByName_.find(name) != idByName_.end()) {
         result.error = UserError::NameExists;
         return result;
     }
-    users_.insert({name, User{nextId_, password}});
+    usersById_.insert({nextId_, User{nextId_, name, password, UserState::Offline}});
+    idByName_.insert({name, nextId_});
     result.ok = true;
     result.id = nextId_++;
     return result;
+}
+
+AuthResult InMemoryUserRepository::authenticate(int64_t id, const std::string& password)
+{
+    AuthResult result;
+    auto it = usersById_.find(id);
+    if (it == usersById_.end() || it->second.password != password) {
+        return result;
+    }
+    result.ok = true;
+    result.id = id;
+    result.name = it->second.name;
+    result.state = it->second.state;
+    return result;
+}
+
+bool InMemoryUserRepository::updateState(int64_t id, UserState state)
+{
+    auto it = usersById_.find(id);
+    if (it == usersById_.end()) {
+        return false;
+    }
+    it->second.state = state;
+    return true;
 }

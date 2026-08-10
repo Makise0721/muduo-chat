@@ -9,13 +9,18 @@
 class InMemoryUserRepository : public UserRepository {
 public:
     CreateUserResult create(const std::string& name, const std::string& password) override;
+    AuthResult authenticate(int64_t id, const std::string& password) override;
+    bool updateState(int64_t id, UserState state) override;
 
 private:
     struct User {
         int64_t id;
+        std::string name;
         std::string password;
+        UserState state;
     };
-    std::map<std::string, User> users_;
+    std::map<int64_t, User> usersById_;
+    std::map<std::string, int64_t> idByName_;
     int64_t nextId_ = 1;
 };
 

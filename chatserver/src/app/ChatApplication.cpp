@@ -18,6 +18,29 @@ ChatApplication::ChatApplication(UserRepository* users)
 {
 }
 
+int64_t ChatApplication::beginSessionAttempt(int64_t userId)
+{
+    std::lock_guard<std::mutex> lock(sessionMutex_);
+    return ++generations_[userId];
+}
+
+bool ChatApplication::isSessionCurrent(int64_t userId, int64_t generation) const
+{
+    std::lock_guard<std::mutex> lock(sessionMutex_);
+    auto it = generations_.find(userId);
+    return it != generations_.end() && it->second == generation;
+}
+
+AuthResult ChatApplication::authenticate(int64_t userId, const std::string& password)
+{
+    return users_->authenticate(userId, password);
+}
+
+bool ChatApplication::updateUserState(int64_t userId, UserState state)
+{
+    return users_->updateState(userId, state);
+}
+
 void ChatApplication::handle(const SessionContext&, const Command& cmd, Reply* reply)
 {
     reply->type = cmd.type;
