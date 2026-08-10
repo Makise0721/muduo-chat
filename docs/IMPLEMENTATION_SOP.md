@@ -5,7 +5,7 @@
 上位设计：[EVOLUTION_PLAN.md](EVOLUTION_PLAN.md)
 收口计划：[POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)
 当前活动任务：无；**P1 整体 `VERIFIED`**（P1R-00..P1R-09 闭环，完成性验收通过，REMEDIATION 解除）；
-下一任务 P2-09（配置与依赖关闭顺序：v1/v2 port、thread count、DB 凭据、pool/executor 容量从配置加载，fail-fast 校验，关闭顺序 stop accept→drain network→stop submissions→drain/cancel executor→close pool→quit loops）
+下一任务 P2-10（多 Reactor 性能评估：chat-bench 完整矩阵 connect/echo/slow-consumer × 1/2/4/8 loops，吞吐/消息延迟/DB pool wait/executor queue/drop，完成后决定 executor worker 扩并或保持单 worker）
 
 > 本文描述“如何实施和证明”，不代表其中功能已经完成。任何完成状态必须有当前 checkout、测试输出、diff 和提交记录支持。
 
