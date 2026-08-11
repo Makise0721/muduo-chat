@@ -176,7 +176,7 @@ flowchart TD
 - 依赖：P3-03 `VERIFIED`。
 - 接口/可观察行为：一个 `accept` 事务完成 Conversation 查找/创建、成员快照、sequence 分配、Message、Deliveries、OutboxEvent；重复 `(sender, ClientMessageId)` 返回原结果。
 - RED：每个 SQL 步骤后注入失败；8/32 线程并发同 id、同 Conversation、不同 Conversation；当前 adapter 不存在而失败。
-- 最小实现：MySQL MessageStore adapter 和内部 RAII TransactionGuard；Conversation 行 `SELECT ... FOR UPDATE` 或等价原子更新；唯一键竞争后读取已提交原结果。
+- 最小实现：MySQL MessageStore adapter 和内部 RAII TransactionGuard；Conversation 行 `SELECT ... FOR UPDATE` 或等价原子更新；唯一键竞争后读取已提交原结果；fan-out cap 值与接受事务绑定，RED 前记录该值。
 - 错误语义：deadlock/lock timeout 映射 `DependencyBusy`，调用方以相同 ClientMessageId 重试；不同 payload 复用 key 返回 `IdempotencyConflict`，超过 fan-out cap 返回 `TooManyRecipients`，不得悄悄当重复成功。
 - 验证命令：`ctest --test-dir /tmp/muduo-chat-build/debug -R 'MySQLReliableMessaging|ReliableMessagingContract|MessageAcceptanceConcurrency' --repeat until-fail:10 --output-on-failure`。
 - 完成定义：任一故障点都不存在部分 Message/Delivery/Outbox；同 Conversation sequence 唯一且严格递增；不同 Conversation 可并行提交。
@@ -371,7 +371,7 @@ OutboxEvent(
 }
 ```
 
-接收端 ACK 至少包含 `msgid=DELIVERY_ACK` 与 `message_id`。UserId 从 Session 获取，不由 ACK payload 提供。具体整数编码在 P3-00 的 protocol golden 中一次冻结；本计划不随意占用当前枚举值。
+接收端 ACK 至少包含 `msgid=DELIVERY_ACK` 与 `message_id`。UserId 从 Session 获取，不由 ACK payload 提供。具体整数编码在 P3-06 的 protocol golden 中一次冻结；本计划不随意占用当前枚举值。
 
 ## 8. P4 任务队列：可靠多节点
 

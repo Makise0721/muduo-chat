@@ -177,5 +177,5 @@ stateDiagram-v2
 ## 8. 审阅与验证
 
 - **审阅流程**：本规范经 P3-00 场景审阅通过后，ADR-0001 转 `accepted`，并同步 CONTEXT.md（计划 §5 P3-00）。
-- **验证命令**：`rg -n 'MessageAcceptance|ClientMessageId|MessageId|ConversationSequence|DeliveryAcknowledgement|exactly-once' CONTEXT.md docs`；逐项核对 B-09/B-11/B-12/B-17/B-18/B-19/B-21/B-22。
+- **验证命令**：`grep -E -rn 'MessageAcceptance|ClientMessageId|MessageId|ConversationSequence|DeliveryAcknowledgement|exactly-once' CONTEXT.md docs`；逐项核对 B-09/B-11/B-12/B-17/B-18/B-19/B-21/B-22。
 - **自检**：每个故障点有唯一预期结果，且全文本不存在 `success`/`delivered` 等未定义承诺词（MESSAGE_ACCEPTED、已接受等固定词除外）。
