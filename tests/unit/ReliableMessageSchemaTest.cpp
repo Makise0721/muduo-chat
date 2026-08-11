@@ -283,8 +283,8 @@ std::set<std::string> foreignKeySet(MySQL& conn)
     return out;
 }
 
-// information_schema 三视图结构 dump（columns/statistics/key_column_usage），
-// 用于空库与旧库升级结果的一致性比较。
+// information_schema 结构 dump（columns/statistics/key_column_usage/tables/referential_constraints），
+// 用于空库与旧库升级结果的一致性比较（含 ENGINE 与 FK delete_rule 维度）。
 std::string schemaDump(MySQL& conn)
 {
     std::ostringstream os;
@@ -332,6 +332,29 @@ std::string schemaDump(MySQL& conn)
             os << fieldOrNull(row, i) << "|";
         }
         os << "\n";
+    }
+    mysql_free_result(res);
+
+    os << "--tables--\n";
+    res = conn.query("SELECT table_name, engine FROM information_schema.tables "
+                     "WHERE table_schema=DATABASE() ORDER BY table_name");
+    if (!res) {
+        return "";
+    }
+    while ((row = mysql_fetch_row(res))) {
+        os << fieldOrNull(row, 0) << "|" << fieldOrNull(row, 1) << "\n";
+    }
+    mysql_free_result(res);
+
+    os << "--delete_rules--\n";
+    res = conn.query("SELECT table_name, referenced_table_name, delete_rule "
+                     "FROM information_schema.referential_constraints "
+                     "WHERE constraint_schema=DATABASE() ORDER BY table_name, referenced_table_name");
+    if (!res) {
+        return "";
+    }
+    while ((row = mysql_fetch_row(res))) {
+        os << fieldOrNull(row, 0) << "|" << fieldOrNull(row, 1) << "|" << fieldOrNull(row, 2) << "\n";
     }
     mysql_free_result(res);
     return os.str();
@@ -542,6 +565,51 @@ TEST(ReliableMessageSchemaTest, DuplicateClientMessageIdRejected)
                              "sequence,content) VALUES(1,1,'c1',2,'second')"));
     EXPECT_EQ(1062, lastErrno(conn));
     EXPECT_EQ(1ll, countRows(conn, "ChatMessage"));
+}
+
+TEST(ReliableMessageSchemaTest, ClientMessageIdCaseSensitive)
+{
+    resetDb(kTestDb);
+    migrateAll(kTestDb);
+    MySQL conn;
+    makeConn(conn, kTestDb);
+    seedTwoUsers(conn);
+    insertConversation(conn, "DIRECT");
+
+    // 大小写敏感（ascii_bin）：同一 sender 的 'abc' 与 'ABC' 是不同 ClientMessageId，
+    // 均插入成功，不触发 UNIQUE(sender_id, client_message_id)。
+    ASSERT_TRUE(conn.update("INSERT INTO ChatMessage(conversation_id,sender_id,client_message_id,"
+                            "sequence,content) VALUES(1,1,'abc',1,'first')"));
+    ASSERT_TRUE(conn.update("INSERT INTO ChatMessage(conversation_id,sender_id,client_message_id,"
+                            "sequence,content) VALUES(1,1,'ABC',2,'second')"));
+    EXPECT_EQ(2ll, countRows(conn, "ChatMessage"));
+}
+
+TEST(ReliableMessageSchemaTest, OversizedClientMessageIdRejectedInStrictMode)
+{
+    resetDb(kTestDb);
+    migrateAll(kTestDb);
+    MySQL conn;
+    makeConn(conn, kTestDb);
+    seedTwoUsers(conn);
+    insertConversation(conn, "DIRECT");
+
+    // 65 字节 ASCII 超长：锁定 STRICT_TRANS_TABLES 部署语义——error 1406 拒绝。
+    // 非严格 sql_mode 会静默截断（已知限制，docs/specs/schema.md §4），此处跳过并说明。
+    MYSQL_RES* res = conn.query("SELECT @@SESSION.sql_mode");
+    ASSERT_TRUE(res);
+    MYSQL_ROW row = mysql_fetch_row(res);
+    std::string mode = (row && row[0]) ? row[0] : "";
+    mysql_free_result(res);
+    if (mode.find("STRICT_TRANS_TABLES") == std::string::npos) {
+        GTEST_SKIP() << "server sql_mode 非严格（无 STRICT_TRANS_TABLES），超长列值截断而非拒绝";
+    }
+
+    std::string id65(65, 'a');
+    EXPECT_FALSE(conn.update("INSERT INTO ChatMessage(conversation_id,sender_id,client_message_id,"
+                             "sequence,content) VALUES(1,1,'" + id65 + "',1,'x')"));
+    EXPECT_EQ(1406, lastErrno(conn));
+    EXPECT_EQ(0ll, countRows(conn, "ChatMessage"));
 }
 
 TEST(ReliableMessageSchemaTest, DuplicateConversationSequenceRejected)
@@ -801,6 +869,7 @@ TEST(ReliableMessageSchemaTest, EmptyAndLegacyUpgradeConvergeToSameSchema)
     EXPECT_EQ(std::string("m1"), row[0]);
     mysql_free_result(res);
 
-    // 空库与旧库升级结果结构 checksum 一致（columns/statistics/key_column_usage dump）。
+    // 空库与旧库升级结果结构 checksum 一致（columns/statistics/key_column_usage/
+    // tables/referential_constraints dump，含 ENGINE 与 delete_rule 维度）。
     EXPECT_EQ(emptyDump, schemaDump(connLegacy));
 }

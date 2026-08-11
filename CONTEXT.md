@@ -42,7 +42,8 @@ _Avoid_: admin、管理员
 _Avoid_: 全局消息流、聊天室
 
 **ClientMessageId**:
-发送端为一次消息意图生成的稳定幂等标识；同一 User 重试时保持不变。
+发送端为一次消息意图生成的稳定幂等标识；同一 User 重试时保持不变。大小写敏感：
+'abc' 与 'ABC' 是不同 ClientMessageId。
 _Avoid_: request id、sequence
 
 **MessageId**:

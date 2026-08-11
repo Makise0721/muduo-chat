@@ -36,7 +36,7 @@
 
 | 消息 | msgid | 字段 | 约束 |
 |------|-------|------|------|
-| ONE_CHAT | 6（既有值，不变，B-22） | `client_message_id`（新增）、`toid`、`content` | `client_message_id` 为 ASCII 1..64 字节（对应 schema `ASCII(1..64)`）；缺失 → legacy 判定（§5.1）；格式非法 → InvalidClientMessageId |
+| ONE_CHAT | 6（既有值，不变，B-22） | `client_message_id`（新增）、`toid`、`content` | `client_message_id` 为 ASCII 1..64 字节（对应 schema `ASCII(1..64)`），大小写敏感（'abc' 与 'ABC' 是不同 ClientMessageId，schema 以 `ascii_bin` 排序规则落地）；缺失 → legacy 判定（§5.1）；格式非法 → InvalidClientMessageId |
 | GROUP_CHAT | 10（既有值，不变，B-22） | `client_message_id`（新增）、`groupid`、`content` | 同上；非成员发送 → NotConversationMember（B-18 收紧） |
 
 可靠客户端必须跨重试保存 client_message_id；同一消息意图重试时不得更换（计划 §2）。

@@ -2,7 +2,7 @@
 
 状态：`定稿`（P3-03 冻结；与 sql/migrations/0001_baseline.sql、0002_expand.sql 逐条一致，漂移由 SchemaMigrationTest.DdlDriftBetweenChatSqlAndBaseline 与 ReliableMessageSchemaTest.SchemaContractAssertsColumnsIndexesAndForeignKeys 固化）
 
-基线：`main` @ `1a2562f`（P3-03 后）
+基线：`main` @ `1a2562f`（P3-03 任务卡基线）
 
 关联：
 
@@ -61,7 +61,7 @@
 | `id` | `BIGINT UNSIGNED` | PK，AUTO_INCREMENT |
 | `conversation_id` | `BIGINT UNSIGNED` | `UNIQUE(conversation_id, sequence)`，FK → `Conversation(id)` |
 | `sender_id` | `INT` | `UNIQUE(sender_id, client_message_id)`，FK → `User(id)` |
-| `client_message_id` | `VARCHAR(64) CHARACTER SET ascii` | NOT NULL（DB 层强制 ASCII；1..64 下界由领域校验承担） |
+| `client_message_id` | `VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin` | NOT NULL（DB 层 ascii 字符集防非 ASCII + `ascii_bin` 大小写敏感；1..64 长度上界由领域层 `ClientMessageId` 校验 P3-02 承担；严格 sql_mode 下超长报 1406，非严格部署截断——见 §4 已知限制） |
 | `sequence` | `BIGINT UNSIGNED` | NOT NULL（Conversation 内局部顺序） |
 | `content` | `MEDIUMBLOB` | NOT NULL（上限 16777215 字节） |
 | `created_at` | `DATETIME` | NOT NULL DEFAULT CURRENT_TIMESTAMP |
@@ -104,11 +104,13 @@
 | `UNIQUE(sender_id, client_message_id)` | ChatMessage | 幂等接受：同键重试不产生第二行 |
 | `UNIQUE(conversation_id, sequence)` | ChatMessage | 局部顺序：Conversation 内 sequence 唯一 |
 | `UNIQUE(event_type, aggregate_message_id)` | OutboxEvent | outbox 事件幂等 |
-| `UNIQUE(user_low_id, user_high_id)` | DirectConversation | direct 对话每无序用户对一行 |
+| `UNIQUE(user_low_id, user_high_id)` | DirectConversation | UNIQUE 物理约束；low/high 归一化（low<high）由 adapter 保证（P3-04） |
 | `UNIQUE(group_id)` | GroupConversation | 群对话一表一 |
 | `PRIMARY KEY(message_id, recipient_id)` | MessageDelivery | 每接收者至多一行 Delivery |
 | `INDEX(recipient_id, state, next_attempt_at)` | MessageDelivery | 待投递扫描 |
 | FK ×10（见 §3 各表） | 六表 | 同型引用 + `ON DELETE CASCADE` |
+
+已知限制：`client_message_id` 超长（>64 字节）只在 DB 严格 sql_mode（`STRICT_TRANS_TABLES`）下被拒绝（error 1406）；非严格部署会静默截断——ASCII 1..64 上界由领域层 `ClientMessageId` 校验（P3-02）兜底，不依赖 DB 约束。
 
 ## 5. 变更
 
