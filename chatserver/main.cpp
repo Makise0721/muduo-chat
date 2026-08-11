@@ -4,6 +4,7 @@
 #include "db/ConnectionPool.hpp"
 #include <chrono>
 #include <iostream>
+#include <sstream>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -66,7 +67,9 @@ void beginShutdown(EventLoop* loop, ChatServer* v1, ChatServer* v2,
     loop->runEvery(50, [loop, v1, v2, timeoutMs, flow]() {
         int pending = v1->connectionCount() + v2->connectionCount();
         if (pending == 0) {
-            std::cout << "DRAINED pending=0" << std::endl;
+            if (!flow->forced) {
+                std::cout << "DRAINED pending=0" << std::endl;
+            }
             finishShutdown(loop, flow);
             return;
         }
@@ -138,6 +141,14 @@ int main(int argc, char** argv) {
     connPool.init(cfg.db.host, cfg.db.user, cfg.db.password, cfg.db.dbname,
                   cfg.db.port, cfg.db.poolSize);
 
+    // 池完全建不起来（DB 不可达）是启动错误：fail-fast，不起服务。
+    ConnectionPool::Metrics poolMetrics = connPool.metrics();
+    if (poolMetrics.idle + poolMetrics.active == 0) {
+        std::cerr << "pool init failed: cannot connect to MySQL at "
+                  << cfg.db.host << ":" << cfg.db.port << std::endl;
+        exit(1);
+    }
+
     int shutdownTimeoutMs = 5000;
     const char* timeoutEnv = getenv("CHAT_SHUTDOWN_TIMEOUT_MS");
     if (timeoutEnv) {
@@ -182,14 +193,16 @@ int main(int argc, char** argv) {
             for (ssize_t i = 0; i < n; ++i) {
                 if (buf[i] == 2) {
                     // P2-10：SIGUSR1 = 快照一次运行期指标（pool + executor）。
+                    // 整行拼装后单次输出，避免与异步 Logger 的 stdout 写入交错。
                     ConnectionPool::Metrics m = ConnectionPool::getInstance().metrics();
-                    std::cout << "METRICS pool_total=" << m.total
-                              << " pool_idle=" << m.idle
-                              << " pool_active=" << m.active
-                              << " executor_queue=" << ChatService::instance()->executorQueueDepth()
-                              << " executor_drop_full=" << ChatService::instance()->executorDroppedFull()
-                              << " executor_drop_shutdown=" << ChatService::instance()->executorDroppedShutdown()
-                              << std::endl;
+                    std::ostringstream os;
+                    os << "METRICS pool_total=" << m.total
+                       << " pool_idle=" << m.idle
+                       << " pool_active=" << m.active
+                       << " executor_queue=" << ChatService::instance()->executorQueueDepth()
+                       << " executor_drop_full=" << ChatService::instance()->executorDroppedFull()
+                       << " executor_drop_shutdown=" << ChatService::instance()->executorDroppedShutdown();
+                    std::cout << os.str() << std::endl;
                 } else {
                     beginShutdown(&loop, &server, &v2Server, shutdownTimeoutMs, &flow);
                 }

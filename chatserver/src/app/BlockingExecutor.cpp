@@ -3,6 +3,8 @@
 #include "EventLoop.h"
 
 #include <chrono>
+#include <exception>
+#include <iostream>
 
 namespace {
 
@@ -108,7 +110,15 @@ void BlockingExecutor::workerLoop()
             continue;  // 过期：不执行、不回调
         }
         if (p.task) {
-            p.task();
+            // 任务异常仍调度 completion（completion 内默认 errno 为非成功值，
+            // 客户端得到失败响应而非悬挂）。
+            try {
+                p.task();
+            } catch (const std::exception& e) {
+                std::cerr << "executor task exception: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "executor task exception: unknown" << std::endl;
+            }
         }
         if (p.completion) {
             loop_->runInLoop(std::move(p.completion));

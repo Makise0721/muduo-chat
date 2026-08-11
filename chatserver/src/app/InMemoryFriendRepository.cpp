@@ -3,7 +3,8 @@
 AddFriendResult InMemoryFriendRepository::add(int64_t userId, int64_t friendId)
 {
     AddFriendResult result;
-    if (!users_.userExists(friendId)) {
+    // 与 MySQL FK 双列校验一致：发送方或目标不存在 → TargetNotFound。
+    if (!users_.userExists(userId) || !users_.userExists(friendId)) {
         result.error = FriendError::TargetNotFound;
         return result;
     }

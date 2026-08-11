@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <mysql/mysql.h>
+#include <vector>
 
 namespace {
 
@@ -95,7 +96,7 @@ std::vector<OfflineMessage> MySQLMessageRepository::takeOffline(int64_t userId)
     }
 
     long long outId = 0;
-    char payloadBuf[1024] = {0};
+    std::vector<char> payloadBuf(1024, 0);
     unsigned long payloadLen = 0;
     bool isNull[2] = {0};
     MYSQL_BIND out[2];
@@ -104,8 +105,8 @@ std::vector<OfflineMessage> MySQLMessageRepository::takeOffline(int64_t userId)
     out[0].buffer = &outId;
     out[0].is_null = &isNull[0];
     out[1].buffer_type = MYSQL_TYPE_STRING;
-    out[1].buffer = payloadBuf;
-    out[1].buffer_length = sizeof(payloadBuf);
+    out[1].buffer = &payloadBuf[0];
+    out[1].buffer_length = payloadBuf.size();
     out[1].length = &payloadLen;
     out[1].is_null = &isNull[1];
     if (mysql_stmt_bind_result(stmt.stmt, out) != 0 ||
@@ -113,11 +114,20 @@ std::vector<OfflineMessage> MySQLMessageRepository::takeOffline(int64_t userId)
         return taken;
     }
     int fetch;
-    while ((fetch = mysql_stmt_fetch(stmt.stmt)) == 0) {
+    while ((fetch = mysql_stmt_fetch(stmt.stmt)) == 0 || fetch == MYSQL_DATA_TRUNCATED) {
+        if (fetch == MYSQL_DATA_TRUNCATED) {
+            // 行数据超出现有缓冲（如多字节字符超 1024 字节）：按真实长度扩容重取该列。
+            payloadBuf.resize(payloadLen + 1);
+            out[1].buffer = &payloadBuf[0];
+            out[1].buffer_length = payloadBuf.size();
+            if (mysql_stmt_fetch_column(stmt.stmt, &out[1], 1, 0) != 0) {
+                return taken;
+            }
+        }
         OfflineMessage m;
         m.id = static_cast<int64_t>(outId);
         m.userId = userId;
-        m.payload.assign(payloadBuf, payloadLen);
+        m.payload.assign(payloadBuf.data(), payloadLen);
         taken.push_back(std::move(m));
     }
     if (fetch != MYSQL_NO_DATA) {

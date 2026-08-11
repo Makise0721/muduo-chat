@@ -1,5 +1,6 @@
 #include "app/Config.hpp"
 
+#include <climits>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -46,8 +47,8 @@ bool getIntMin1(const json& obj, const std::string& key, int* out,
         return false;
     }
     long long v = obj[key].get<long long>();
-    if (v < 1) {
-        errors->push_back({path + key, "must be >= 1"});
+    if (v < 1 || v > INT_MAX) {
+        errors->push_back({path + key, "must be in [1,2147483647]"});
         return false;
     }
     *out = static_cast<int>(v);
@@ -120,6 +121,12 @@ bool parseServerSection(const json& server, AppConfig* out,
             getUint16(v2, "port", &out->v2.port, errors, "server.v2.");
         }
     }
+    if (server.contains("v1") || server.contains("v2")) {
+        if (out->v1.port == out->v2.port) {
+            errors->push_back({"server.v1.port", "must differ from server.v2.port"});
+            ok = false;
+        }
+    }
     return ok;
 }
 
@@ -152,6 +159,11 @@ bool parseExecutorSection(const json& executor, AppConfig* out,
     ok = getIntMin1(executor, "workers", &out->executor.workers, errors, "executor.") && ok;
     ok = getIntMin1(executor, "queue_capacity", &out->executor.queueCapacity,
                     errors, "executor.") && ok;
+    // P2-10：多 worker 破坏同连接串行依赖，P3 前只允许单 worker。
+    if (ok && out->executor.workers != 1) {
+        errors->push_back({"executor.workers", "must be 1"});
+        ok = false;
+    }
     return ok;
 }
 
@@ -243,10 +255,18 @@ bool applyCliOverrides(AppConfig* cfg, const char* ip, const char* port,
             *err = std::string("config error: threads '") + threads + "' must be >= 1";
             return false;
         }
+        if (t > INT_MAX) {
+            *err = std::string("config error: threads '") + threads + "' must be <= 2147483647";
+            return false;
+        }
         cfg->v1.threads = static_cast<int>(t);
     }
     cfg->v1.ip = ip;
     cfg->v1.port = static_cast<uint16_t>(portValue);
+    if (cfg->v2.port == cfg->v1.port) {
+        *err = "config error: server.v1.port must differ from server.v2.port";
+        return false;
+    }
     cfg->v2.ip = cfg->v1.ip;
     return true;
 }

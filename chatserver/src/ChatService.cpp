@@ -36,24 +36,31 @@ void ChatService::handler(const TcpConnectionPtr& conn, string& msg, Timestamp t
     try {
         js = json::parse(msg);
     } catch (const std::exception& e) {
-        cerr << "json parse failed: " << e.what() << ", msg=" << msg << endl;
+        cerr << "json parse failed: " << e.what() << ", len=" << msg.size() << endl;
         return;
     }
 
-    if (!js.contains("msgid")) {
-        cerr << "msg has no msgid, msg=" << msg << endl;
-        return;
-    }
+    try {
+        if (!js.contains("msgid")) {
+            cerr << "msg has no msgid" << endl;
+            return;
+        }
 
-    int msgid = js["msgid"].get<int>();
-    
-    auto it = _msgHandlerMap.find(msgid);
-    if (it == _msgHandlerMap.end()) {
-        cerr << "msgid: " << msgid << " can not find handler!" << endl;
-        return;
+        int msgid = js["msgid"].get<int>();
+
+        auto it = _msgHandlerMap.find(msgid);
+        if (it == _msgHandlerMap.end()) {
+            cerr << "msgid: " << msgid << " can not find handler!" << endl;
+            return;
+        }
+
+        it->second(conn, js, time);
+    } catch (const std::exception& e) {
+        // 单包异常兜底：缺字段/类型错等一律不崩溃、不打印消息原文（可能含密码）。
+        cerr << "handler exception: " << e.what() << endl;
+    } catch (...) {
+        cerr << "handler exception: unknown" << endl;
     }
-    
-    it->second(conn, js, time);
 }
 
 namespace {
@@ -108,6 +115,23 @@ void loadLoginExtras(ChatApplication* app, LoginDbResult* r)
     for (size_t i = 0; i < offline.size(); ++i) {
         r->offlineMessages.push_back(offline[i].payload);
     }
+}
+
+// completion 早退（会话过期/连接断开）时离线消息已被 worker 取出却无法投递：
+// 恢复入队避免永久丢失；executor 已 shutdown（RejectedShutdown）时丢弃可接受。
+void restoreOfflineMessages(BlockingExecutor* executor, ChatApplication* app,
+                            int64_t id, const std::shared_ptr<LoginDbResult>& result)
+{
+    if (result->offlineMessages.empty()) {
+        return;
+    }
+    executor->submit(
+        [app, id, result] {
+            for (size_t i = 0; i < result->offlineMessages.size(); ++i) {
+                app->storeOfflineMessage(id, result->offlineMessages[i]);
+            }
+        },
+        [] {});
 }
 
 } // namespace
@@ -170,6 +194,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
         [this, conn, id, gen, result] {
             // stale：会话已被登出/断开/新登录取代，不写状态、不响应。
             if (!_app.isSessionCurrent(id, gen)) {
+                restoreOfflineMessages(_executor.get(), &_app, id, result);
                 return;
             }
             json response;
@@ -178,6 +203,11 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                 response["errno"] = 1;
                 response["errmsg"] = "userid or password is invalid!";
                 conn->send(response.dump() + "\n");
+                return;
+            }
+            // 连接已断开：不建立会话（防断线竞态锁死用户），不响应。
+            if (!conn->connected()) {
+                restoreOfflineMessages(_executor.get(), &_app, id, result);
                 return;
             }
             {
@@ -220,25 +250,35 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
 }
 
 void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
+    if (!_executor) {
+        json response;
+        response["msgid"] = REG_MSG_ACK;
+        response["errno"] = 1;
+        response["errmsg"] = "db unavailable!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+
     Command cmd;
     cmd.type = Command::Type::Register;
     cmd.name = js["name"].get<std::string>();
     cmd.password = js["password"].get<std::string>();
     cmd.raw = js.dump();
 
-    SessionContext ctx;
-    Reply reply;
-    _app.handle(ctx, cmd, &reply);
-
-    json response;
-    response["msgid"] = REG_MSG_ACK;
-    response["errno"] = reply.errnoCode;
-    if (reply.errnoCode == 0) {
-        response["id"] = reply.userId;
-    } else {
-        response["errmsg"] = reply.errmsg;
-    }
-    conn->send(response.dump() + "\n");
+    auto reply = std::make_shared<Reply>();
+    _executor->submit(
+        [this, cmd, reply] { _app.handle(SessionContext(), cmd, reply.get()); },
+        [conn, reply] {
+            json response;
+            response["msgid"] = REG_MSG_ACK;
+            response["errno"] = reply->errnoCode;
+            if (reply->errnoCode == 0) {
+                response["id"] = reply->userId;
+            } else {
+                response["errmsg"] = reply->errmsg;
+            }
+            conn->send(response.dump() + "\n");
+        });
 }
 
 void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp time) {
@@ -273,6 +313,15 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
 
 void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int toid = js["toid"].get<int>();
+    // 消息超长（离线 payload 存 OfflineMessage.message VARCHAR(500)）：
+    // 按整条序列化 payload 判定，在线/离线路径一致拒绝。
+    if (js.dump().size() > 500) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "message too long";
+        conn->send(response.dump() + "\n");
+        return;
+    }
     {
         lock_guard<mutex> lock(_connMutex);
         auto it = _userConnMap.find(toid);
@@ -297,8 +346,8 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
     auto result = std::make_shared<StoreResult>();
     _executor->submit(
         [this, toid, payload, result] { *result = _app.storeOfflineMessage(toid, payload); },
-        [conn, js, result] {
-            json response = js;
+        [conn, payload, result] {
+            json response = json::parse(payload);
             response["errno"] = result->ok ? 0 : 1;
             conn->send(response.dump() + "\n");
         });
@@ -315,10 +364,11 @@ void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp ti
         return;
     }
     auto result = std::make_shared<AddFriendResult>();
+    std::string payload = js.dump();
     _executor->submit(
         [this, userid, friendid, result] { *result = _app.addFriend(userid, friendid); },
-        [conn, js, result] {
-            json response = js;
+        [conn, payload, result] {
+            json response = json::parse(payload);
             response["errno"] = result->ok ? 0 : 1;
             conn->send(response.dump() + "\n");
         });
@@ -367,10 +417,11 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
         return;
     }
     auto result = std::make_shared<JoinGroupResult>();
+    std::string payload = js.dump();
     _executor->submit(
         [this, userid, groupid, result] { *result = _app.joinGroup(groupid, userid); },
-        [conn, js, result] {
-            json response = js;
+        [conn, payload, result] {
+            json response = json::parse(payload);
             response["errno"] = result->ok ? 0 : 1;
             conn->send(response.dump() + "\n");
         });
@@ -379,6 +430,15 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
     int groupid = js["groupid"].get<int>();
+    // 消息超长（离线 payload 存 OfflineMessage.message VARCHAR(500)）：
+    // 按整条序列化 payload 判定，在线/离线路径一致拒绝。
+    if (js.dump().size() > 500) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "message too long";
+        conn->send(response.dump() + "\n");
+        return;
+    }
 
     if (!_executor) {
         json response = js;
@@ -387,10 +447,10 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
         return;
     }
     auto members = std::make_shared<MembersResult>();
+    std::string payload = js.dump();
     _executor->submit(
         [this, groupid, members] { *members = _app.groupMembers(groupid); },
-        [this, conn, js, userid, members] {
-            std::string payload = js.dump();
+        [this, conn, userid, members, payload] {
             // 在线成员：锁内拷贝连接后原样转发（内存操作，无 SQL）。
             std::vector<TcpConnectionPtr> onlineUsers;
             std::unordered_set<int64_t> onlineIds;
@@ -421,7 +481,7 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
                     [] {});
             }
             // 给群聊发送者一个确认，避免客户端阻塞等待（B-19：查询失败也回 0）。
-            json response = js;
+            json response = json::parse(payload);
             response["errno"] = 0;
             conn->send(response.dump() + "\n");
         });

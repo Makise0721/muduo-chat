@@ -4,7 +4,7 @@
 
 bool isRepositoryInputValid(const std::string& name, const std::string& password)
 {
-    if (name.empty() || password.empty() || name.size() > 50) {
+    if (name.empty() || password.empty() || name.size() > 50 || password.size() > 50) {
         return false;
     }
     // NUL 与 MySQL 字符串列语义冲突（存储截断），防御式拒绝。
