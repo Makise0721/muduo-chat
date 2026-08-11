@@ -91,3 +91,4 @@
 | 任务 | 状态 | 证据（命令/结果） |
 |---|---|---|
 | P3-00 固定可靠消息语义与协议场景 | VERIFIED | 证据：4 项现状基线证据（E1 重复 one-chat 两行 MySQLMessageRepository.cpp:50 / E2 在线不落库 / E3 登录取走即删 :139 / E4 群查询失败仍 ACK 0 ChatService.cpp:483-486，chat_test 库实测）；message-reliability.md 协议表/状态机/10 故障点/兼容迁移；ADR-0001 accepted；CONTEXT 词汇核对无改动；矩阵 B-09/B-11/B-12/B-17/B-18/B-19/B-21/B-22 行号修正；两轴对抗审查+复审通过；已提交 d31b2b9 + 修复提交 |
+| P3-01 建立版本化 migration 与 schema 验证工具 | GREEN | 聚焦证据（构建目录 ~/muduo-chat-build/p3-01-debug）：SchemaMigrationTest 6/6（空库幂等 / 旧五表快照升级 / checksum fail-fast / 并发单持锁者×5 轮 / chat.sql 与 baseline DDL 漂移 / main.cpp 无迁移调用），fixture 改动后 UserRepositoryContractTest 2/2，dbmigrate 工具 smoke 全过（apply/status/idempotent/tamper-exit-1），status checksum 与 sha256sum 一致（df95cbe9...daac）；生产目标 ChatServer/chatserver_core/mymuduo 构建通过；RED=编译缺 SchemaMigration.hpp。非 VERIFIED：全量回归/ctest 注册留编排者合并阶段；待合并后补全量 + ASan/TSan |
