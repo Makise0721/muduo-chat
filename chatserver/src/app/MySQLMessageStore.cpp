@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
 
 namespace {
@@ -275,11 +276,14 @@ int64_t secsToMs(double secs)
 }
 
 // RAII accept 事务：acquire 连接（带 deadline）→ READ COMMITTED → START
-// TRANSACTION；析构时未提交则 ROLLBACK（错误路径/线程退出兜底）；commit() 先
-// 标记关闭再 COMMIT——COMMIT 后即使故障注入抛异常，回滚路径也不重复回滚。
+// TRANSACTION；析构时未提交则 ROLLBACK（错误路径/线程退出兜底）；commit() 失败
+// 时显式回滚（尽力而为，ROLLBACK 再失败记录日志、析构兜底再试），回滚成功后
+// 标记关闭、析构不重复回滚——保证归还池的连接无未提交事务。
 class TransactionGuard {
 public:
-    explicit TransactionGuard(ConnectionPool& pool)
+    explicit TransactionGuard(ConnectionPool& pool,
+                              MySQLMessageStore::FaultHook* faultHook = nullptr)
+        : faultHook_(faultHook)
     {
         ConnectionPool::AcquireResult acq = pool.acquire(kAcquireTimeoutMs);
         if (!acq.lease) {
@@ -310,9 +314,28 @@ public:
         if (!open_) {
             return;
         }
-        open_ = false;
-        if (!lease_->update("COMMIT")) {
-            throwStoreError(mysql_errno(lease_->getConnection()), "commit failed");
+        bool failed = false;
+        unsigned int err = 0;
+        if (faultHook_ != nullptr && faultHook_->failCommit()) {
+            // 故障注入：跳过真实 COMMIT，模拟其失败（如 1205 lock wait timeout）。
+            failed = true;
+            err = 1205;
+        } else if (!lease_->update("COMMIT")) {
+            failed = true;
+            err = mysql_errno(lease_->getConnection());
+        }
+        if (failed) {
+            // COMMIT 失败时事务仍开放：显式回滚（尽力而为）后重抛。绝不让带
+            // 未提交事务的连接归还池——START TRANSACTION 隐式提交的自愈脆弱，
+            // 会把失败 accept 的部分数据复活成已提交。
+            open_ = true;
+            if (!lease_->update("ROLLBACK")) {
+                std::cerr << "rollback after failed commit also failed, mysql_errno="
+                          << mysql_errno(lease_->getConnection()) << std::endl;
+            } else {
+                open_ = false;  // 回滚成功：析构不再重复回滚
+            }
+            throwStoreError(err, "commit failed");
         }
     }
 
@@ -322,6 +345,7 @@ public:
 private:
     ConnectionLease lease_;
     bool open_ = false;
+    MySQLMessageStore::FaultHook* faultHook_ = nullptr;
 };
 
 // 线程本地 accept 事务上下文：ReliableMessaging 由单一调用者串行驱动（P3-02
@@ -378,7 +402,7 @@ void MySQLMessageStore::beginTx()
     if (g_tx.guard) {
         return;  // 已在事务中（防御）
     }
-    g_tx.guard.reset(new TransactionGuard(pool_));
+    g_tx.guard.reset(new TransactionGuard(pool_, faultHook_));
 }
 
 void MySQLMessageStore::commitTx()
@@ -407,7 +431,7 @@ void MySQLMessageStore::rollbackAndClear()
     g_tx.insertedDeliveries = 0;
 }
 
-// 边界：非 accept 操作先提交遗留 accept 事务（0 成员快照边缘的延迟提交）。
+// 边界：非 accept 操作先提交遗留 accept 事务（防御；0 成员快照现已内联提交）。
 void MySQLMessageStore::finishPending()
 {
     if (g_tx.guard) {
@@ -539,7 +563,7 @@ ConversationId MySQLMessageStore::getOrCreateConversation(const SessionIdentity&
         throw MessageStoreError(StoreErrorKind::TooManyRecipients, "fan-out exceeds cap");
     }
     try {
-        finishPending();  // 上一个 accept 若 0 成员快照未提交，在此边界提交
+        finishPending();  // 防御：遗留 accept 事务在此边界提交（0 成员快照已内联提交）
         beginTx();
         g_tx.expectedDeliveries = (cmd.kind == SendMessageCommand::Kind::Direct)
                                       ? 1
@@ -662,6 +686,12 @@ Message MySQLMessageStore::insertMessage(const Message& draft)
                 "INSERT INTO OutboxEvent(aggregate_message_id, event_type, payload) "
                 "VALUES(?, 'MessageAccepted', ?)",
                 outBinds, 2);
+        }
+        // 0 成员快照（空群）：无 MessageDelivery 可插 → 无 insertDelivery 提交
+        // 触发点；在此立即 COMMIT（accept 返回前持久化；空事务提交无害）。
+        // P3-06 拒空群登记不变，本分支仅防御性保边界。
+        if (g_tx.expectedDeliveries == 0) {
+            commitTx();
         }
         return accepted;
     } catch (...) {

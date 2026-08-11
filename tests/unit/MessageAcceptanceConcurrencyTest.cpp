@@ -2,6 +2,9 @@
 // MySQLMessageStore + 连接池；adapter 事务上下文 thread_local 按线程隔离）。
 // 真实 chat_p304 库，不 skip；DependencyBusy 按计划 §2.4 以同 key 重试。
 // 每场景使用专属 key/对话对，断言只按自身范围，无跨用例全局计数。
+// 串行约束：本文件与 MySQLReliableMessagingTest.cpp 共享 chat_p304 库
+// （SetUpTestSuite 重建）与单例连接池，两测试二进制必须串行执行（CTest 默认
+// 串行满足，勿以 --parallel 混跑两个二进制）。
 
 #include "MySqlTestFixture.hpp"
 

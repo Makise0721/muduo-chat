@@ -67,6 +67,10 @@ public:
     struct FaultHook {
         virtual ~FaultHook() = default;
         virtual void onStep(Step step) = 0;
+        // COMMIT 步骤故障注入：true 时跳过真实 COMMIT、模拟其失败（如 1205），
+        // 走 commit() 的显式回滚路径（与 onStep(Commit) 的"已提交但确认未达"语义
+        // 区分）。
+        virtual bool failCommit() { return false; }
     };
 
     explicit MySQLMessageStore(ConnectionPool& pool, uint64_t fanOutCap,

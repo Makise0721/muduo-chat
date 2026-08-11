@@ -3,6 +3,9 @@
 // FK 1452 → NotFound、错误码映射。
 // 用例依赖声明顺序：MySqlAdapterSatisfiesContract 最先（需要全新库的绝对 sequence
 // 断言）；其余用例只用自隔离 key/对话对断言，无全局计数（不依赖顺序）。
+// 串行约束：本文件与 MessageAcceptanceConcurrencyTest.cpp 共享 chat_p304 库
+// （SetUpTestSuite 重建）与单例连接池，两测试二进制必须串行执行（CTest 默认
+// 串行满足，勿以 --parallel 混跑两个二进制）。
 
 #include "MySqlTestFixture.hpp"
 
@@ -104,6 +107,15 @@ public:
 
 private:
     MySQLMessageStore::Step step_;
+};
+
+// COMMIT 语句失败注入：跳过真实 COMMIT、模拟其失败（如 1205 lock wait
+// timeout），走 commit() 的显式回滚路径（与 onStep(Commit) 的"已提交但确认
+// 未达"语义区分）。
+class FailCommitHook : public MySQLMessageStore::FaultHook {
+public:
+    void onStep(MySQLMessageStore::Step) override {}
+    bool failCommit() override { return true; }
 };
 
 long long countQuery(MySQL& conn, const std::string& sql)
@@ -322,6 +334,152 @@ TEST_F(MySqlReliableMessagingDb, FaultAfterEverySqlStepLeavesNoPartialState)
             EXPECT_EQ(2u, retry.sequence.value);
         }
     }
+}
+
+TEST_F(MySqlReliableMessagingDb, CommitFailureRollsBackWithoutHangingTransaction)
+{
+    // 专属对话 (50,51)，与其它用例隔离。
+    const SessionIdentity sender{UserId{50}, 1};
+    const UserId recipient{51};
+
+    FailCommitHook hook;
+    MySQLMessageStore faultStore(pool(), kCap, &hook);
+    FakeClock clock;
+    clock.set(kNow);
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(faultStore, sink, clock, kLeaseMs);
+
+    const std::string key1 = "commit-fail";
+    bool threw = false;
+    try {
+        rm.accept(sender, directCommand(key1, recipient));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    ASSERT_TRUE(threw) << "commit failure must fail the accept";
+
+    // 无部分数据：失败 accept 的一切写入已回滚。
+    MySQL conn;
+    ASSERT_TRUE(conn.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM ChatMessage WHERE sender_id=50 "
+                                  "AND client_message_id='" + key1 + "'"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM MessageDelivery d JOIN ChatMessage m "
+                                  "ON m.id=d.message_id WHERE m.sender_id=50 "
+                                  "AND m.client_message_id='" + key1 + "'"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM OutboxEvent o JOIN ChatMessage m "
+                                  "ON m.id=o.aggregate_message_id WHERE m.sender_id=50 "
+                                  "AND m.client_message_id='" + key1 + "'"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM DirectConversation "
+                                  "WHERE user_low_id=50 AND user_high_id=51"));
+    // 无悬挂事务：归还池的连接不得带未提交事务（否则下一次 START TRANSACTION
+    // 隐式提交会复活失败 accept 的部分数据）。
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM information_schema.innodb_trx"))
+        << "pool holds a connection with an open transaction";
+
+    // 后续事务正常：同一线程下一次 accept 成功且真正提交。
+    MySQLMessageStore plainStore(pool(), kCap);
+    FakeClock clock2;
+    clock2.set(kNow);
+    RecordingDeliverySink sink2;
+    ReliableMessaging rm2(plainStore, sink2, clock2, kLeaseMs);
+    AcceptOutcome out = rm2.accept(sender, directCommand("commit-fail-2", recipient));
+    ASSERT_TRUE(out.ok) << "subsequent accept must succeed after a commit failure";
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM ChatMessage WHERE sender_id=50 "
+                                  "AND client_message_id='commit-fail-2'"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM ChatMessage WHERE sender_id=50 "
+                                  "AND client_message_id='" + key1 + "'"))
+        << "failed accept data must not be resurrected";
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM information_schema.innodb_trx"));
+}
+
+TEST_F(MySqlReliableMessagingDb, EmptyGroupSnapshotCommitsBeforeAcceptReturns)
+{
+    // 0 成员快照（空群）：accept 返回 ok 前事务必须已提交（跨连接立即可见）。
+    const SessionIdentity alice{kAlice, 1};
+    SendMessageCommand cmd;
+    cmd.clientMessageId = ClientMessageId("empty-group");
+    cmd.kind = SendMessageCommand::Kind::Group;
+    cmd.groupId = GroupId{7};  // 已种子；0 成员快照
+    cmd.content = "no members";
+
+    MySQLMessageStore store(pool(), kCap);
+    FakeClock clock;
+    clock.set(kNow);
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(store, sink, clock, kLeaseMs);
+
+    AcceptOutcome out = rm.accept(alice, cmd);
+    ASSERT_TRUE(out.ok) << "empty snapshot must be accepted";
+
+    MySQL conn;
+    ASSERT_TRUE(conn.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM ChatMessage WHERE sender_id=1 "
+                                  "AND client_message_id='empty-group'"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM MessageDelivery d JOIN ChatMessage m "
+                                  "ON m.id=d.message_id WHERE m.sender_id=1 "
+                                  "AND m.client_message_id='empty-group'"));
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM OutboxEvent o JOIN ChatMessage m "
+                                  "ON m.id=o.aggregate_message_id WHERE m.sender_id=1 "
+                                  "AND m.client_message_id='empty-group'"));
+    // 无悬挂事务：0 成员 accept 不得遗留开放事务到下一操作边界/线程退出。
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM information_schema.innodb_trx"))
+        << "empty snapshot accept left an open transaction";
+}
+
+TEST_F(MySqlReliableMessagingDb, DirectAcceptCommitsBeforeReturn)
+{
+    // direct 场景对照：accept 返回 ok 时事务同样必须已提交（无悬挂）。
+    const SessionIdentity alice{kAlice, 1};
+    MySQLMessageStore store(pool(), kCap);
+    FakeClock clock;
+    clock.set(kNow);
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(store, sink, clock, kLeaseMs);
+
+    AcceptOutcome out = rm.accept(alice, directCommand("direct-committed", kBob));
+    ASSERT_TRUE(out.ok);
+
+    MySQL conn;
+    ASSERT_TRUE(conn.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM ChatMessage WHERE sender_id=1 "
+                                  "AND client_message_id='direct-committed'"));
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM MessageDelivery d JOIN ChatMessage m "
+                                  "ON m.id=d.message_id WHERE m.sender_id=1 "
+                                  "AND m.client_message_id='direct-committed' AND d.recipient_id=2"));
+    EXPECT_EQ(0, countQuery(conn, "SELECT COUNT(*) FROM information_schema.innodb_trx"))
+        << "direct accept left an open transaction";
+}
+
+TEST_F(MySqlReliableMessagingDb, SenderInMembersGetsOwnDeliveryRow)
+{
+    // 群快照含 sender 时现状：给 sender 插 Delivery 行（自投递；P3-06 决定是否
+    // 过滤——本用例锁定现状行为）。
+    const SessionIdentity alice{kAlice, 1};
+    SendMessageCommand cmd;
+    cmd.clientMessageId = ClientMessageId("self-delivery");
+    cmd.kind = SendMessageCommand::Kind::Group;
+    cmd.groupId = GroupId{7};
+    cmd.members.push_back(kAlice);  // sender 在 members 中
+    cmd.members.push_back(kBob);
+    cmd.content = "includes sender";
+
+    MySQLMessageStore store(pool(), kCap);
+    FakeClock clock;
+    clock.set(kNow);
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(store, sink, clock, kLeaseMs);
+
+    AcceptOutcome out = rm.accept(alice, cmd);
+    ASSERT_TRUE(out.ok);
+
+    MySQL conn;
+    ASSERT_TRUE(conn.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    EXPECT_EQ(2, countQuery(conn, "SELECT COUNT(*) FROM MessageDelivery d JOIN ChatMessage m "
+                                  "ON m.id=d.message_id WHERE m.sender_id=1 "
+                                  "AND m.client_message_id='self-delivery'"));
+    EXPECT_EQ(1, countQuery(conn, "SELECT COUNT(*) FROM MessageDelivery d JOIN ChatMessage m "
+                                  "ON m.id=d.message_id WHERE m.sender_id=1 "
+                                  "AND m.client_message_id='self-delivery' AND d.recipient_id=1"));
 }
 
 TEST_F(MySqlReliableMessagingDb, TooManyRecipientsRejectedAndRetriedStably)

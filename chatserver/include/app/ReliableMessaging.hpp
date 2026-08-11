@@ -257,6 +257,9 @@ public:
 
     // 持久接受：同 (sender, ClientMessageId) 幂等返回原结果；
     // 不同 payload 复用 key → IdempotencyConflict。
+    // 存储层故障（并发竞争、依赖忙、cap 超限等）时 accept/acknowledge 可能抛出
+    // MessageStoreError（或 store 定义的异常类型）；调用方（P3-06 协议层）负责
+    // 映射为 AcceptOutcome 错误结果。
     AcceptOutcome accept(const SessionIdentity& sender, const SendMessageCommand& cmd);
 
     // 接收端按 MessageId 显式确认；ACK 主体只来自 Session，他人 ACK 不越权。
