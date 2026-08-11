@@ -64,6 +64,8 @@ inline bool operator<(const ConversationSequence& a, const ConversationSequence&
 
 // 会话身份占位：完整 AuthenticatedSession 是 P3-05 产物，本任务不提前实现 SessionRegistry。
 struct SessionIdentity {
+    SessionIdentity() = default;
+    SessionIdentity(UserId user, uint64_t gen) : userId(user), generation(gen) {}
     UserId userId;
     uint64_t generation = 0;
 };
@@ -118,7 +120,13 @@ struct SendMessageCommand {
         Direct,
         Group,
     };
-    // 默认值为合法占位（"0"），struct 聚合默认初始化所需；业务路径总是显式赋值。
+    // 默认值为合法占位（"0"），默认构造所需；业务路径总是显式赋值。
+    SendMessageCommand() = default;
+    SendMessageCommand(ClientMessageId cmid, Kind k, UserId to, GroupId gid,
+                       const std::vector<UserId>& m, const std::string& c)
+        : clientMessageId(cmid), kind(k), directRecipient(to), groupId(gid), members(m), content(c)
+    {
+    }
     ClientMessageId clientMessageId = ClientMessageId("0");
     Kind kind = Kind::Direct;
     UserId directRecipient;       // Kind::Direct 的目标用户
@@ -197,6 +205,14 @@ enum class DeliveryState {
 
 // 一条已接受 Message 对一个接收者的待履行投递义务。
 struct Delivery {
+    Delivery() = default;
+    Delivery(MessageId mid, ConversationId cid, UserId r, DeliveryState st, SessionIdentity owner,
+             int64_t leaseUntil, uint32_t attempts, int64_t ackedAt, int64_t expiresAt)
+        : messageId(mid), conversationId(cid), recipient(r), state(st), leaseOwner(owner),
+          leaseUntilMs(leaseUntil), attemptCount(attempts), acknowledgedAtMs(ackedAt),
+          expiresAtMs(expiresAt)
+    {
+    }
     MessageId messageId;
     ConversationId conversationId;
     UserId recipient;
@@ -231,6 +247,8 @@ class DeliverySink;
 // P3 深模块（计划 §3）：网络层只学习 accept/acknowledge/sessionAvailable/sessionClosed，
 // 重试、租约、Conversation 分配、幂等与状态机全部在模块内部。
 // 同一实现将以 MySQL MessageStore 复用（P3-04），测试只穿过本 interface。
+// 线程约束：实例须由单一调用者串行驱动（P3-05 接入后为 SessionSerialExecutor 或等价串行执行器）；
+// 接口内部非原子（读-改-写），并发调用未定义行为。
 class ReliableMessaging {
 public:
     ReliableMessaging(MessageStore& store, DeliverySink& sink, Clock& clock, uint64_t leaseMs);
