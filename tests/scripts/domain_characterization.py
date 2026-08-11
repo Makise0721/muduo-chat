@@ -3,7 +3,7 @@
 live ChatServer (v1 on <port>, v2 hardcoded on <port+1000>/7000) and assert both
 protocols produce the same behavior.
 
-Matrix rows map to docs/DOMAIN_BEHAVIOR_MATRIX.md (B-01..B-23).
+Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27).
 Exit code 0 iff MATRIX_ALL_PASS.
 """
 import json
@@ -227,7 +227,7 @@ def main():
         check("C9_v2 logout B", r is not None and r.get("errno") == 0, str(r))
 
         # B-12 单聊离线：errno=0 表示已接受（B-13 超长消息行为依赖 MySQL
-        # sql_mode，不锁进测试；见 docs/DOMAIN_BEHAVIOR_MATRIX.md）
+        # sql_mode，不锁进测试；见 docs/specs/domain-behavior-matrix.md）
         msg = {"msgid": 6, "id": aid, "toid": bid, "msg": "hello", "time": "2024-01-01 12:00:00"}
         v1.send(msg)
         r = v1.recv()

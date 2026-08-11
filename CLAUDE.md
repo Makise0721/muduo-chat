@@ -31,7 +31,7 @@ Outputs (inside the binary tree, never the source tree):
 - Unit tests: GoogleTest via CTest (test targets are compiled with C++14 because gtest 1.14 requires it).
 - ASan+UBSan tree: `~/muduo-chat-build/asan` with `-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer` (+ matching linker flags).
 - TSan tree: `~/muduo-chat-build/tsan` with `-fsanitize=thread`; **must run** `setarch x86_64 -R ctest --test-dir ~/muduo-chat-build/tsan ...` (WSL needs ASLR disabled).
-- Every task follows the RED→GREEN→full-regression→sanitizer→`git diff --check` gates in `docs/IMPLEMENTATION_SOP.md`; the build dirs move to `~/muduo-chat-build/*` (a WSL instance recycle wiped the old `/tmp/muduo-chat-build/*`).
+- Every task follows the RED→GREEN→full-regression→sanitizer→`git diff --check` gates in `docs/process/implementation-sop.md`; reusable build dirs may live under `~/muduo-chat-build/*`, while fresh review builds use isolated `/tmp/muduo-chat-build/*` directories.
 - Transient GCC 13.3 ICEs in `ChatService.cpp` (JSON template) are known; rerun the build.
 - `git diff --check` must pass with no trailing whitespace (Markdown hard-break double-spaces were removed); use `git diff --check -- <scope>`.
 

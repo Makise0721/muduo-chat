@@ -33,4 +33,4 @@
 
 - 本报告为 smoke 基线，验证工具链与 schema 可用；**不可外推为裸 Linux 生产性能**
   （WSL2 回环 + Debug 构建 + 未固定 CPU 亲和性）。
-- 正式基线需在固定 Linux 主机重复测量（SOP §9.5、EVOLUTION_PLAN §8.2）。
+- 正式基线需在固定 Linux 主机重复测量；当前方法见 [架构演进方案 §8](../../architecture/evolution-plan.md#8-可观测性与性能方法)。

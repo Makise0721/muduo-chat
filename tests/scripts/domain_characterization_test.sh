@@ -1,7 +1,7 @@
 #!/bin/bash
 # P2-00 domain characterization: start a real ChatServer (v1 on 6000, v2 hardcoded
 # on 7000) and run the full use-case matrix over both protocols, asserting v1/v2
-# agree (see docs/DOMAIN_BEHAVIOR_MATRIX.md).
+# agree (see docs/specs/domain-behavior-matrix.md).
 set -u
 
 SERVER_BIN="$1"

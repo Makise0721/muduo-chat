@@ -1,6 +1,14 @@
-# IMPLEMENTATION_PROGRESS
+# 实施进度与证据索引
 
 状态索引：只有经过验证的完成项才能标记完成，且必须附命令与证据。
+
+| 里程碑 | 状态 | 当前入口 |
+|---|---|---|
+| M1 网络框架 v2 | VERIFIED | P1/P1R 证据见下文 |
+| M2 非阻塞聊天内核 | VERIFIED | [M2 报告](../reports/p2-m2-gates.md) |
+| M3 可靠单机消息 | PLANNED | [P3-00..P3-13](../plans/post-p2-implementation-plan.md#5-p3-详细任务卡) |
+
+## P0 基线与正确性闸门
 
 | 任务 | 状态 | 证据（命令/结果） |
 |---|---|---|
@@ -12,20 +20,25 @@
 | P0-02D TcpConnection characterization | VERIFIED | `ctest -R TcpConnectionTest` 3/3 通过；全量 21/21；生产源码零改动；已提交 12a0ef1 |
 | P0-03 跨线程 send/close 生命周期修复 | VERIFIED | ASan 聚焦 6/6 ×5 轮稳定；ASan 全量 24/24；Debug 全量 24/24；10000 交错无报告；已提交 1d3fd84；TSan 结论见任务卡（3 项失败归因在案 Logger/fd 竞态） |
 | P0-03A EventLoop loop-start quit 竞态修复 | VERIFIED | 32s 超时消除（-v 日志证据链）；Debug/ASan 28/28（重复注册修复后唯一计数）；TSan 遗留 fd 理论竞态在案；已提交 3bf4b84 |
-| P0-04 可复现 benchmark 基线 | VERIFIED | `ctest -R BenchStatsTest` 4/4；全量 28/28（唯一计数）；OFF 构建 exit 0；三场景 smoke 通过（connect 8/8、echo 800/800、slow-consumer 1.6MB 一致）；已提交 b9880e4 + b3fde51（审查修复）；performance-reports/b3fde51.md |
+| P0-04 可复现 benchmark 基线 | VERIFIED | `ctest -R BenchStatsTest` 4/4；全量 28/28（唯一计数）；OFF 构建 exit 0；三场景 smoke 通过（connect 8/8、echo 800/800、slow-consumer 1.6MB 一致）；已提交 b9880e4 + b3fde51（审查修复）；[performance report](../reports/performance/b3fde51.md) |
 
-## 对抗性审查记录（2026-08-09，code-review skill 双轴子代理）
+## P0 对抗性审查补充（2026-08-09）
 
 发现并修复：
 - `tests/CMakeLists.txt` gtest_discover_tests(BenchStatsTest) 重复注册 → CTest 虚增 4 个测试（此前"32/32"计数含重复）；已删重复（4e6b8d7），唯一计数 28
 - chat-bench slow-consumer 把字节塞入 messages_*/connections_failed（schema 语义漂移）；新增 bytes_sent/bytes_received/early_closes 独立字段 + `--duration-ms` 真正生效（b3fde51）
-- docs/performance-reports/<commit>.md 缺失；已生成首份（b3fde51.md）
+- 当时缺少按 commit 保存的 performance report；已生成首份 [b3fde51.md](../reports/performance/b3fde51.md)
 
 记录在案（不修复/待处理）：
 - 63a76ed 混入 EVOLUTION_PLAN.md/IMPLEMENTATION_SOP.md（P0-00 允许写集合外，历史提交不回写）
 - b91c9c2 无任务卡（TSan harness 清理，事后记录于此）
 - 8KB payload 断言未覆盖 partial-write 路径（判断项；UAF 检测与 payload 大小无关）
 - libFuzzer 未跑（WSL 无 Clang，CI 前置项；P1-01 以随机输入风暴替代）
+
+## P1 网络内核生产化
+
+| 任务 | 状态 | 证据（命令/结果） |
+|---|---|---|
 
 | P1-01 StreamCodec 与 v2 framing | VERIFIED | `ctest -R StreamCodecTest` 15/15；Debug 全量 43/43；ASan 43/43；golden bytes 固化；10000 轮随机风暴无报告；已提交 cb8ba00 |
 | P1-02 双协议迁移 | VERIFIED | `ctest -R 'LegacyJsonLineCodec|BinaryFrameCodec|OutputEncoder'` 13/13；Debug 全量 56/56；ASan 56/56；进程级双端口 smoke OK（注册/登录等价）；ChatService 零改动；已提交 6334546 |
@@ -37,9 +50,14 @@
 | P1-07 对抗审查修复批次 | VERIFIED | Debug/ASan 78/78；TSan 78/78 ×2 无 WARNING；**五轮双轴对抗审查闭环通过**（TimerQueue 竞争、Logger 级别语义、FATAL 不可丢、hard 关闭路径、Closed 断言、acceptErrorCount、幂等退出）；已提交 00db852 |
 
 > **P1 整体状态：`VERIFIED`**（2026-08-10 P1R-00..P1R-09 整改闭环，双轴最终审查无
-> P0/P1 未决项；见 [P1_COMPLETION_REVIEW_00db852.md](P1_COMPLETION_REVIEW_00db852.md)
-> 与 [POST_P1_IMPLEMENTATION_PLAN.md](POST_P1_IMPLEMENTATION_PLAN.md)。P1 完成性
+> P0/P1 未决项；见 [P1 完成性审查](../reviews/p1-completion-review-00db852.md)
+> 与 [P1R 归档任务](../archive/tasks/p1r/)。已完成的 P1 收口计划由 Git 历史保留，不再作为当前入口。P1 完成性
 > 验收通过，允许 P2 开始。上表各 P1/P1R 任务验证记录保持有效。）
+
+## P1R 完成性收口整改
+
+| 任务 | 状态 | 证据（命令/结果） |
+|---|---|---|
 
 | P1R-00 恢复事实、任务状态与审计边界 | VERIFIED | `git diff --check` exit 0；状态唯一（P1R-00 唯一 IN_PROGRESS→VERIFIED）；SOP 构建路径/TSan setarch/CLAUDE.md 同步；已提交 0156395 |
 | P1R-01 测试链接真实生产目标 | VERIFIED | 生产 `.cc` 由 mymuduo target 编译一次（compile_commands 断言 21 源单条目，RED 捕获 Buffer.cc×8）；Debug/ASan/TSan 79/79 ×TSan 两轮无 WARNING；Release OFF 构建成功；已提交 8e2673f |
@@ -51,6 +69,11 @@
 | P1R-07 Timer 契约 | VERIFIED | cancel(TimerId{})/已取消/已触发均幂等 no-op（A-01）；重复 timer planned phase 保持 + 跳周期不漂移（F-05，120ms 回调 × 50ms interval 600ms 内 ≤5）；Debug/ASan/TSan 100/100 ×TSan 两轮；TimerQueue 3×5 轮稳定；已提交 62f36be |
 | P1R-08 结构化日志 | VERIFIED | LogEvent 值对象（timestamp/level/threadId/component/eventName/message 入队前固定）；批量取队列（≤64）+ '\n' 移除逐条 flush（F-06）；test recorder sink 断言字段/顺序/线程不串扰；logger-bench + 报告 97c0311（async p50≈250ns、dropped 可查、无未解释回退）；Debug/ASan/TSan 103/103；已提交 97c0311 |
 | P1R-09 P1 独立验收 | VERIFIED | 全新 4 树 + 并发套件 20 轮 + 进程矩阵（信号风暴双场景 CTest/fd-exhaustion/v1v2 等价/storm/FATAL 退出）；双轴最终审查无 P0/P1 未决项（TimerId UAF claim 判误报 + 500 轮强化证明；空消息预算泄漏修复；16MiB 边界测试；硬截止 CTest 补齐）；Debug/ASan/TSan 105/105 ×TSan 两轮；**P1 整体 VERIFIED，REMEDIATION 解除** |
+
+## P2 非阻塞应用内核
+
+| 任务 | 状态 | 证据（命令/结果） |
+|---|---|---|
 | P2-00 固化领域词汇与现有行为 | VERIFIED | CONTEXT.md 领域词汇（Command/Reply/Session/User/Friendship/Group/GroupRole/Message/Delivery/Errno）；行为矩阵 B-01..B-26 全部定位到代码或标待ADR（含新发现：B-25 非数字 id 致进程终止、B-26 启动不重置 online 残留锁号）；DualProtocolCharacterizationTest（v1/v2 round-trip 等价）+ 进程 DomainCharacterization CTest（29 检查 MATRIX_ALL_PASS，v1/v2 逐项一致）；零生产代码改动；Debug/ASan/TSan 108/108；已提交 b753162 |
 | P2-01 ChatApplication 注册纵向切片 | VERIFIED | app 层值类型（Command/SessionContext/Reply）+ UserRepository port + ChatApplication.handle + InMemory adapter；LegacyUserRepository（现网 SQL 语义不变）+ guards 迁 db/MySQLGuards.hpp；ChatService::reg 委托新接口（网络层不接触 MySQL）；chatserver_core 库（app 层无 MySQL 依赖，P1R-01 单编译保持）；RED=configure 缺文件失败 → GREEN 7/7 纯内存（成功/重名/空名/空密码/超长名/StorageFailure/未支持）；v1/v2 注册 smoke 不变（DomainCharacterization PASS）；Debug/ASan/TSan 115/115；已提交 d8b4f3e |
 | P2-02 安全的 MySQL UserRepository | VERIFIED | MySQLUserRepository（prepared statement + 自带 bind 数组，绕过 bindParam 栈生命周期缺陷）；mapMySqlError 独立映射（1062→NameExists、断线类→Disconnected、1205→Timeout、超限类→StorageFailure）；UserError 增 InvalidInput/Disconnected/Timeout + isRepositoryInputValid 双 adapter 一致防御（NUL/超长）；数据层（MySQL/ConnectionPool.cpp）移入 src/db/ 进 chatserver_core；ChatService 切换新 repo，删 LegacyUserRepository；真实 MySQL 集成（chat_test 空 schema 建表，不 skip）契约 InMemory/MySQL 共用；emoji utf8 列拒绝、8 线程唯一键竞争恰 1 赢 7 冲突；Debug/ASan/TSan 120/120 ×TSan 契约 3 轮；compile_commands 9 源单条目；已提交 4e578fa |
@@ -61,4 +84,4 @@
 | P2-07 迁移消息与离线消息用例 | VERIFIED | MessageRepository（storeOffline/takeOffline：payload 原样、按序取走清空、重复请求两条记录（去重留 P3）、读失败不删队列至少一次）；GroupRepository.members（不存在的群=空列表）；单聊（在线同步转发/离线异步入队，errno=0=已接受非已投递）与群聊（成员查询异步→在线转发/离线逐条 FIFO 入队/B-19 无条件 ACK）迁移；登录补投改 takeOfflineMessages；修复矩阵 T1 BrokenPipe（forceClose 与发送竞态，python 侧捕获）；**修复 .gitignore *.py 吞掉 3 个必需测试脚本**（例外规则 + 入库）；Debug/ASan/TSan 164/164，DomainCharacterization 20+ 轮稳定；已提交 9588c44/b49bd1a/6573caf |
 | P2-08 激活多 Reactor | VERIFIED | ChatServer::setThreadNum + argv[3] threadNum（默认 1）；会话 registry 锁保护分片同步；executor completion 回主 loop（send 任意线程安全）；MultiReactorTest（4 loops 8 连接 80 条消息跨 loop 分布 + 连接回调不迁移断言）+ MultiReactorProcess（2/4 loops 并发注册/登录/互聊/登出/断开/重连矩阵）；语义记录：多 loop 下 ACK 与转发顺序不定（客户端按字段区分）；RED=回显积压暂停读/发送过快停顿/TearDown 10s 等待（→0.33s）/ACK 顺序断言；初始性能报告 chat-bench connect p99=2808→1110→159µs（1→2→4 loops）；Debug/ASan/TSan 167/167 ×TSan 4 轮；已提交 c3ea60e |
 | P2-09 配置与依赖关闭顺序 | VERIFIED | `--config <path>` JSON（nlohmann）覆盖 v1/v2 port、threads、DB 凭据、pool/executor 容量；argv 位置参数与 DB_PASSWORD env 再覆盖；fail-fast：缺失/坏 JSON/未知字段/类型错/越界 → stderr config error + exit(1) 不起服务（threadNum<1 由钳制改报错）；关闭顺序 STOP_ACCEPT→DRAINED/DRAIN_TIMEOUT（CHAT_SHUTDOWN_TIMEOUT_MS 可配，默认 5000，forceClose 后防御性强制）→EXECUTOR_SHUTDOWN（拒新+join）→POOL_SHUTDOWN（拒新+等租约）→QUIT_LOOPS→EXITED；bindLoop 接 executor 容量；ConfigTest 11/11 + shutdown-order（无连接快速路径/保持连接超时路径顺序断言）+ config-fail-fast 进程测试；Debug/ASan/TSan 180/180 ×TSan 2 轮；signal_shutdown 兼容；已提交 60953a0/e6d2671 |
-| P2-10 M2 独立验收与性能矩阵 | VERIFIED | SIGUSR1 METRICS（pool idle/active + executor queue/drop_full/drop_shutdown 计数，多信号合并逐字节处理）；tools/chat_load.py（16 并发 reg→login→离线单聊循环）；**chat-bench 修复**：slow-consumer 阻塞 recv 无视 duration → SO_RCVTIMEO；矩阵 1/2/4/8 loops：chat msg/s=101.8/118.5/123.8/122.8（饱和 ~123，瓶颈=单 worker 串行 DB 写 8ms，queue 恒 15 drop=0，pool_active=1），connect p99=410/483/224/326us，slow-consumer 全档 recv=0 early_closes=4；**决策：executor 保持单 worker**（扩并需按用户分片保序，留 P3 后评估）；BlockingExecutorTest metrics 2/2 + server-metrics 进程测试；Debug/ASan/TSan 183/183 + Release(-DENABLE_TESTS=OFF) 构建通过；报告 docs/P2-10_M2_GATES.md；已提交（待） |
+| P2-10 M2 独立验收与性能矩阵 | VERIFIED | SIGUSR1 METRICS（pool idle/active + executor queue/drop_full/drop_shutdown 计数，多信号合并逐字节处理）；tools/chat_load.py（16 并发 reg→login→离线单聊循环）；**chat-bench 修复**：slow-consumer 阻塞 recv 无视 duration → SO_RCVTIMEO；矩阵 1/2/4/8 loops：chat msg/s=101.8/118.5/123.8/122.8（饱和 ~123，瓶颈=单 worker 串行 DB 写 8ms，queue 恒 15 drop=0，pool_active=1），connect p99=410/483/224/326us，slow-consumer 全档 recv=0 early_closes=4；**决策：executor 保持单 worker**（扩并需按用户分片保序，留 P3 后评估）；BlockingExecutorTest metrics 2/2 + server-metrics 进程测试；对抗修复最终态 Debug/ASan/TSan 184/184 + Release(-DENABLE_TESTS=OFF) 构建通过；见 [M2 报告](../reports/p2-m2-gates.md) 与 [P2 对抗审查](../reviews/p2-adversarial-review.md)；已提交 d2b3448，负载工具补入 addfc23 |

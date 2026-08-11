@@ -1,8 +1,8 @@
 # Chat Domain
 
 聊天服务器领域：用户注册登录、好友、群组、单聊与群聊、离线消息投递。本词汇表是
-`ChatService` 现状行为的规范术语来源；P2 各任务以它为准，不把线上 JSON 字段名
-（`msgid`、`errno`、`id`）直接当作领域模型。
+`ChatService` 现状与可靠消息演进的规范术语来源；P2/P3 各任务以它为准，不把线上
+JSON 字段名（`msgid`、`errno`、`id`）直接当作领域模型。
 
 ## Language
 
@@ -37,14 +37,47 @@ _Avoid_: 聊天室、频道
 群组成员角色：creator（建群者）或 normal（后加入者）。现状只有标记，无权限语义。
 _Avoid_: admin、管理员
 
+**Conversation**:
+一组按局部顺序排列的 Message；目标是固定的两名 User 或一个 Group。
+_Avoid_: 全局消息流、聊天室
+
+**ClientMessageId**:
+发送端为一次消息意图生成的稳定幂等标识；同一 User 重试时保持不变。
+_Avoid_: request id、sequence
+
+**MessageId**:
+服务器为一条已接受 Message 分配的永久标识；所有重复投递共享同一 MessageId。
+_Avoid_: ClientMessageId、离线消息 id
+
+**ConversationSequence**:
+Message 在一个 Conversation 内的单调位置；不同 Conversation 的值不可比较。
+_Avoid_: 全局序号、MessageId
+
 **Message**:
-一条在用户之间传递的聊天内容（单聊或群聊）；服务器按原样转发或存储，不加工。
-_Avoid_: 消息体、payload
+服务器接受到一个 Conversation 中的持久聊天记录，包含发送者、内容和 MessageId；
+它不是协议原文，也不是一次网络发送。
+_Avoid_: 消息体、payload、Command
+
+**MessageAcceptance**:
+服务器确认 Message 及其接收者 Delivery 已被持久记录；不表示任何接收端已经收到。
+_Avoid_: 发送成功、送达
 
 **Delivery**:
-一条 Message 的投递状态。现状中 Reply 的 `errno=0` 只承诺"服务器已接受"，不代表
-对端已收到：目标在线时直接转发，离线时先入离线队列、待其登录后补投。
+一条已接受 Message 对一个接收者的待履行投递义务；可经历多次 DeliveryAttempt，
+直到被确认或按保留策略过期。
 _Avoid_: 送达、投递成功
+
+**DeliveryAttempt**:
+服务器把同一 Message 尝试发送给接收者的一次动作；TCP 写入成功仍只是一种尝试。
+_Avoid_: Delivery、重发消息
+
+**DeliveryAcknowledgement**:
+接收端客户端针对 MessageId 发出的显式确认；重复确认不改变结果。
+_Avoid_: TCP ACK、写完成回调
+
+**OutboxEvent**:
+与 MessageAcceptance 同时形成、用于驱动后续投递副作用的持久通知。
+_Avoid_: Message、日志事件
 
 **Errno**:
 Reply 的错误分类：0 成功；1 业务失败（认证失败、名称已存在、存储失败、关系冲突）；
