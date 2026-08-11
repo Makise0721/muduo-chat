@@ -28,13 +28,16 @@ add_library(chatserver_core STATIC
     chatserver/src/app/InMemoryFriendRepository.cpp
     chatserver/src/app/InMemoryGroupRepository.cpp
     chatserver/src/app/InMemoryMessageRepository.cpp
+    chatserver/src/app/InMemoryMessageStore.cpp
     chatserver/src/app/InMemoryUserRepository.cpp
     chatserver/src/app/MySQLFriendRepository.cpp
     chatserver/src/app/MySQLGroupRepository.cpp
     chatserver/src/app/MySQLMessageRepository.cpp
     chatserver/src/app/MySQLUserRepository.cpp
+    chatserver/src/app/ReliableMessaging.cpp
     chatserver/src/db/ConnectionPool.cpp
-    chatserver/src/db/MySQL.cpp)
+    chatserver/src/db/MySQL.cpp
+    chatserver/src/db/SchemaMigration.cpp)
 target_include_directories(chatserver_core PUBLIC
     ${PROJECT_SOURCE_DIR}/chatserver/include
     ${PROJECT_SOURCE_DIR}/mymuduo)

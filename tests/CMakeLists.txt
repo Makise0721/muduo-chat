@@ -148,6 +148,14 @@ add_executable(ConfigTest unit/ConfigTest.cpp)
 target_link_libraries(ConfigTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(ConfigTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(SchemaMigrationTest unit/SchemaMigrationTest.cpp)
+target_link_libraries(SchemaMigrationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(SchemaMigrationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(ReliableMessagingContractTest unit/ReliableMessagingContractTest.cpp)
+target_link_libraries(ReliableMessagingContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(ReliableMessagingContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -193,9 +201,11 @@ add_test(NAME server-metrics
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(server-metrics PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
+discover_gtest(SchemaMigrationTest)
+discover_gtest(ReliableMessagingContractTest)
 discover_gtest(BufferTest)
 discover_gtest(EventLoopTest)
 discover_gtest(EventLoopThreadPoolTest)
