@@ -1,10 +1,27 @@
 #include "app/SessionRegistry.hpp"
 
+void SessionRegistry::addConnection(const TcpConnectionPtr& conn)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    activeConnections_.insert(conn);
+}
+
+void SessionRegistry::removeConnection(const TcpConnectionPtr& conn)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    activeConnections_.erase(conn);
+}
+
 SessionRegistry::BindResult SessionRegistry::bind(const TcpConnectionPtr& conn,
                                                   int64_t userId,
                                                   int64_t generation)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    // 活跃集合锁内判定：close 回调（removeConnection）先于本 completion 时
+    // 连接已不在集合 → 拒绝，杜绝绑定已死连接导致的会话泄漏。
+    if (activeConnections_.find(conn) == activeConnections_.end()) {
+        return BindResult::ConnectionInactive;
+    }
     if (byConnection_.find(conn) != byConnection_.end()) {
         return BindResult::ConnectionBusy;
     }

@@ -50,6 +50,12 @@ public:
     void clientCloseException(const TcpConnectionPtr& conn);
     void reset();
 
+    // P3-05 对抗审查：连接建立时登记活跃（onConnection 建立分支），
+    // close 回调的 clientCloseException 中随 unbind 一起移除。登录 completion
+    // 的 bind 在锁内校验活跃集合，close 先到则拒绝（ConnectionInactive），
+    // 消除 bind 死连接导致的会话泄漏/锁死用户竞态。
+    void addConnection(const TcpConnectionPtr& conn);
+
     // P2-05：EventLoop 绑定与阻塞执行器（main 在服务器启动前调用；
     // 退出前调用 shutdownApp 使 worker 有界退出）。
     // P2-09：executor 容量来自配置（workers/queueCapacity，>=1）。

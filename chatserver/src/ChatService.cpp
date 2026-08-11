@@ -204,16 +204,25 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                 conn->send(response.dump() + "\n");
                 return;
             }
-            // 连接已断开：不建立会话（防断线竞态锁死用户），不响应。
+            // 防御性检查：连接已断开则不建会话、不响应。权威判定在 bind 的
+            // 活跃集合锁内检查（close 回调先执行时 removeConnection 已生效，
+            // bind 拒绝 ConnectionInactive；bind 先执行时 close 的
+            // removeConnection+unbind 后到恰好释放——无窗口）。
             if (!conn->connected()) {
                 restoreOfflineMessages(_executor.get(), &_app, id, result);
                 return;
             }
             {
                 // P3-05：连接绑定一个认证 Session（B-21 收紧）。bind 单锁原子判定：
-                // UserBusy=同用户已有活动会话（B-08 保留），ConnectionBusy=该连接
-                // 已绑定会话（同 User 或另一 User 的二次登录均被拒）。
+                // ConnectionInactive=连接已从活跃集合移除（close 先于本 completion，
+                // 不建会话）；UserBusy=同用户已有活动会话（B-08 保留），
+                // ConnectionBusy=该连接已绑定会话（同 User 或另一 User 的二次登录均被拒）。
                 SessionRegistry::BindResult br = _sessions.bind(conn, id, gen);
+                if (br == SessionRegistry::BindResult::ConnectionInactive) {
+                    // close 先于 bind：连接已死，不建会话、不响应（防断线竞态锁死用户）。
+                    restoreOfflineMessages(_executor.get(), &_app, id, result);
+                    return;
+                }
                 if (br == SessionRegistry::BindResult::UserBusy) {
                     response["errno"] = 2;
                     response["errmsg"] = "this account is using, input another!";
@@ -508,8 +517,15 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
         });
 }
 
+void ChatService::addConnection(const TcpConnectionPtr& conn) {
+    _sessions.addConnection(conn);
+}
+
 void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
-    // P3-05：按连接解绑（幂等，恰好释放一次）；未绑定返回 0，不产生状态写入。
+    // P3-05 对抗审查：先移出活跃连接集合（锁内，登录 completion 的 bind 将
+    // 拒绝 ConnectionInactive），再按连接解绑（幂等，恰好释放一次）；
+    // 未绑定返回 0，不产生状态写入。
+    _sessions.removeConnection(conn);
     int64_t userid = _sessions.unbind(conn);
 
     if (userid != 0) {

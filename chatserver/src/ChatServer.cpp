@@ -38,6 +38,8 @@ void ChatServer::setThreadNum(int numThreads) {
 void ChatServer::onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
         std::cout << "Connection established: " << conn->peerAddress().toIpPort() << std::endl;
+        // P3-05 对抗审查：登记活跃连接；close 时 clientCloseException 移除。
+        ChatService::instance()->addConnection(conn);
         if (_codec == ProtocolCodec::BinaryFrame) {
             conn->setOutputCodec(&_frameCodec);
         }
