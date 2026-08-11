@@ -36,6 +36,7 @@ add_library(chatserver_core STATIC
     chatserver/src/app/MySQLMessageStore.cpp
     chatserver/src/app/MySQLUserRepository.cpp
     chatserver/src/app/ReliableMessaging.cpp
+    chatserver/src/app/SessionRegistry.cpp
     chatserver/src/db/ConnectionPool.cpp
     chatserver/src/db/MySQL.cpp
     chatserver/src/db/SchemaMigration.cpp)
