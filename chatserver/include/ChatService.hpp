@@ -3,7 +3,6 @@
 #include <unordered_map>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include "../mymuduo/TcpConnection.h"
 #include "../mymuduo/Buffer.h"
 #include "../mymuduo/Timestamp.h"
@@ -12,6 +11,7 @@
 #include "db/ConnectionPool.hpp"
 #include "app/ChatApplication.hpp"
 #include "app/BlockingExecutor.hpp"
+#include "app/SessionRegistry.hpp"
 #include "app/MySQLUserRepository.hpp"
 #include "app/MySQLFriendRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
@@ -67,8 +67,7 @@ private:
     ChatService& operator=(const ChatService&) = delete;
 
     unordered_map<int, MsgHandler> _msgHandlerMap;
-    unordered_map<int, TcpConnectionPtr> _userConnMap;
-    mutex _connMutex;
+    SessionRegistry _sessions;
     MySQLUserRepository _mysqlUsers;
     MySQLFriendRepository _mysqlFriends;
     MySQLGroupRepository _mysqlGroups;

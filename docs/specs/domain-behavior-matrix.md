@@ -30,10 +30,10 @@
 | B-15 | 建群 | 建群成功 → groupid + errno=0，建群者以 creator 入群；建群失败 → errno=1 | ChatService.cpp:300-325 | 稳定 |
 | B-16 | 入群 | 成功 errno=0；重复加入主键冲突 errno=1；不校验群存在 | ChatService.cpp:327-340 | 稳定 |
 | B-17 | 群聊 | 在线成员收到原始 Command；离线成员入队；发送者收到 errno=0（超长除外，见 B-13） | ChatService.cpp:430-488（成员查询 452、ACK 483-486） | 稳定 |
-| B-18 | 群聊：非成员可发 | SQL 只排除发送者自身、不校验发送者是否成员，非成员发群聊仍收到 errno=0 | ChatService.cpp:451-452,460-462 | 待ADR |
-| B-19 | 群聊：确认无条件成功 | 成员查询失败（res==nullptr）也回 errno=0；超长（序列化 payload>500）除外，返回 errno=1 | ChatService.cpp:483-486（超长拒绝 435-441） | 待ADR |
-| B-20 | 断开 | 在线用户断开 → state=offline；未登录连接断开无数据库操作 | ChatService.cpp:396-416 | 稳定 |
-| B-21 | 连接可持有多个会话 | 同一连接先后登录不同 User 均成功，Session 不绑定连接 | ChatService.cpp:213-223 | 待ADR |
+| B-18 | 群聊：非成员可发 | SQL 只排除发送者自身、不校验发送者是否成员，非成员发群聊仍收到 errno=0 | ChatService.cpp:484-503（成员查询 485、跳过发送者 497） | 待ADR |
+| B-19 | 群聊：确认无条件成功 | 成员查询失败（res==nullptr）也回 errno=0；超长（序列化 payload>500）除外，返回 errno=1 | ChatService.cpp:504-507（超长拒绝 452-458） | 待ADR |
+| B-20 | 断开 | 在线用户断开 → state=offline；未登录连接断开无数据库操作 | ChatService.cpp:511-524 | 稳定 |
+| B-21 | 连接绑定一个认证会话 | 登录成功后连接绑定一个 Session（User+generation）；同一连接二次登录（同 User 或另一 User）→ errno=2 拒绝；单聊/群聊发送者身份取自 Session，payload id 与 Session user 不符 → errno=1 "invalid sender!" 拒绝（B-21 收紧落地，P3-05；对照 message-reliability.md §6） | ChatService.cpp:216（bind）；loginout 294；oneChat 327-343；groupChat 459-471；clientCloseException 513；app/SessionRegistry | 稳定（P3-05 收紧替代原行为） |
 | B-22 | msgid 数值编码 | 协议 msgid 表：1=LOGIN、2=LOGIN_MSG_ACK、3=LOGINOUT（登出请求与响应同值）、4=REG、5=REG_MSG_ACK、6=ONE_CHAT、7=ADD_FRIEND、8=CREATE_GROUP、9=ADD_GROUP、10=GROUP_CHAT；ACK 值与请求值不同，客户端必须硬编码 | chatserver/include/ChatService.hpp:25-36 | 待ADR |
 | B-23 | 帧上限不对称 | v2 默认 1MiB 帧上限，超限 → ProtocolError → forceClose；v1 无行大小上限 | mymuduo/StreamCodec.cc:40-42；LegacyJsonLineCodec | 待ADR |
 | B-24 | v2 端口配置化 | v1 取 argv/配置覆盖，v2 监听端口/ip 由配置 v2.port/v2.ip 控制（P2-09 落地，缺省 7000/127.0.0.1） | chatserver/main.cpp:168-171 | 稳定 |

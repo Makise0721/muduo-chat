@@ -5,7 +5,6 @@
 #include <exception>
 #include <string>
 #include <vector>
-#include <unordered_set>
 
 namespace {
 } // namespace
@@ -185,7 +184,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
     _executor->submit(
         [this, id, pwd, gen, result] {
             result->auth = _app.authenticate(id, pwd);
-            // state 只读不改：单会话以 _userConnMap（活动连接）为真相，
+            // state 只读不改：单会话以 SessionRegistry（活动连接）为真相，
             // 断开残留的 DB online 由 completion 区分处理。
             if (result->auth.ok && _app.isSessionCurrent(id, gen)) {
                 loadLoginExtras(&_app, result.get());
@@ -211,15 +210,22 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                 return;
             }
             {
-                lock_guard<mutex> lock(_connMutex);
-                if (_userConnMap.find(id) != _userConnMap.end()) {
-                    // 真重复登录：该用户已有活动会话。
+                // P3-05：连接绑定一个认证 Session（B-21 收紧）。bind 单锁原子判定：
+                // UserBusy=同用户已有活动会话（B-08 保留），ConnectionBusy=该连接
+                // 已绑定会话（同 User 或另一 User 的二次登录均被拒）。
+                SessionRegistry::BindResult br = _sessions.bind(conn, id, gen);
+                if (br == SessionRegistry::BindResult::UserBusy) {
                     response["errno"] = 2;
                     response["errmsg"] = "this account is using, input another!";
                     conn->send(response.dump() + "\n");
                     return;
                 }
-                _userConnMap.insert({id, conn});
+                if (br == SessionRegistry::BindResult::ConnectionBusy) {
+                    response["errno"] = 2;
+                    response["errmsg"] = "this connection has already logged in!";
+                    conn->send(response.dump() + "\n");
+                    return;
+                }
             }
             // DB 状态影子异步落库（登录成功后必须是 online）。
             _executor->submit(
@@ -283,13 +289,9 @@ void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
 
 void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
-    {
-        lock_guard<mutex> lock(_connMutex);
-        auto it = _userConnMap.find(userid);
-        if (it != _userConnMap.end()) {
-            _userConnMap.erase(it);
-        }
-    }
+    // B-10 语义保留：登出按 payload id、未登录也成功（幂等）；经 registry
+    // 释放保持双向一致性（同连接/同用户恰好一次）。
+    _sessions.unbindUser(userid);
 
     // 会话代次递增：在途登录 completion 不再生效。
     _app.beginSessionAttempt(userid);
@@ -322,12 +324,28 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
         conn->send(response.dump() + "\n");
         return;
     }
+    // P3-05 消息主体只来自 Session：未登录拒绝；payload id 与 Session user
+    // 不符拒绝（不信任 payload；缺 id 字段时无比较对象，照常放行）。
+    BoundSession session;
+    if (!_sessions.lookupByConnection(conn, &session)) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "please login first!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    if (js.contains("id") && js["id"].get<int>() != session.userId) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "invalid sender!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
     {
-        lock_guard<mutex> lock(_connMutex);
-        auto it = _userConnMap.find(toid);
-        if (it != _userConnMap.end()) {
+        TcpConnectionPtr target = _sessions.lookupByUser(toid);
+        if (target) {
             // 目标在线：原样转发（内存操作，无 SQL），随后回发送者确认。
-            it->second->send(js.dump() + "\n");
+            target->send(js.dump() + "\n");
             json response = js;
             response["errno"] = 0;
             conn->send(response.dump() + "\n");
@@ -428,7 +446,6 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
 }
 
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
-    int userid = js["id"].get<int>();
     int groupid = js["groupid"].get<int>();
     // 消息超长（离线 payload 存 OfflineMessage.message VARCHAR(500)）：
     // 按整条序列化 payload 判定，在线/离线路径一致拒绝。
@@ -436,6 +453,22 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
         json response = js;
         response["errno"] = 1;
         response["errmsg"] = "message too long";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    // P3-05 消息主体只来自 Session（见 oneChat 注释）。
+    BoundSession session;
+    if (!_sessions.lookupByConnection(conn, &session)) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "please login first!";
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    if (js.contains("id") && js["id"].get<int>() != session.userId) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = "invalid sender!";
         conn->send(response.dump() + "\n");
         return;
     }
@@ -450,30 +483,18 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
     std::string payload = js.dump();
     _executor->submit(
         [this, groupid, members] { *members = _app.groupMembers(groupid); },
-        [this, conn, userid, members, payload] {
-            // 在线成员：锁内拷贝连接后原样转发（内存操作，无 SQL）。
-            std::vector<TcpConnectionPtr> onlineUsers;
-            std::unordered_set<int64_t> onlineIds;
-            {
-                lock_guard<mutex> lock(_connMutex);
-                for (int64_t toid : members->userIds) {
-                    if (toid == userid) {
-                        continue;  // 发送者不接收
-                    }
-                    auto it = _userConnMap.find(toid);
-                    if (it != _userConnMap.end()) {
-                        onlineUsers.push_back(it->second);
-                        onlineIds.insert(toid);
-                    }
-                }
-            }
+        [this, conn, session, members, payload] {
+            // 在线成员：单锁快照连接后原样转发（内存操作，无 SQL）。
+            std::unordered_map<int64_t, TcpConnectionPtr> online =
+                _sessions.snapshotConnections(members->userIds, session.userId);
             std::string msg = payload + "\n";
-            for (const TcpConnectionPtr& target : onlineUsers) {
-                target->send(msg);
+            for (auto& kv : online) {
+                kv.second->send(msg);
             }
             // 离线成员：异步入队（每条一个任务，单 worker FIFO 保序）。
-            for (int64_t toid : members->userIds) {
-                if (toid == userid || onlineIds.find(toid) != onlineIds.end()) {
+            for (size_t i = 0; i < members->userIds.size(); ++i) {
+                int64_t toid = members->userIds[i];
+                if (toid == session.userId || online.find(toid) != online.end()) {
                     continue;
                 }
                 _executor->submit(
@@ -488,19 +509,10 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
 }
 
 void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
-    int userid = -1;
-    {
-        lock_guard<mutex> lock(_connMutex);
-        for (auto it = _userConnMap.begin(); it != _userConnMap.end(); ++it) {
-            if (it->second == conn) {
-                userid = it->first;
-                _userConnMap.erase(it);
-                break;
-            }
-        }
-    }
-    
-    if (userid != -1) {
+    // P3-05：按连接解绑（幂等，恰好释放一次）；未绑定返回 0，不产生状态写入。
+    int64_t userid = _sessions.unbind(conn);
+
+    if (userid != 0) {
         // 会话代次递增：在途登录 completion 不再生效。
         _app.beginSessionAttempt(userid);
         if (_executor) {

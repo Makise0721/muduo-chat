@@ -3,7 +3,8 @@
 live ChatServer (v1 on <port>, v2 hardcoded on <port+1000>/7000) and assert both
 protocols produce the same behavior.
 
-Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27).
+Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27 plus
+P3-05 B-21 tightening checks I1-I6).
 Exit code 0 iff MATRIX_ALL_PASS.
 """
 import json
@@ -287,17 +288,23 @@ def main():
         r = v2.recv()
         check("G5_v2 member receives group msg", r is not None and r.get("msgid") == 10
               and r.get("msg") == "hi all", str(r))
-        # B-18 非成员可发群聊（现状：不校验发送者身份）
+        # B-18 非成员可发群聊（P3-05 后发送者身份取自 Session：payload id 必须
+        # 与连接绑定用户一致，故用 cid；B-18 保留非成员 errno=0）
         v1b.send(reg(C))
         r = v1b.recv()
         cid = r.get("id", 0)
         v1b.send(login(cid))
         r = v1b.recv()
         check("G6_v1b C login", r is not None and r.get("errno") == 0, str(r))
-        v1b.send(gmsg)
+        v1b.send(dict(gmsg, id=cid))
         r = v1b.recv()
         check("G7_v1b non-member group chat acked", r is not None and r.get("errno") == 0,
               str(r))
+        # 非成员发送时消息仍转发给全部在线成员（含 A/v1；发送者 cid 不在成员表
+        # 不参与跳过逻辑），v1 需消费该转发以保持后续流对齐
+        r = v1.recv()
+        check("G7b_v1 member receives non-member group msg", r is not None
+              and r.get("msgid") == 10 and r.get("msg") == "hi all", str(r))
         # B-19 超长群聊（见 B-13 同款检查）：整条 payload >500 → errno=1 "message too long"（与单聊
         # E4 一致，长度检查先于成员查询/转发）
         v1.send({"msgid": 10, "id": aid, "groupid": gid, "msg": "a" * 600, "time": "t"})
@@ -313,6 +320,43 @@ def main():
         check("H1_v2 reconnect after disconnect", r is not None and r.get("errno") == 0,
               str(r))
         v2b.close()
+
+        # P3-05 B-21 收紧：同一连接绑定一个认证 Session；消息主体只来自 Session，
+        # 不信任 payload id。此时 v1 绑定 A（E3 登录后未登出），B 离线。
+        v1.send(login(bid))
+        r = v1.recv()
+        check("I1_v1 switch user on same conn rejected", r is not None
+              and r.get("msgid") == 2 and r.get("errno") == 2, str(r))
+        v1.send(login(aid))
+        r = v1.recv()
+        check("I2_v1 same user relogin on same conn rejected", r is not None
+              and r.get("msgid") == 2 and r.get("errno") == 2, str(r))
+        # 未登录连接发单聊 → 明确拒绝（errno=1），不转发、不入离线队列
+        v1c = V1Client(host, v1port)
+        v1c.send({"msgid": 6, "id": bid, "toid": bid, "msg": "unauth", "time": "t"})
+        r = v1c.recv()
+        check("I3_v1c unauthenticated chat rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "please login first!", str(r))
+        # A（v1）伪造 Bob id 发单聊 → 拒绝
+        v1.send({"msgid": 6, "id": bid, "toid": bid, "msg": "forged", "time": "t"})
+        r = v1.recv()
+        check("I4_v1 forged sender id rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "invalid sender!", str(r))
+        # 伪造消息不得进入 B 的离线队列：D6 登录补投已清空队列，登录 B 后
+        # 若收到任何离线消息即证明 I4 的伪造消息被（错误地）存储
+        v2c = V2Client(host, v2port)
+        v2c.send(login(bid))
+        r = v2c.recv()
+        check("I5_v2c login B after forged chat", r is not None and r.get("errno") == 0,
+              str(r))
+        check("I5b_v2c no forged offline message", v2c.recv_timeout(0.5))
+        # 伪造 id 群聊 → 拒绝
+        v1.send({"msgid": 10, "id": bid, "groupid": gid, "msg": "forged group", "time": "t"})
+        r = v1.recv()
+        check("I6_v1 forged group sender id rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "invalid sender!", str(r))
+        v1c.close()
+        v2c.close()
 
         # B-23 v2 帧上限：超 1MiB → 服务端关闭连接（v1 无对应限制）
         v2c = V2Client(host, v2port)
