@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Adopt durable acceptance and client-acknowledged at-least-once delivery
