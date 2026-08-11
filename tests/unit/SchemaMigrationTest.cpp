@@ -4,6 +4,9 @@
 
 #include <gtest/gtest.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -41,11 +44,6 @@ std::string migrationsDir()
 std::string chatSqlPath()
 {
     return repoRoot() + "sql/chat.sql";
-}
-
-std::string mainCppPath()
-{
-    return repoRoot() + "chatserver/main.cpp";
 }
 
 std::string readFile(const std::string& path)
@@ -159,6 +157,79 @@ void buildOldSnapshot()
     }
 }
 
+std::string replaceOnce(std::string s, const std::string& from, const std::string& to)
+{
+    size_t pos = s.find(from);
+    if (pos != std::string::npos) {
+        s.replace(pos, from.size(), to);
+    }
+    return s;
+}
+
+// 构造列形漂移库：User.password 为 VARCHAR(80) 而非 VARCHAR(50)，其余相同。
+// 现状行为（文档化限制）：runner 只做表级 IF NOT EXISTS 判定，不检测列级漂移，
+// 漂移库会被静默标记为已应用（P3-01 遗留，由 P3-03 故障测试兜底）。
+void buildColumnDriftSnapshot()
+{
+    MySQL admin;
+    ASSERT_TRUE(admin.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    std::string chatSql = readFile(chatSqlPath());
+    ASSERT_FALSE(chatSql.empty()) << "cannot read sql/chat.sql";
+    for (const std::string& stmt : tableStatements(chatSql)) {
+        if (stmt.find("CREATE TABLE IF NOT EXISTS User") != std::string::npos) {
+            std::string drifted = replaceOnce(stmt, "password VARCHAR(50) NOT NULL",
+                                              "password VARCHAR(80) NOT NULL");
+            ASSERT_NE(drifted, stmt) << "drift target not found in User DDL";
+            ASSERT_TRUE(admin.update(drifted)) << "drift snapshot build failed for: " << stmt;
+        } else {
+            ASSERT_TRUE(admin.update(stmt)) << "drift snapshot build failed for: " << stmt;
+        }
+    }
+}
+
+// 递归收集目录下 .cpp/.hpp/.h 源码文件（用于生产隔离断言的全目录扫描）。
+std::vector<std::string> collectSourceFiles(const std::string& dir)
+{
+    std::vector<std::string> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) {
+        return out;
+    }
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+        std::string name = ent->d_name;
+        if (name == "." || name == "..") {
+            continue;
+        }
+        std::string path = dir + "/" + name;
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            std::vector<std::string> sub = collectSourceFiles(path);
+            out.insert(out.end(), sub.begin(), sub.end());
+        } else if (name.size() > 4 &&
+                   (name.compare(name.size() - 4, 4, ".cpp") == 0 ||
+                    name.compare(name.size() - 4, 4, ".hpp") == 0 ||
+                    name.compare(name.size() - 2, 2, ".h") == 0)) {
+            out.push_back(path);
+        }
+    }
+    closedir(d);
+    return out;
+}
+
+bool containsAny(const std::string& text, const std::vector<std::string>& patterns)
+{
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        if (text.find(patterns[i]) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::set<std::string> tableNames()
 {
     MySQL conn;
@@ -180,15 +251,6 @@ std::set<std::string> tableNames()
     }
     mysql_free_result(res);
     return names;
-}
-
-std::string replaceOnce(std::string s, const std::string& from, const std::string& to)
-{
-    size_t pos = s.find(from);
-    if (pos != std::string::npos) {
-        s.replace(pos, from.size(), to);
-    }
-    return s;
 }
 
 } // namespace
@@ -250,6 +312,38 @@ TEST(SchemaMigrationTest, OldFiveTableDatabaseUpgrade)
     EXPECT_TRUE(r2.applied.empty());
 }
 
+TEST(SchemaMigrationTest, ColumnDriftLibraryMarkedApplied)
+{
+    resetDb();
+    buildColumnDriftSnapshot();
+    ASSERT_EQ((std::set<std::string>{"User", "Friend", "AllGroup", "GroupUser", "OfflineMessage"}),
+              tableNames());
+
+    // 现状行为（文档化限制）：列形漂移不可检测——迁移成功且记录 0001，
+    // 漂移库被静默标记为已应用；由 P3-03 故障测试（逐条违反唯一约束/FK）兜底。
+    schema_migration::MigrateResult r = makeMigrator().migrateTo(migrationsDir(), "", 30);
+    ASSERT_TRUE(r.ok) << r.error;
+    ASSERT_EQ(1u, r.applied.size());
+    EXPECT_EQ("0001", r.applied[0]);
+
+    schema_migration::StatusResult st = makeMigrator().status();
+    ASSERT_TRUE(st.ok) << st.error;
+    ASSERT_EQ(1u, st.versions.size());
+    EXPECT_EQ("0001", st.versions[0].version);
+
+    // 漂移未被修复（IF NOT EXISTS no-op）：password 列仍是 varchar(80)。
+    MySQL conn;
+    ASSERT_TRUE(conn.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    MYSQL_RES* res = conn.query("SELECT column_type FROM information_schema.columns "
+                                "WHERE table_schema='chat_p301' AND table_name='User' "
+                                "AND column_name='password'");
+    ASSERT_TRUE(res);
+    MYSQL_ROW row = mysql_fetch_row(res);
+    ASSERT_TRUE(row && row[0]);
+    EXPECT_EQ(std::string("varchar(80)"), row[0]);
+    mysql_free_result(res);
+}
+
 TEST(SchemaMigrationTest, ChecksumMismatchFailsFast)
 {
     resetDb();
@@ -292,6 +386,33 @@ TEST(SchemaMigrationTest, ChecksumMismatchFailsFast)
     rmdir(dir.c_str());
 }
 
+TEST(SchemaMigrationTest, MissingAppliedFileFailsFast)
+{
+    resetDb();
+
+    char tmpl[] = "/tmp/muduo-p301-missing-XXXXXX";
+    char* dirP = mkdtemp(tmpl);
+    ASSERT_NE(nullptr, dirP) << "mkdtemp failed";
+    const std::string dir(dirP);
+
+    std::string src = readFile(migrationsDir() + "/0001_baseline.sql");
+    ASSERT_FALSE(src.empty()) << "cannot read baseline migration";
+    ASSERT_TRUE(writeFile(dir + "/0001_baseline.sql", src));
+
+    schema_migration::MigrateResult r1 = makeMigrator().migrateTo(dir, "", 30);
+    ASSERT_TRUE(r1.ok) << r1.error;
+    ASSERT_EQ(1u, r1.applied.size());
+
+    // 已应用版本的文件被删除后重跑 → fail-fast，不静默跳过。
+    std::remove((dir + "/0001_baseline.sql").c_str());
+    schema_migration::MigrateResult r2 = makeMigrator().migrateTo(dir, "", 30);
+    EXPECT_FALSE(r2.ok);
+    EXPECT_NE(std::string::npos, r2.error.find("missing")) << r2.error;
+
+    std::remove((dir + "/0001_baseline.sql").c_str());
+    rmdir(dir.c_str());
+}
+
 TEST(SchemaMigrationTest, ConcurrentRunnersSingleLockHolder)
 {
     resetDb();
@@ -328,6 +449,60 @@ TEST(SchemaMigrationTest, ConcurrentRunnersSingleLockHolder)
     EXPECT_EQ("0001", st.versions[0].version);
 }
 
+TEST(SchemaMigrationTest, InvalidTargetVersionFailsFast)
+{
+    resetDb();
+
+    // 非数字 / 负数 / 超 int 范围（dbmigrate --to 直传本参数，错误 → CLI exit 1）。
+    const char* badVersions[] = {"abc", "-1", "9999999999"};
+    for (size_t i = 0; i < 3; ++i) {
+        schema_migration::MigrateResult r = makeMigrator().migrateTo(migrationsDir(), badVersions[i], 30);
+        EXPECT_FALSE(r.ok) << badVersions[i];
+        EXPECT_NE(std::string::npos, r.error.find("invalid target version")) << badVersions[i];
+    }
+}
+
+TEST(SchemaMigrationTest, LockTimeoutFailsFast)
+{
+    resetDb();
+
+    // 另一会话持锁，短 --lock-timeout 下确定性构造超时路径（无并发时序依赖）。
+    MySQL holder;
+    ASSERT_TRUE(holder.connect("127.0.0.1", "root", MySqlTestFixture::password(), kTestDb, 3306));
+    MYSQL_RES* held = holder.query("SELECT GET_LOCK('muduo_chat_schema_migration:chat_p301', 10)");
+    ASSERT_TRUE(held);
+    mysql_free_result(held);
+
+    schema_migration::MigrateResult r = makeMigrator().migrateTo(migrationsDir(), "", 1);
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(std::string::npos, r.error.find("could not acquire migration lock")) << r.error;
+    // 未拿到锁时不动任何表。
+    EXPECT_TRUE(tableNames().empty());
+
+    MYSQL_RES* released = holder.query("SELECT RELEASE_LOCK('muduo_chat_schema_migration:chat_p301')");
+    if (released) {
+        mysql_free_result(released);
+    }
+}
+
+TEST(SchemaMigrationTest, DbNameWithQuoteMigratesSafely)
+{
+    // dbname 含单引号：lockName 未转义时 GET_LOCK 会因 SQL 语法错误而失败；
+    // 转义后应正常加锁并完成迁移（不崩溃、不注入）。
+    MySQL admin;
+    ASSERT_TRUE(admin.connect("127.0.0.1", "root", MySqlTestFixture::password(), "", 3306));
+    ASSERT_TRUE(admin.update("DROP DATABASE IF EXISTS `chat'p301`"));
+    ASSERT_TRUE(admin.update("CREATE DATABASE `chat'p301` DEFAULT CHARSET utf8"));
+
+    schema_migration::Migrator m("127.0.0.1", "root", MySqlTestFixture::password(), "chat'p301", 3306);
+    schema_migration::MigrateResult r = m.migrateTo(migrationsDir(), "", 30);
+    ASSERT_TRUE(r.ok) << r.error;
+    ASSERT_EQ(1u, r.applied.size());
+    EXPECT_EQ("0001", r.applied[0]);
+
+    ASSERT_TRUE(admin.update("DROP DATABASE IF EXISTS `chat'p301`"));
+}
+
 TEST(SchemaMigrationTest, DdlDriftBetweenChatSqlAndBaseline)
 {
     std::string chatSql = readFile(chatSqlPath());
@@ -344,11 +519,26 @@ TEST(SchemaMigrationTest, DdlDriftBetweenChatSqlAndBaseline)
 
 TEST(SchemaMigrationTest, ServerStartupDoesNotRunMigrations)
 {
-    std::string mainSrc = readFile(mainCppPath());
-    ASSERT_FALSE(mainSrc.empty()) << "cannot read chatserver/main.cpp";
-    std::string lower = mainSrc;
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-                   [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-    EXPECT_EQ(std::string::npos, lower.find("migrat"))
-        << "生产服务器启动路径不得调用 migration runner";
+    // 扫描整个 chatserver/ 源码树（排除 migration 自身文件），精确匹配调用形态
+    // （runMigration/SchemaMigration/dbmigrate/migrateTo/Migrator），
+    // 避免注释中 "migrat" 字样误报。
+    std::vector<std::string> callForms;
+    callForms.push_back("runMigration");
+    callForms.push_back("SchemaMigration");
+    callForms.push_back("dbmigrate");
+    callForms.push_back("migrateTo");
+    callForms.push_back("Migrator");
+
+    std::vector<std::string> files = collectSourceFiles(repoRoot() + "chatserver");
+    ASSERT_FALSE(files.empty()) << "cannot scan chatserver/ source tree";
+    for (size_t i = 0; i < files.size(); ++i) {
+        const std::string& f = files[i];
+        if (f.find("SchemaMigration") != std::string::npos) {
+            continue;  // migration runner 自身文件，跳过
+        }
+        std::string src = readFile(f);
+        ASSERT_FALSE(src.empty()) << "cannot read " << f;
+        EXPECT_FALSE(containsAny(src, callForms))
+            << "生产服务器启动路径不得调用 migration runner: " << f;
+    }
 }

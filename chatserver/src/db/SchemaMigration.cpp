@@ -1,6 +1,7 @@
 #include "db/SchemaMigration.hpp"
 
 #include "db/MySQL.hpp"
+#include "db/MySQLGuards.hpp"
 
 #include <dirent.h>
 #include <sys/types.h>
@@ -283,7 +284,8 @@ MigrateResult Migrator::migrateTo(const std::string& migrationsDir,
 
     LockGuard lock;
     lock.conn = &conn;
-    lock.lockName = "muduo_chat_schema_migration:" + dbname_;
+    // dbname 可能含 SQL 特殊字符（如引号），转义后再拼进 GET_LOCK/RELEASE_LOCK。
+    lock.lockName = "muduo_chat_schema_migration:" + escapeString(conn.getConnection(), dbname_);
     {
         char sql[256];
         snprintf(sql, sizeof sql, "SELECT GET_LOCK('%s', %d)", lock.lockName.c_str(), lockTimeoutSecs);
