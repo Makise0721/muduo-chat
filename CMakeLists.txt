@@ -33,6 +33,7 @@ add_library(chatserver_core STATIC
     chatserver/src/app/MySQLFriendRepository.cpp
     chatserver/src/app/MySQLGroupRepository.cpp
     chatserver/src/app/MySQLMessageRepository.cpp
+    chatserver/src/app/MySQLMessageStore.cpp
     chatserver/src/app/MySQLUserRepository.cpp
     chatserver/src/app/ReliableMessaging.cpp
     chatserver/src/db/ConnectionPool.cpp

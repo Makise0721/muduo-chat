@@ -139,6 +139,10 @@ add_executable(MessageApplicationTest unit/MessageApplicationTest.cpp)
 target_link_libraries(MessageApplicationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(MessageApplicationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(MessageAcceptanceConcurrencyTest unit/MessageAcceptanceConcurrencyTest.cpp)
+target_link_libraries(MessageAcceptanceConcurrencyTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MessageAcceptanceConcurrencyTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 add_executable(MultiReactorTest unit/MultiReactorTest.cpp)
 target_include_directories(MultiReactorTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(MultiReactorTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
@@ -159,6 +163,10 @@ set_target_properties(ReliableMessagingContractTest PROPERTIES CXX_STANDARD 14 C
 add_executable(ReliableMessageSchemaTest unit/ReliableMessageSchemaTest.cpp)
 target_link_libraries(ReliableMessageSchemaTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(ReliableMessageSchemaTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MySQLReliableMessagingTest unit/MySQLReliableMessagingTest.cpp unit/ReliableMessagingContractTest.cpp)
+target_link_libraries(MySQLReliableMessagingTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MySQLReliableMessagingTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
@@ -205,7 +213,7 @@ add_test(NAME server-metrics
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(server-metrics PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(ReliableMessageSchemaTest)
@@ -238,5 +246,7 @@ discover_gtest(FriendGroupApplicationTest)
 discover_gtest(MessageRepositoryContractTest)
 discover_gtest(OfflineMessageTest)
 discover_gtest(MessageApplicationTest)
+discover_gtest(MessageAcceptanceConcurrencyTest)
 discover_gtest(MultiReactorTest)
 discover_gtest(ConfigTest)
+discover_gtest(MySQLReliableMessagingTest)
