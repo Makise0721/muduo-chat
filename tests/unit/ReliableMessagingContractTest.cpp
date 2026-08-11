@@ -1,5 +1,6 @@
 // P3-02 contract：测试只穿过 ReliableMessaging interface，不读取模块容器。
-// runReliableMessagingContract 与 InMemory/MySQL（P3-04）双 adapter 共用。
+// runReliableMessagingContract / runReliableMessagingRandomOps 与
+// InMemory/MySQL（P3-04）双 adapter 共用（声明见 ReliableMessagingContract.hpp）。
 
 #include "app/DeliverySink.hpp"
 #include "app/InMemoryMessageStore.hpp"
@@ -8,6 +9,7 @@
 
 #include "FakeClock.hpp"
 #include "RecordingDeliverySink.hpp"
+#include "ReliableMessagingContract.hpp"
 
 #include <gtest/gtest.h>
 
@@ -286,14 +288,9 @@ TEST(ReliableMessagingContractTest, ClientMessageIdValidation)
 }
 
 // 固定种子随机 retry/ACK/clock 序列：不变量由 interface + recording sink 可观测。
-TEST(ReliableMessagingContractTest, FixedSeedRandomOpsPreserveInvariants)
+void runReliableMessagingRandomOps(ReliableMessaging& rm, FakeClock& clock,
+                                   RecordingDeliverySink& sink)
 {
-    FakeClock clock;
-    clock.set(kNow);
-    InMemoryMessageStore store;
-    RecordingDeliverySink sink;
-    ReliableMessaging rm(store, sink, clock, kLeaseMs);
-
     std::mt19937 rng(42);
     const std::vector<UserId> users = {kAlice, kBob, kCarol};
     const std::vector<std::string> contents = {"hi", "hello", "longer message text", "中文内容"};
@@ -432,4 +429,14 @@ TEST(ReliableMessagingContractTest, FixedSeedRandomOpsPreserveInvariants)
         }
         checkInvariants(attemptsBefore);
     }
+}
+
+TEST(ReliableMessagingContractTest, FixedSeedRandomOpsPreserveInvariants)
+{
+    FakeClock clock;
+    clock.set(kNow);
+    InMemoryMessageStore store;
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(store, sink, clock, kLeaseMs);
+    runReliableMessagingRandomOps(rm, clock, sink);
 }

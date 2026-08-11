@@ -65,7 +65,7 @@ MESSAGE_ACCEPTED 只在该事务提交后发出（Durable acceptance 承诺）�
 |------|------|-----------|
 | DependencyBusy | accept 事务 lock timeout / deadlock | 以同一 ClientMessageId 重试 |
 | IdempotencyConflict | 同 `(sender, ClientMessageId)` 但 payload 不同 | 不重试；更换 key 或人工处理；不得被当作 duplicate=true |
-| TooManyRecipients | 群成员数超过 fan-out cap（cap 值 P3-04 前冻结） | 不得当作已接受；同 key 重试仍返回同一错误 |
+| TooManyRecipients | 群成员数超过 fan-out cap（cap 值=100，P3-04 冻结，adapter 构造参数） | 不得当作已接受；同 key 重试仍返回同一错误 |
 | NotConversationMember | 非群成员发送群聊 | 获得成员资格后以新意图发送 |
 | NotFound | 用户/群不存在 | 修复字段 |
 | InvalidClientMessageId | client_message_id 非 ASCII 或长度超 1..64 | 修复字段 |
@@ -167,7 +167,7 @@ stateDiagram-v2
 
 | 项 | 冻结任务 | 说明 |
 |----|----------|------|
-| fan-out cap 数值 | P3-04 | §2.4 TooManyRecipients 阈值 |
+| fan-out cap 数值 | P3-04 | §2.4 TooManyRecipients 阈值，冻结为 100（记录于 docs/tasks/P3-04.md RED 节，adapter 构造参数） |
 | ack timeout / backoff cap | P3-08 | §3 重投参数，RED 前记录 |
 | message retention / cleanup batch | P3-08 | §3 Expired/清理参数 |
 | 新 msgid 整数编码 | P3-06 golden | §2.5 一次冻结 |
