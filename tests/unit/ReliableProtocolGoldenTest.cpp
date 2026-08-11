@@ -197,6 +197,20 @@ TEST(ReliableProtocolGolden, LegacyCommandParsesFromFixture)
     EXPECT_EQ(2, parsed.directRecipient);
 }
 
+// M2（对抗审查）：旧字段别名 msg→content（spec §5.1）——无 content 但 msg
+// 存在的 legacy 命令照常解析（msg 作为 content，legacy 判定不受影响）。
+TEST(ReliableProtocolGolden, LegacyMsgFieldAliasParsesFromFixture)
+{
+    ParsedChatMessage parsed;
+    nlohmann::json cmd =
+        nlohmann::json::parse(readFixture("command_one_chat_legacy_msg_alias.json"));
+    ASSERT_EQ(0, parseChatMessage(ChatCommandKind::Direct, cmd, &parsed));
+    EXPECT_TRUE(parsed.legacy);
+    EXPECT_FALSE(parsed.hasClientMessageId);
+    EXPECT_EQ("hello", parsed.content);
+    EXPECT_EQ(2, parsed.directRecipient);
+}
+
 // legacy 成功回显形状：原 Command + errno=0（字节随客户端字段序，语义锁定）。
 TEST(ReliableProtocolGolden, LegacySuccessEchoShapePinned)
 {

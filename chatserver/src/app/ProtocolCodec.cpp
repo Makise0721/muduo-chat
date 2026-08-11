@@ -123,8 +123,8 @@ int acceptErrorToErrno(AcceptError e)
     return kErrnoDependencyBusy;
 }
 
-// P3-04 契约缺口闭合：StoreErrorKind → errno（决策表第 5 行）。Storage 在
-// spec §2.4 未冻结编码 → 104：同 key 重试无副作用（未接受则重试，已接受返回
+// P3-04 契约缺口闭合：StoreErrorKind → errno（决策表第 5 行）。Storage → 104：
+// spec §2.4 冻结（存储层错误同 key 重试无副作用——未接受则重试，已接受返回
 // 原结果），不做成不可重试的假稳定码。
 int storeErrorKindToErrno(StoreErrorKind k)
 {
@@ -156,9 +156,11 @@ int parseChatMessage(ChatCommandKind kind, const nlohmann::json& js,
             return kErrnoInvalidClientMessageId;
         }
     }
-    // 字段缺失/类型错误抛异常（.at() 对缺失键抛 type_error，而非 const
-    // operator[] 的 assert/UB）→ handler 层 B-25 静默，连接保持（与旧行为一致）。
-    out->content = js.at("content").get<std::string>();
+    // content 为冻结字段名（spec §2.1）；缺失时回退旧字段别名 msg（spec §5.1
+    // 兼容通道，旧客户端照常成功）。两者均缺失/类型错误 → .at() 抛 type_error
+    // （而非 const operator[] 的 assert/UB）→ handler 层 B-25 静默，连接保持。
+    const char* contentKey = js.contains("content") ? "content" : "msg";
+    out->content = js.at(contentKey).get<std::string>();
     if (out->content.size() > kMaxContentBytes) {
         return kErrnoContentTooLong;
     }

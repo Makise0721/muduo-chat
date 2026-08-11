@@ -29,7 +29,7 @@
 | B-14 | 加好友 | 有向边插入成功 errno=0；重复添加主键冲突 errno=1；不校验目标用户存在，也不校验调用方身份 | ChatService.cpp:285-298 | 待ADR（无身份/存在性校验） |
 | B-15 | 建群 | 建群成功 → groupid + errno=0，建群者以 creator 入群；建群失败 → errno=1 | ChatService.cpp:300-325 | 稳定 |
 | B-16 | 入群 | 成功 errno=0；重复加入主键冲突 errno=1；不校验群存在 | ChatService.cpp:327-340 | 稳定 |
-| B-17 | 群聊 | **P3-06 迁移**：在线转发/离线入队退役——accept 事务内快照成员（决策表第 8 行，保序、含发送者）；发送者收 MESSAGE_ACCEPTED/旧格式回显；投递由 Delivery 状态机接管（P3-07） | ChatService.cpp:485-543（accept 路径） | 稳定（P3-06 迁移替代原行为） |
+| B-17 | 群聊 | **P3-06 迁移**：在线转发/离线入队退役——accept 事务内快照成员（决策表第 8 行，保序、含发送者）；发送者收 MESSAGE_ACCEPTED/旧格式回显；投递由 Delivery 状态机接管（P3-07）。空成员快照=群不存在 → 106（NotFound，msgid=13）/legacy → errno=1 | ChatService.cpp:485-543（accept 路径） | 稳定（P3-06 迁移替代原行为） |
 | B-18 | 群聊：非成员可发 | **P3-06 收紧落地**：发送者必须是群成员，非成员 → 101（NotConversationMember，msgid=13）/legacy → 旧格式回显 errno=1 | app/ProtocolCodec.cpp:202-212（成员资格预检） | 稳定（P3-06 收紧替代原行为） |
 | B-19 | 群聊：确认无条件成功 | **P3-06 收紧落地**：成员查询失败/DB 故障 → 104（DependencyBusy），不再无条件 errno=0 | app/ProtocolCodec.cpp:194-196（查询失败→104） | 稳定（P3-06 收紧替代原行为） |
 | B-20 | 断开 | 在线用户断开 → state=offline；未登录连接断开无数据库操作 | ChatService.cpp:511-524 | 稳定 |

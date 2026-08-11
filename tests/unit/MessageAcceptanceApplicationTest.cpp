@@ -1,6 +1,7 @@
 // P3-06 应用切片（真实 chat_p306 库，不 skip）：
 // - parseChatMessage：v2/legacy 判定、ASCII 1..64 校验（非法→107）、16KB 边界
-//   （恰 16KB 通过 / 超 1 字节→105）、缺 content → 抛异常（B-25 静默契约）；
+//   （恰 16KB 通过 / 超 1 字节→105）、缺 content 且缺 msg → 抛异常（B-25 静默
+//   契约；content 缺失但 msg 存在 → msg 别名回退，spec §5.1）；
 // - acceptChatCommand：成功五字段（MESSAGE_ACCEPTED）、同 key 重试返回原 identity
 //   （duplicate=true）、同 key 不同 payload→103、目标不存在→106、非成员→101、
 //   群不存在→106、超 fan-out cap→102、成员查询失败→104（B-18/B-19 收紧）；
@@ -367,6 +368,29 @@ TEST_F(MessageAcceptanceApplication, LegacyAcceptGeneratesIdentityAndCounts)
     EXPECT_EQ(1u, view.sequence);  // 全新 (1,3) 对话首条
     const std::string prefix = "legacy:1:";
     EXPECT_EQ(0, view.clientMessageId.compare(0, prefix.size(), prefix));
+}
+
+// M2（对抗审查）：旧字段别名 msg→content（spec §5.1）——无 content 但 msg 存在
+// 的旧客户端命令走 legacy 通道成功（legacy identity + 计数 +1；回显由
+// ChatService 构造：原命令 + errno=0，形状见 ReliableProtocolGolden）。
+TEST_F(MessageAcceptanceApplication, LegacyMsgFieldAliasAccepted)
+{
+    // codec 层：content 缺失、msg 存在 → msg 作为 content，legacy 判定不受影响。
+    nlohmann::json alias = directCommand("", 3, "", true);
+    alias.erase("content");
+    alias["msg"] = "old field hello";
+    ParsedChatMessage parsed;
+    ASSERT_EQ(0, parseChatMessage(ChatCommandKind::Direct, alias, &parsed));
+    EXPECT_TRUE(parsed.legacy);
+    EXPECT_EQ("old field hello", parsed.content);
+
+    // accept 层：走 legacy 通道成功，legacy-mode 计数 +1。
+    AppHarness h;
+    uint64_t before = legacyModeCount();
+    AcceptResultView view = acceptCommand(&h.app, 1, 1, ChatCommandKind::Direct, alias);
+    ASSERT_TRUE(view.ok);
+    EXPECT_EQ(before + 1, legacyModeCount());
+    EXPECT_EQ("legacy:1:", view.clientMessageId.substr(0, 9));
 }
 
 // legacy identity 跨命令不稳定：重试不享幂等保证（能力差异），两次 accept 两个身份。

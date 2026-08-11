@@ -71,12 +71,15 @@ ReliableProtocolGoldenTest 同步 pin；数值与 errmsg 不再变更）。v2 �
 | NotConversationMember | 101 | `not a conversation member` | 非群成员发送群聊（B-18 收紧落地） | 获得成员资格后以新意图发送 |
 | TooManyRecipients | 102 | `too many recipients` | 群成员数超过 fan-out cap（cap 值=100，P3-04 冻结，adapter 构造参数） | 不得当作已接受；同 key 重试仍返回同一错误 |
 | IdempotencyConflict | 103 | `idempotency conflict` | 同 `(sender, ClientMessageId)` 但 payload 不同 | 不重试；更换 key 或人工处理；不得被当作 duplicate=true |
-| DependencyBusy | 104 | `dependency busy` | accept 事务 lock timeout / deadlock / 成员查询失败（B-19 收紧落地） | 以同一 ClientMessageId 重试 |
+| DependencyBusy | 104 | `dependency busy` | accept 事务 lock timeout / deadlock / 成员查询失败 / 存储层错误（B-19 收紧落地；均可同 key 重试，无副作用） | 以同一 ClientMessageId 重试（重试应设上限；永久性故障由运维指标暴露，P3-12） |
 | ContentTooLong | 105 | `content too long` | content > 16KB（codec 层，accept 前拒绝；B-13 收紧落地） | 缩短 content 后以同一 ClientMessageId 重试 |
 | NotFound | 106 | `target not found` | 目标用户/群不存在 | 修复字段 |
 | InvalidClientMessageId | 107 | `invalid client_message_id` | client_message_id 非 ASCII 或长度超 1..64（codec 层，accept 前拒绝） | 修复字段 |
 
 未知 errno 的 errmsg 为 `protocol error`（防御值，不进入黄金组合）。
+
+会话错误（未登录、payload 身份与 Session 不符、DB 不可用）沿用 errno=1 旧格式
+回显（v1/v2 同），不在 1xx 冻结表内——1xx 只冻结 accept 路径错误。
 
 ### 2.5 枚举整数编码与一次冻结
 
@@ -133,6 +136,7 @@ stateDiagram-v2
 ### 5.1 legacy 客户端
 
 - **判定**：ONE_CHAT/GROUP_CHAT 缺 `client_message_id` → legacy 路径（计划 §5 P3-06）。
+- **字段别名**：旧客户端发送 `msg` 字段而非 `content`——`content` 缺失但 `msg` 存在时按 `msg` 为 content 解析，仍走 legacy 判定与 implicit-ack；两者均缺失才按 B-25 静默（spec §2.1 冻结字段名不阻断旧客户端）。
 - **legacy identity**：迁移行使用 `legacy:<offline_id>`（P3-10 backfill 幂等键）；在线 legacy 消息由服务器在 accept 时生成 `legacy:<UserId>:<进程内单调计数>`。跨重启/跨重试不保证稳定，因此 legacy 重试不享受幂等保证——这是明确的**能力差异**，legacy 不属于 M3 可靠性承诺（ADR-0001）。
 - **implicit-ack**：legacy Delivery 在 socket 准入（disposition 已接受）后即标记 Acknowledged，不进入 ACK timeout/重投循环；离线 legacy 消息在登录补投时同样处理；客户端无需发送 DELIVERY_ACK。
 - **同一 ledger**：内部仍走同一 ledger 与同一状态机，不保留第二套 storeOffline 实现（计划 §5 P3-06）。
@@ -169,6 +173,7 @@ stateDiagram-v2
 | B-17 | 群聊：在线成员收原始 Command、离线成员入队、发送者 errno=0 | P3-06 落地：accept 事务内快照成员；在线转发/离线入队退役；确认仅在事务提交后发出（MESSAGE_ACCEPTED/legacy 旧格式回显） | 收紧 | P3-04/P3-06/P3-07 |
 | B-18 | 非成员发群聊仍 errno=0 | 收紧落地（P3-06）：发送者必须是群成员，非成员 → 101 | 收紧 | P3-04/P3-06 |
 | B-19 | 成员查询失败仍 errno=0 | 收紧落地（P3-06）：查询失败/事务失败 → 104，不再无条件下发确认 | 收紧 | P3-04/P3-06 |
+| B-11/B-12/B-17 | 旧客户端发送 `msg` 字段（无 `content`） | `content` 缺失时 `msg` 作为别名解析，旧客户端照常走 legacy 通道成功（errno=0 旧格式回显）；两者均缺失才 B-25 静默 | 保留 | P3-06 |
 | B-21 | 同一连接先后登录不同 User 均成功 | 收紧：连接绑定一个认证 Session（User+generation），切换被拒 | 收紧 | P3-05 |
 
 其他相关变化（非行为矩阵新增行）：B-11 在线直写被 ledger + Delivery 状态机替代（接受点变化，P3-06 落地）；B-22 枚举编码见 §2.5；B-13 的 500 字节上限被 P3-06 冻结的 content 16KB 上限替代（决策表第 6 行，数据库列容量不是业务规则，计划 §6）。

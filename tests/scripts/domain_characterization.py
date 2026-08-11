@@ -286,6 +286,13 @@ def main():
         r = v1.recv()
         check("D7_v1 legacy chat old-format echo", r is not None
               and r.get("errno") == 0 and r.get("toid") == bid and r.get("msgid") == 6, str(r))
+        # M2（对抗审查）：旧字段别名 msg→content（spec §5.1）——无 content 无 cmid
+        # 的旧客户端（msg 字段）→ legacy 通道 → 旧格式回显 errno=0（回显保留 msg）。
+        v1.send({"msgid": 6, "id": aid, "toid": bid, "msg": "hello via msg field"})
+        r = v1.recv()
+        check("D7b_v1 legacy msg-field alias accepted", r is not None
+              and r.get("errno") == 0 and r.get("toid") == bid and r.get("msgid") == 6
+              and r.get("msg") == "hello via msg field", str(r))
         # B-09（P3-06 迁移）登录：先回 LOGIN_MSG_ACK；补投暂无 Delivery（P3-07），
         # 不产生任何离线消息。
         v2.send(login(bid))

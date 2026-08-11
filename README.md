@@ -122,10 +122,12 @@ make
   "id": 123,
   "name": "sender",
   "toid": 456,
-  "msg": "Hello",
+  "content": "Hello",
   "time": "2024-01-01 12:00:00"
 }
 ```
+（P3-06：字段名由 `msg` 改为 `content`；发送 `msg` 字段的旧客户端自动兼容映射，
+P3-10 部署窗口内声明退出，见 docs/specs/message-reliability.md §5.1）
 
 ### 添加好友 (msgid: 7)
 ```json
@@ -162,7 +164,7 @@ make
   "id": 123,
   "name": "sender",
   "groupid": 1,
-  "msg": "Hello everyone",
+  "content": "Hello everyone",
   "time": "2024-01-01 12:00:00"
 }
 ```
