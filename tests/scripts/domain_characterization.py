@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""P2-00 domain characterization: run the full v1/v2 use-case matrix against a
+"""P2-00/P3-06 domain characterization: run the full v1/v2 use-case matrix against a
 live ChatServer (v1 on <port>, v2 hardcoded on <port+1000>/7000) and assert both
 protocols produce the same behavior.
 
-Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27 plus
-P3-05 B-21 tightening checks I1-I6).
+Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27 plus P3-05
+B-21 tightening checks I1-I6, plus P3-06 accept-path checks: MESSAGE_ACCEPTED
+msgid=11, 幂等重试 duplicate=true, 错误码 101/103/105/106, legacy 旧格式回显).
+P3-06 迁移（B-11/B-12/B-17 在线转发与离线入队退役）：断言"已接受"语义，
+投递属 P3-07（登录补投暂无 Delivery）。
 Exit code 0 iff MATRIX_ALL_PASS.
 """
 import json
@@ -18,6 +21,9 @@ V2_VERSION = 2
 V2_HEADER_LEN = 20
 V2_CONTENT_TYPE_JSON = 1
 V2_DEFAULT_MAX_BODY = 1024 * 1024
+
+# P3-06 决策表第 6 行冻结：content 上限 16KB（UTF-8 字节）。
+MAX_CONTENT_BYTES = 16 * 1024
 
 
 class V1Client(object):
@@ -123,6 +129,18 @@ def check(name, cond, detail=""):
         FAIL.append(name)
 
 
+def accepted(r):
+    # P3-06：v2 命令 → MESSAGE_ACCEPTED（msgid=11，五字段，无 errno）。
+    return (r is not None and r.get("msgid") == 11
+            and "client_message_id" in r and "message_id" in r
+            and "conversation_id" in r and "sequence" in r and "duplicate" in r)
+
+
+def errresp(r, errno):
+    # P3-06：稳定错误响应 msgid=13 + errno + errmsg。
+    return r is not None and r.get("msgid") == 13 and r.get("errno") == errno
+
+
 def main():
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     v1port = int(sys.argv[2]) if len(sys.argv) > 2 else 6000
@@ -212,12 +230,25 @@ def main():
         r = v1.recv()
         check("E3_v1 conn alive after missing fields", r is not None
               and r.get("errno") == 0, str(r))
-        # B-13 超长单聊：整条 payload >500 → errno=1 "message too long"（决策
-        # 落地，在线/离线一致；toid=aid 自聊，长度检查先于转发路径）
-        v1.send({"msgid": 6, "id": aid, "toid": aid, "msg": "a" * 600, "time": "t"})
+        # P3-06 决策表第 6 行：B-13 整条 payload>500 判定废止 → content 16KB
+        # （UTF-8 字节）上限。v2（含 client_message_id）超限 → errno=105
+        # （msgid=13 稳定错误）；legacy（缺 cmid）→ 旧格式回显 errno=1。
+        overlong = "a" * (MAX_CONTENT_BYTES + 1)
+        v1.send({"msgid": 6, "id": aid, "toid": bid, "client_message_id": "cm-long-" + suffix,
+                 "content": overlong})
         r = v1.recv()
-        check("E4_v1 overlong chat rejected", r is not None and r.get("errno") == 1
-              and r.get("errmsg") == "message too long", str(r))
+        check("E4_v1 overlong chat 105", errresp(r, 105)
+              and r.get("errmsg") == "content too long", str(r))
+        v1.send({"msgid": 6, "id": aid, "toid": bid, "content": overlong})
+        r = v1.recv()
+        check("E4b_v1 legacy overlong chat rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "content too long", str(r))
+        # 恰 16KB → 接受（MESSAGE_ACCEPTED；B-13 旧上限不支配新路径）
+        v1.send({"msgid": 6, "id": aid, "toid": bid,
+                 "client_message_id": "cm-bound-" + suffix,
+                 "content": "b" * MAX_CONTENT_BYTES})
+        r = v1.recv()
+        check("E4c_v1 16KB boundary accepted", accepted(r) and not r["duplicate"], str(r))
 
         # 准备离线场景：B 登录后登出
         v2.send(login(bid))
@@ -227,27 +258,40 @@ def main():
         r = v2.recv()
         check("C9_v2 logout B", r is not None and r.get("errno") == 0, str(r))
 
-        # B-12 单聊离线：errno=0 表示已接受（B-13 超长消息行为依赖 MySQL
-        # sql_mode，不锁进测试；见 docs/specs/domain-behavior-matrix.md）
-        msg = {"msgid": 6, "id": aid, "toid": bid, "msg": "hello", "time": "2024-01-01 12:00:00"}
+        # B-12（P3-06 迁移）单聊离线：durable accept，MESSAGE_ACCEPTED 在事务
+        # 提交后发出（不再写 OfflineMessage；投递属 P3-07）。
+        msg = {"msgid": 6, "id": aid, "toid": bid, "content": "hello",
+               "client_message_id": "cm-d4-" + suffix}
         v1.send(msg)
         r = v1.recv()
-        check("D4_v1 offline chat accepted", r is not None and r.get("errno") == 0
-              and r.get("toid") == bid, str(r))
-        # B-09 登录补投：先 ACK 后离线消息，离线消息为原始 Command 副本
+        check("D4_v1 offline chat accepted", accepted(r) and not r["duplicate"], str(r))
+        mid4 = r["message_id"]
+        cid4 = r["conversation_id"]
+        seq4 = r["sequence"]
+        # 故障点 1（spec §4）：accept 回复丢失 → 同 command 重试返回原 identity
+        # （duplicate=true，同一 message_id/conversation_id/sequence）。
+        v1.send(msg)
+        r = v1.recv()
+        check("D5_v1 retry same command duplicate", accepted(r) and r["duplicate"]
+              and r["message_id"] == mid4 and r["conversation_id"] == cid4
+              and r["sequence"] == seq4, str(r))
+        # 同 key 不同 payload：IdempotencyConflict → 103（不得当作 duplicate=true）
+        bad = dict(msg)
+        bad["content"] = "different payload"
+        v1.send(bad)
+        r = v1.recv()
+        check("D6_v1 same key different payload 103", errresp(r, 103), str(r))
+        # legacy 命令（无 client_message_id）→ 旧格式回显 errno=0（决策表第 10 行）
+        v1.send({"msgid": 6, "id": aid, "toid": bid, "content": "hello legacy"})
+        r = v1.recv()
+        check("D7_v1 legacy chat old-format echo", r is not None
+              and r.get("errno") == 0 and r.get("toid") == bid and r.get("msgid") == 6, str(r))
+        # B-09（P3-06 迁移）登录：先回 LOGIN_MSG_ACK；补投暂无 Delivery（P3-07），
+        # 不产生任何离线消息。
         v2.send(login(bid))
         r = v2.recv()
-        check("D6_v2 login B again", r is not None and r.get("errno") == 0, str(r))
-        r = v2.recv()
-        check("D7_v2 offline delivery", r is not None and r.get("msgid") == 6
-              and r.get("msg") == "hello" and "errno" not in r, str(r))
-        # B-11 单聊在线：目标收原始（无 errno），发送者收副本 + errno=0
-        v1.send(msg)
-        r = v1.recv()
-        check("D8_v1 sender ack online", r is not None and r.get("errno") == 0, str(r))
-        r = v2.recv()
-        check("D9_v2 recipient receives raw", r is not None and r.get("msgid") == 6
-              and r.get("msg") == "hello" and "errno" not in r, str(r))
+        check("D8_v2 login B again", r is not None and r.get("errno") == 0, str(r))
+        check("D9_v2 no delivery yet (P3-07)", v2.recv_timeout(0.5))
 
         # B-14 加好友：有向边成功/重复冲突
         v1.send({"msgid": 7, "id": aid, "friendid": bid})
@@ -280,37 +324,57 @@ def main():
         v2.send({"msgid": 9, "id": bid, "groupid": gid})
         r = v2.recv()
         check("G3_v2 duplicate join", r is not None and r.get("errno") == 1, str(r))
-        # B-17 群聊：在线成员收原始，发送者收确认
-        gmsg = {"msgid": 10, "id": aid, "groupid": gid, "msg": "hi all", "time": "t2"}
+        # B-17（P3-06 迁移）群聊：accept 事务内快照成员（决策表第 8 行），
+        # 发送者收 MESSAGE_ACCEPTED；在线转发退役（投递属 P3-07）。
+        gmsg = {"msgid": 10, "id": aid, "groupid": gid, "content": "hi all",
+                "client_message_id": "cm-g4-" + suffix}
         v1.send(gmsg)
         r = v1.recv()
-        check("G4_v1 group ack", r is not None and r.get("errno") == 0, str(r))
+        check("G4_v1 group chat accepted", accepted(r) and not r["duplicate"], str(r))
+        # v2 线（BinaryFrame）上同一 accept 语义：B 成员经 v2 codec 接受群聊
+        v2.send({"msgid": 10, "id": bid, "groupid": gid, "content": "hi from b",
+                 "client_message_id": "cm-g4b-" + suffix})
         r = v2.recv()
-        check("G5_v2 member receives group msg", r is not None and r.get("msgid") == 10
-              and r.get("msg") == "hi all", str(r))
-        # B-18 非成员可发群聊（P3-05 后发送者身份取自 Session：payload id 必须
-        # 与连接绑定用户一致，故用 cid；B-18 保留非成员 errno=0）
+        check("G4b_v2 group chat accepted (v2 codec)", accepted(r) and not r["duplicate"],
+              str(r))
+        check("G5_v2 no delivery yet (P3-07)", v2.recv_timeout(0.5))
+        # B-18（P3-06 收紧落地）非成员发群聊 → 101（NotConversationMember），
+        # 不再 errno=0（P3-05 后发送者身份取自 Session：payload id 必须与连接
+        # 绑定用户一致，故用 cid）。
         v1b.send(reg(C))
         r = v1b.recv()
         cid = r.get("id", 0)
         v1b.send(login(cid))
         r = v1b.recv()
         check("G6_v1b C login", r is not None and r.get("errno") == 0, str(r))
-        v1b.send(dict(gmsg, id=cid))
+        v1b.send({"msgid": 10, "id": cid, "groupid": gid, "content": "hi all",
+                  "client_message_id": "cm-g7-" + suffix})
         r = v1b.recv()
-        check("G7_v1b non-member group chat acked", r is not None and r.get("errno") == 0,
-              str(r))
-        # 非成员发送时消息仍转发给全部在线成员（含 A/v1；发送者 cid 不在成员表
-        # 不参与跳过逻辑），v1 需消费该转发以保持后续流对齐
+        check("G7_v1b non-member group chat 101", errresp(r, 101), str(r))
+        # legacy 群聊（无 cmid，成员 A）→ 旧格式回显 errno=0
+        v1.send({"msgid": 10, "id": aid, "groupid": gid, "content": "hi legacy"})
         r = v1.recv()
-        check("G7b_v1 member receives non-member group msg", r is not None
-              and r.get("msgid") == 10 and r.get("msg") == "hi all", str(r))
-        # B-19 超长群聊（见 B-13 同款检查）：整条 payload >500 → errno=1 "message too long"（与单聊
-        # E4 一致，长度检查先于成员查询/转发）
-        v1.send({"msgid": 10, "id": aid, "groupid": gid, "msg": "a" * 600, "time": "t"})
+        check("G8_v1 legacy group chat old-format echo", r is not None
+              and r.get("errno") == 0 and r.get("msgid") == 10, str(r))
+        # B-19（P3-06 收紧落地）超长群聊 → 105（v2）/ errno=1（legacy）
+        v1.send({"msgid": 10, "id": aid, "groupid": gid, "content": overlong,
+                 "client_message_id": "cm-g9-" + suffix})
         r = v1.recv()
-        check("G8_v1 overlong group chat rejected", r is not None
-              and r.get("errno") == 1 and r.get("errmsg") == "message too long", str(r))
+        check("G9_v1 overlong group chat 105", errresp(r, 105), str(r))
+        v1.send({"msgid": 10, "id": aid, "groupid": gid, "content": overlong})
+        r = v1.recv()
+        check("G9b_v1 legacy overlong group rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "content too long", str(r))
+
+        # P3-06 spec §2.4 NotFound：目标用户/群不存在 → 106（v2 稳定错误）
+        v1.send({"msgid": 6, "id": aid, "toid": 99999991,
+                 "client_message_id": "cm-j1-" + suffix, "content": "hi"})
+        r = v1.recv()
+        check("J1_v1 direct to missing user 106", errresp(r, 106), str(r))
+        v1.send({"msgid": 10, "id": aid, "groupid": 99999991,
+                 "client_message_id": "cm-j2-" + suffix, "content": "hi"})
+        r = v1.recv()
+        check("J2_v1 group chat to missing group 106", errresp(r, 106), str(r))
 
         # B-20 断开释放会话：断开后重连登录成功
         v2.close()
@@ -331,19 +395,19 @@ def main():
         r = v1.recv()
         check("I2_v1 same user relogin on same conn rejected", r is not None
               and r.get("msgid") == 2 and r.get("errno") == 2, str(r))
-        # 未登录连接发单聊 → 明确拒绝（errno=1），不转发、不入离线队列
+        # 未登录连接发单聊 → 明确拒绝（errno=1），不入 ledger
         v1c = V1Client(host, v1port)
-        v1c.send({"msgid": 6, "id": bid, "toid": bid, "msg": "unauth", "time": "t"})
+        v1c.send({"msgid": 6, "id": bid, "toid": bid, "content": "unauth"})
         r = v1c.recv()
         check("I3_v1c unauthenticated chat rejected", r is not None
               and r.get("errno") == 1 and r.get("errmsg") == "please login first!", str(r))
-        # A（v1）伪造 Bob id 发单聊 → 拒绝
-        v1.send({"msgid": 6, "id": bid, "toid": bid, "msg": "forged", "time": "t"})
+        # A（v1）伪造 Bob id 发单聊 → 拒绝（P3-06 codec 在前：content 字段合法，
+        # 会话检查拒绝；伪造消息不得进入 ledger）
+        v1.send({"msgid": 6, "id": bid, "toid": bid, "content": "forged"})
         r = v1.recv()
         check("I4_v1 forged sender id rejected", r is not None
               and r.get("errno") == 1 and r.get("errmsg") == "invalid sender!", str(r))
-        # 伪造消息不得进入 B 的离线队列：D6 登录补投已清空队列，登录 B 后
-        # 若收到任何离线消息即证明 I4 的伪造消息被（错误地）存储
+        # 伪造消息不得产生 B 的 Delivery/离线投递：登录 B 后无任何消息
         v2c = V2Client(host, v2port)
         v2c.send(login(bid))
         r = v2c.recv()
@@ -351,7 +415,7 @@ def main():
               str(r))
         check("I5b_v2c no forged offline message", v2c.recv_timeout(0.5))
         # 伪造 id 群聊 → 拒绝
-        v1.send({"msgid": 10, "id": bid, "groupid": gid, "msg": "forged group", "time": "t"})
+        v1.send({"msgid": 10, "id": bid, "groupid": gid, "content": "forged group"})
         r = v1.recv()
         check("I6_v1 forged group sender id rejected", r is not None
               and r.get("errno") == 1 and r.get("errmsg") == "invalid sender!", str(r))

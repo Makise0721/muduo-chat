@@ -1,0 +1,96 @@
+#pragma once
+
+// P3-06 协议 adapter（docs/tasks/P3-06.md 冻结决策表）：
+// - msgid 11/12/13 冻结于 ChatService.hpp EnMsgType（B-22 不占 1..10；本层回包
+//   构造以 msgid 参数接收，避免协议层反向依赖 ChatService）；
+// - 稳定错误码 errno 101..107 本层冻结（决策表第 5 行）；content 上限 16KB
+//   （第 6 行，UTF-8 字节）；typed content 保持最简字符串（第 7 行）；
+// - legacy 判定（缺 client_message_id）与 legacy identity 生成（第 10/11 行）。
+//
+// 头文件自包含（不包含 ReliableMessaging.hpp）：领域类型（class Clock 等）与
+// mymuduo TimerQueue.h 的 using Clock 全局同名冲突，同一 TU 无法共存；域间
+// 操作（accept 编排、错误映射、legacy identity）全部经本层自由函数，实现在
+// ProtocolCodec.cpp（mymuduo 无关 TU）。ChatService 只做 codec 调用/session/
+// executor/Reply 映射，不接触领域类型。
+
+#include "app/ChatApplication.hpp"  // 群成员查询入口（mymuduo 无关）
+
+#include <cstdint>
+#include <string>
+
+#include "json.hpp"
+
+// ---- 稳定错误码（决策表第 5 行冻结；golden 落地后不再变更）----
+constexpr int kErrnoNotConversationMember = 101;
+constexpr int kErrnoTooManyRecipients = 102;
+constexpr int kErrnoIdempotencyConflict = 103;
+constexpr int kErrnoDependencyBusy = 104;
+constexpr int kErrnoContentTooLong = 105;
+constexpr int kErrnoNotFound = 106;
+constexpr int kErrnoInvalidClientMessageId = 107;
+
+// content 字段上限（UTF-8 字节；决策表第 6 行：16KB）。
+// 旧 B-13 整条序列化 payload >500 判定废止，不再支配新路径。
+constexpr size_t kMaxContentBytes = 16 * 1024;
+
+// 命令种类（本层自包含枚举；与 SendMessageCommand::Kind 对应，映射在 .cpp）。
+enum class ChatCommandKind {
+    Direct,
+    Group,
+};
+
+// ONE_CHAT/GROUP_CHAT 解析结果：legacy 判定 + 校验后的命令字段。
+// legacy=true（缺 client_message_id）时 hasClientMessageId 必为 false。
+struct ParsedChatMessage {
+    bool legacy = false;
+    bool hasClientMessageId = false;
+    std::string clientMessageId;  // 原始值；非法时仍保留供错误响应回显
+    std::string content;
+    int64_t directRecipient = 0;  // Direct 的 toid
+    int64_t groupId = 0;          // Group 的 groupid
+};
+
+// accept 结果视图（worker 线程产生，EventLoop 线程 completion 消费；纯值类型）。
+// ok=true：messageId/conversationId/sequence/duplicate 有效；ok=false：errnoCode
+// 有效（errmsg 由 protocolErrmsg(errnoCode) 派生，不重复携带）。
+// clientMessageId 为最终幂等键（v2 原值或 legacy identity），v2 回显用。
+struct AcceptResultView {
+    bool ok = false;
+    bool duplicate = false;
+    int errnoCode = 0;
+    std::string clientMessageId;
+    uint64_t messageId = 0;
+    uint64_t conversationId = 0;
+    uint64_t sequence = 0;
+};
+
+// 解析 ONE_CHAT/GROUP_CHAT 命令（v1/v2 共用）。返回 0=通过；否则为 accept 前
+// 拒绝码：kErrnoInvalidClientMessageId（107，非 ASCII 1..64）、
+// kErrnoContentTooLong（105，>16KB）。字段缺失/类型错误抛异常——B-25：
+// handler 层兜底静默，不产生响应（与旧行为一致）。
+int parseChatMessage(ChatCommandKind kind, const nlohmann::json& js,
+                     ParsedChatMessage* out);
+
+// worker 线程调用（executor 单 worker = ReliableMessaging 单一调用者，串行驱动）：
+// 预检（Direct 目标存在/Group 成员资格+拒空群）→ 构造 SendMessageCommand →
+// ReliableMessaging.accept → MessageStoreError 异常映射 errno；结果写 view。
+// app 仅用于群成员查询；legacy 命令在此生成 identity 并计数（spec §5.1）。
+void acceptChatCommand(ChatApplication* app, int64_t userId, int64_t generation,
+                       const ParsedChatMessage& parsed, ChatCommandKind kind,
+                       AcceptResultView* view);
+
+// 101..107 固定 errmsg（golden 同步 pin 这些字符串）；未知码返回通用文案。
+const char* protocolErrmsg(int errnoCode);
+
+// MESSAGE_ACCEPTED（msgid=11）：五字段 + duplicate（spec §2.2）。
+nlohmann::json buildMessageAcceptedReply(int msgid, const std::string& clientMessageId,
+                                         uint64_t messageId, uint64_t conversationId,
+                                         uint64_t sequence, bool duplicate);
+
+// 错误响应（msgid=13）：{msgid, errno, errmsg[, client_message_id]}（决策表第 4 行；
+// client_message_id 可解析时回显，nullptr 省略）。
+nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errmsg,
+                               const std::string* clientMessageId);
+
+// legacy-mode 计数（spec §5.1 能力差异可观测；正式指标 P3-12 暴露）。
+uint64_t legacyModeCount();

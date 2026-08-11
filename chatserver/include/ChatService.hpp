@@ -33,6 +33,11 @@ enum EnMsgType {
     CREATE_GROUP_MSG,
     ADD_GROUP_MSG,
     GROUP_CHAT_MSG,
+    // P3-06 协议 golden 一次冻结（docs/tasks/P3-06.md 决策表 1/2/3 行；B-22
+    // 不占 1..10）：11/12/13 数值落地后不再变更。DELIVERY_ACK handler 属 P3-07。
+    MESSAGE_ACCEPTED_MSG = 11,
+    DELIVERY_ACK_MSG = 12,
+    ERROR_RESP_MSG = 13,
 };
 
 class ChatService {

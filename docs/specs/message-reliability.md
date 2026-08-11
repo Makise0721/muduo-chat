@@ -36,7 +36,7 @@
 
 | 消息 | msgid | 字段 | 约束 |
 |------|-------|------|------|
-| ONE_CHAT | 6（既有值，不变，B-22） | `client_message_id`（新增）、`toid`、`content` | `client_message_id` 为 ASCII 1..64 字节（对应 schema `ASCII(1..64)`），大小写敏感（'abc' 与 'ABC' 是不同 ClientMessageId，schema 以 `ascii_bin` 排序规则落地）；缺失 → legacy 判定（§5.1）；格式非法 → InvalidClientMessageId |
+| ONE_CHAT | 6（既有值，不变，B-22） | `client_message_id`（新增）、`toid`、`content` | `client_message_id` 为 ASCII 1..64 字节（对应 schema `ASCII(1..64)`），大小写敏感（'abc' 与 'ABC' 是不同 ClientMessageId，schema 以 `ascii_bin` 排序规则落地）；缺失 → legacy 判定（§5.1）；格式非法 → InvalidClientMessageId；`content` 为字符串（UTF-8 字节），上限 16KB（P3-06 冻结，见 §2.5/§7；超限 → ContentTooLong） |
 | GROUP_CHAT | 10（既有值，不变，B-22） | `client_message_id`（新增）、`groupid`、`content` | 同上；非成员发送 → NotConversationMember（B-18 收紧） |
 
 可靠客户端必须跨重试保存 client_message_id；同一消息意图重试时不得更换（计划 §2）。
@@ -61,21 +61,31 @@ MESSAGE_ACCEPTED 只在该事务提交后发出（Durable acceptance 承诺）�
 
 ### 2.4 错误分类
 
-| 错误 | 语义 | 客户端动作 |
-|------|------|-----------|
-| DependencyBusy | accept 事务 lock timeout / deadlock | 以同一 ClientMessageId 重试 |
-| IdempotencyConflict | 同 `(sender, ClientMessageId)` 但 payload 不同 | 不重试；更换 key 或人工处理；不得被当作 duplicate=true |
-| TooManyRecipients | 群成员数超过 fan-out cap（cap 值=100，P3-04 冻结，adapter 构造参数） | 不得当作已接受；同 key 重试仍返回同一错误 |
-| NotConversationMember | 非群成员发送群聊 | 获得成员资格后以新意图发送 |
-| NotFound | 用户/群不存在 | 修复字段 |
-| InvalidClientMessageId | client_message_id 非 ASCII 或长度超 1..64 | 修复字段 |
+错误响应整数编码在 P3-06 golden 一次冻结（§2.5，tests/fixtures/ 与
+ReliableProtocolGoldenTest 同步 pin；数值与 errmsg 不再变更）。v2 错误响应字段：
+`{msgid=13, errno, errmsg[, client_message_id（可解析时回显）]}`；legacy 客户端
+按 CONTEXT.md 的 Errno 语义（0/1/2）获得通用失败（旧格式回显 errno=1 + errmsg）。
 
-错误响应的 msgid/errno 整数编码在 P3-06 golden 一次冻结（§2.5）；legacy 客户端继续按 CONTEXT.md 的 Errno 语义（0/1/2）获得通用失败。
+| 错误 | errno | errmsg（pin） | 语义 | 客户端动作 |
+|------|-------|---------------|------|-----------|
+| NotConversationMember | 101 | `not a conversation member` | 非群成员发送群聊（B-18 收紧落地） | 获得成员资格后以新意图发送 |
+| TooManyRecipients | 102 | `too many recipients` | 群成员数超过 fan-out cap（cap 值=100，P3-04 冻结，adapter 构造参数） | 不得当作已接受；同 key 重试仍返回同一错误 |
+| IdempotencyConflict | 103 | `idempotency conflict` | 同 `(sender, ClientMessageId)` 但 payload 不同 | 不重试；更换 key 或人工处理；不得被当作 duplicate=true |
+| DependencyBusy | 104 | `dependency busy` | accept 事务 lock timeout / deadlock / 成员查询失败（B-19 收紧落地） | 以同一 ClientMessageId 重试 |
+| ContentTooLong | 105 | `content too long` | content > 16KB（codec 层，accept 前拒绝；B-13 收紧落地） | 缩短 content 后以同一 ClientMessageId 重试 |
+| NotFound | 106 | `target not found` | 目标用户/群不存在 | 修复字段 |
+| InvalidClientMessageId | 107 | `invalid client_message_id` | client_message_id 非 ASCII 或长度超 1..64（codec 层，accept 前拒绝） | 修复字段 |
+
+未知 errno 的 errmsg 为 `protocol error`（防御值，不进入黄金组合）。
 
 ### 2.5 枚举整数编码与一次冻结
 
-- 现网 msgid 1..10 由行为矩阵 B-22 锁定，新增消息类型（MESSAGE_ACCEPTED、DELIVERY_ACK、错误响应等）不得占用 1..10。
-- 新枚举的具体整数在 P3-06 的 protocol golden 中一次冻结：本规范只固定名称、字段与语义；golden 落地后数值不再变更，客户端 fixture 与 golden 同步生成（计划 §7、§5 P3-06）。
+- 现网 msgid 1..10 由行为矩阵 B-22 锁定，新增消息类型不得占用 1..10。
+- P3-06 protocol golden 已冻结（ReliableProtocolGoldenTest + tests/fixtures/）：
+  `11=MESSAGE_ACCEPTED`、`12=DELIVERY_ACK`（本卡只冻结数值与字段形状
+  `{msgid=12, message_id}`，UserId 取 Session；handler 属 P3-07）、
+  `13=ERROR_RESP`；错误码 101..107 见 §2.4。数值落地后不再变更，客户端 fixture
+  与 golden 同步生成（计划 §7、§5 P3-06）。
 - `MessageDelivery.state`（Pending/InFlight/Acknowledged/Expired）的数据库编码由 adapter 隐藏，数值/字符串不泄漏到领域 interface（计划 §6）。
 
 ## 3. Delivery 状态机
@@ -154,14 +164,14 @@ stateDiagram-v2
 
 | 矩阵 ID | 现状（P2-00 锁定） | 新规范 | 类别 | 生效任务 |
 |---------|-------------------|--------|------|----------|
-| B-09 | 登录：先回 LOGIN_MSG_ACK，再逐条补投原始 Command，随后清空离线队列 | 保留"先 ACK 后补投"次序；补投演进为"新 Session claim 自己名下的 Pending Delivery"，经状态机投递；"随后清空队列"由状态机取代 | 保留/演进 | P3-05/P3-07/P3-08 |
-| B-12 | 单聊：目标离线 → 整条 Command 入 OfflineMessage，登录读删 | 离线/在线统一 durable accept；读删流程保留至 P3-08 由新路径替换，之后 takeOffline 退出新路径；旧表退役见 §5.2 | 保留至替换 | P3-08/P3-10 |
-| B-17 | 群聊：在线成员收原始 Command、离线成员入队、发送者 errno=0 | 收紧：accept 事务内快照成员；Delivery 由状态机驱动；确认仅在事务提交后发出 | 收紧 | P3-04/P3-06/P3-07 |
-| B-18 | 非成员发群聊仍 errno=0 | 收紧：发送者必须是群成员，非成员 → NotConversationMember | 收紧 | P3-04 |
-| B-19 | 成员查询失败仍 errno=0 | 收紧：查询失败/事务失败 → DependencyBusy，不再无条件下发确认 | 收紧 | P3-04 |
+| B-09 | 登录：先回 LOGIN_MSG_ACK，再逐条补投原始 Command，随后清空离线队列 | 保留"先 ACK 后补投"次序；P3-06 后 oneChat/groupChat 不再写 OfflineMessage（登录补投暂无新 Delivery）；补投演进为"新 Session claim 自己名下的 Pending Delivery"（P3-07） | 保留/演进 | P3-05/P3-06/P3-07 |
+| B-12 | 单聊：目标离线 → 整条 Command 入 OfflineMessage，登录读删 | 离线/在线统一 durable accept（P3-06 落地：storeOfflineMessage 写路径退役，同一 ledger）；MESSAGE_ACCEPTED 在事务提交后发出；读删流程保留至 P3-08 由新路径替换 | 收紧 | P3-06/P3-08 |
+| B-17 | 群聊：在线成员收原始 Command、离线成员入队、发送者 errno=0 | P3-06 落地：accept 事务内快照成员；在线转发/离线入队退役；确认仅在事务提交后发出（MESSAGE_ACCEPTED/legacy 旧格式回显） | 收紧 | P3-04/P3-06/P3-07 |
+| B-18 | 非成员发群聊仍 errno=0 | 收紧落地（P3-06）：发送者必须是群成员，非成员 → 101 | 收紧 | P3-04/P3-06 |
+| B-19 | 成员查询失败仍 errno=0 | 收紧落地（P3-06）：查询失败/事务失败 → 104，不再无条件下发确认 | 收紧 | P3-04/P3-06 |
 | B-21 | 同一连接先后登录不同 User 均成功 | 收紧：连接绑定一个认证 Session（User+generation），切换被拒 | 收紧 | P3-05 |
 
-其他相关变化（非行为矩阵新增行）：B-11 在线直写被 ledger + Delivery 状态机替代（接受点变化）；B-22 枚举编码见 §2.5；B-13 的 500 字节上限在 P3-06 冻结新 content 上限后不再支配新路径（数据库列容量不是业务规则，计划 §6）。
+其他相关变化（非行为矩阵新增行）：B-11 在线直写被 ledger + Delivery 状态机替代（接受点变化，P3-06 落地）；B-22 枚举编码见 §2.5；B-13 的 500 字节上限被 P3-06 冻结的 content 16KB 上限替代（决策表第 6 行，数据库列容量不是业务规则，计划 §6）。
 
 ## 7. 未定值冻结清单
 
@@ -170,8 +180,8 @@ stateDiagram-v2
 | fan-out cap 数值 | P3-04 | §2.4 TooManyRecipients 阈值，冻结为 100（记录于 docs/tasks/P3-04.md RED 节，adapter 构造参数） |
 | ack timeout / backoff cap | P3-08 | §3 重投参数，RED 前记录 |
 | message retention / cleanup batch | P3-08 | §3 Expired/清理参数 |
-| 新 msgid 整数编码 | P3-06 golden | §2.5 一次冻结 |
-| content 上限 | P3-06 | §6 B-13 相关 |
+| 新 msgid 整数编码 | P3-06 | **已冻结**：11/12/13（§2.5；ReliableProtocolGoldenTest + tests/fixtures/，数值不再变更） |
+| content 上限 | P3-06 | **已冻结**：16KB UTF-8 字节（§2.1；B-13 旧 500 字节判定废止） |
 | legacy 退出日期 | P3-10 | §5.1 观察窗口证据后宣布 |
 
 ## 8. 审阅与验证

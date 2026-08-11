@@ -1,5 +1,6 @@
 #include "ChatService.hpp"
 #include "app/ChatApplication.hpp"
+#include "app/ProtocolCodec.hpp"
 #include "db/MySQLGuards.hpp"
 #include <iostream>
 #include <exception>
@@ -7,6 +8,25 @@
 #include <vector>
 
 namespace {
+
+// 失败回复（决策表第 4/10 行）：v2 → msgid=13 + errno + errmsg（+client_message_id
+// 可解析时回显）；legacy → 旧格式回显 errno=1 + errmsg。errmsg 一律由 errno 派生
+// （protocolErrmsg），双通道字符串与 errno 保持一致。
+void sendFailureReply(const TcpConnectionPtr& conn, const json& js,
+                      const ParsedChatMessage& parsed, int errnoCode)
+{
+    const char* errmsg = protocolErrmsg(errnoCode);
+    if (parsed.legacy) {
+        json response = js;
+        response["errno"] = 1;
+        response["errmsg"] = errmsg;
+        conn->send(response.dump() + "\n");
+        return;
+    }
+    const std::string* cmid = parsed.hasClientMessageId ? &parsed.clientMessageId : nullptr;
+    conn->send(buildErrorReply(ERROR_RESP_MSG, errnoCode, errmsg, cmid).dump() + "\n");
+}
+
 } // namespace
 
 ChatService::ChatService()
@@ -323,14 +343,13 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
 }
 
 void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
-    int toid = js["toid"].get<int>();
-    // 消息超长（离线 payload 存 OfflineMessage.message VARCHAR(500)）：
-    // 按整条序列化 payload 判定，在线/离线路径一致拒绝。
-    if (js.dump().size() > 500) {
-        json response = js;
-        response["errno"] = 1;
-        response["errmsg"] = "message too long";
-        conn->send(response.dump() + "\n");
+    // P3-06 codec：client_message_id 判定（缺 → legacy）+ content 16KB 上限
+    // （B-13 500B 整包判定废止，决策表第 6 行）；105/107 为 accept 前拒绝。
+    // 字段缺失/类型错误抛异常 → handler 层 B-25 静默（与旧行为一致）。
+    ParsedChatMessage parsed;
+    int codecErr = parseChatMessage(ChatCommandKind::Direct, js, &parsed);
+    if (codecErr != 0) {
+        sendFailureReply(conn, js, parsed, codecErr);
         return;
     }
     // P3-05 消息主体只来自 Session：未登录拒绝；payload id 与 Session user
@@ -350,33 +369,42 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
         conn->send(response.dump() + "\n");
         return;
     }
-    {
-        TcpConnectionPtr target = _sessions.lookupByUser(toid);
-        if (target) {
-            // 目标在线：原样转发（内存操作，无 SQL），随后回发送者确认。
-            target->send(js.dump() + "\n");
-            json response = js;
-            response["errno"] = 0;
-            conn->send(response.dump() + "\n");
-            return;
-        }
-    }
-
-    // 目标离线：异步入队（Reply errno=0 表示"服务器已接受"，非"对端已收到"）。
     if (!_executor) {
         json response = js;
         response["errno"] = 1;
+        response["errmsg"] = "db unavailable!";
         conn->send(response.dump() + "\n");
         return;
     }
-    std::string payload = js.dump();
-    auto result = std::make_shared<StoreResult>();
+
+    // P3-06 durable accept：在线直写与 storeOffline 写路径退役（B-11/B-12/B-17
+    // 让位 ledger + Delivery 状态机；takeOffline 读删流程保留至 P3-08）。
+    // 预检与 accept 在 ProtocolCodec（worker 线程，ReliableMessaging 单一调用者）。
+    auto view = std::make_shared<AcceptResultView>();
     _executor->submit(
-        [this, toid, payload, result] { *result = _app.storeOfflineMessage(toid, payload); },
-        [conn, payload, result] {
-            json response = json::parse(payload);
-            response["errno"] = result->ok ? 0 : 1;
-            conn->send(response.dump() + "\n");
+        [this, session, parsed, view] {
+            acceptChatCommand(&_app, session.userId, session.generation, parsed,
+                              ChatCommandKind::Direct, view.get());
+        },
+        [conn, js, parsed, view] {
+            if (view->ok) {
+                if (parsed.legacy) {
+                    // 决策表第 10 行：legacy 成功保持旧格式回显 errno=0。
+                    json response = js;
+                    response["errno"] = 0;
+                    conn->send(response.dump() + "\n");
+                } else {
+                    // spec §2.2：五字段 MESSAGE_ACCEPTED，事务提交后发出。
+                    conn->send(buildMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
+                                                          view->clientMessageId,
+                                                          view->messageId,
+                                                          view->conversationId,
+                                                          view->sequence,
+                                                          view->duplicate).dump() + "\n");
+                }
+                return;
+            }
+            sendFailureReply(conn, js, parsed, view->errnoCode);
         });
 }
 
@@ -455,14 +483,11 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
 }
 
 void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time) {
-    int groupid = js["groupid"].get<int>();
-    // 消息超长（离线 payload 存 OfflineMessage.message VARCHAR(500)）：
-    // 按整条序列化 payload 判定，在线/离线路径一致拒绝。
-    if (js.dump().size() > 500) {
-        json response = js;
-        response["errno"] = 1;
-        response["errmsg"] = "message too long";
-        conn->send(response.dump() + "\n");
+    // P3-06 codec（见 oneChat：legacy 判定 + 16KB 上限，105/107 accept 前拒绝）。
+    ParsedChatMessage parsed;
+    int codecErr = parseChatMessage(ChatCommandKind::Group, js, &parsed);
+    if (codecErr != 0) {
+        sendFailureReply(conn, js, parsed, codecErr);
         return;
     }
     // P3-05 消息主体只来自 Session（见 oneChat 注释）。
@@ -481,39 +506,39 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
         conn->send(response.dump() + "\n");
         return;
     }
-
     if (!_executor) {
         json response = js;
         response["errno"] = 1;
+        response["errmsg"] = "db unavailable!";
         conn->send(response.dump() + "\n");
         return;
     }
-    auto members = std::make_shared<MembersResult>();
-    std::string payload = js.dump();
+
+    // P3-06 durable accept：成员快照与资格校验在 executor 内（B-18/B-19 收紧：
+    // 非成员→101、群不存在→106、查询失败→104）；在线转发/离线入队退役。
+    auto view = std::make_shared<AcceptResultView>();
     _executor->submit(
-        [this, groupid, members] { *members = _app.groupMembers(groupid); },
-        [this, conn, session, members, payload] {
-            // 在线成员：单锁快照连接后原样转发（内存操作，无 SQL）。
-            std::unordered_map<int64_t, TcpConnectionPtr> online =
-                _sessions.snapshotConnections(members->userIds, session.userId);
-            std::string msg = payload + "\n";
-            for (auto& kv : online) {
-                kv.second->send(msg);
-            }
-            // 离线成员：异步入队（每条一个任务，单 worker FIFO 保序）。
-            for (size_t i = 0; i < members->userIds.size(); ++i) {
-                int64_t toid = members->userIds[i];
-                if (toid == session.userId || online.find(toid) != online.end()) {
-                    continue;
+        [this, session, parsed, view] {
+            acceptChatCommand(&_app, session.userId, session.generation, parsed,
+                              ChatCommandKind::Group, view.get());
+        },
+        [conn, js, parsed, view] {
+            if (view->ok) {
+                if (parsed.legacy) {
+                    json response = js;
+                    response["errno"] = 0;
+                    conn->send(response.dump() + "\n");
+                } else {
+                    conn->send(buildMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
+                                                          view->clientMessageId,
+                                                          view->messageId,
+                                                          view->conversationId,
+                                                          view->sequence,
+                                                          view->duplicate).dump() + "\n");
                 }
-                _executor->submit(
-                    [this, toid, payload] { _app.storeOfflineMessage(toid, payload); },
-                    [] {});
+                return;
             }
-            // 给群聊发送者一个确认，避免客户端阻塞等待（B-19：查询失败也回 0）。
-            json response = json::parse(payload);
-            response["errno"] = 0;
-            conn->send(response.dump() + "\n");
+            sendFailureReply(conn, js, parsed, view->errnoCode);
         });
 }
 

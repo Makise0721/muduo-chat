@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """P2-08 multi-reactor process test: run a concurrent business matrix against a
 ChatServer started with threadNum N (argv[3]): concurrent registration, login,
-direct chat, disconnect and reconnect must all succeed.
+direct chat (P3-06: durable accept semantics — sender ack, no forward), logout,
+disconnect and reconnect must all succeed.
 
 Exit code 0 iff MULTIREACTOR_ALL_PASS.
 """
@@ -42,6 +43,17 @@ class LineClient(object):
         except (socket.timeout, ValueError):
             return None
 
+    def recv_timeout(self, t):
+        self.sock.settimeout(t)
+        try:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                return True
+            self.buf += chunk
+            return False
+        except (socket.timeout, ConnectionResetError):
+            return True
+
     def close(self):
         self.sock.close()
 
@@ -74,24 +86,18 @@ def main():
             r = clients[i].recv()
             check("login_%d" % i, r is not None and r.get("errno") == 0, str(r))
 
-        # 并发互聊（i -> (i+1)%n，目标在线）
-        # 注意：多 Reactor 下 ACK 与转发出自不同 I/O loop，到达顺序不定，
-        # 客户端必须按字段区分（errno 存在=ACK）而非依赖顺序。
+        # P3-06 迁移（B-11 在线直写退役）：并发互聊（i -> (i+1)%n，目标在线）
+        # 走 durable accept（executor 单 worker 串行）：legacy 命令（无
+        # client_message_id）收旧格式回显 errno=0；目标不再即时收转发
+        # （投递属 P3-07），断言"已接受"语义。
         for i in range(n):
             clients[i].send({"msgid": 6, "id": ids[i], "toid": ids[(i + 1) % n],
-                             "msg": "hi %d" % i, "time": "t"})
+                             "content": "hi %d" % i})
         for i in range(n):
-            got_ack = False
-            got_fwd = False
-            for _ in range(2):
-                r = clients[i].recv()
-                if r is None:
-                    break
-                if "errno" in r:
-                    got_ack = got_ack or (r["errno"] == 0)
-                else:
-                    got_fwd = got_fwd or (r.get("msgid") == 6)
-            check("chat_%d" % i, got_ack and got_fwd, "ack=%s fwd=%s" % (got_ack, got_fwd))
+            r = clients[i].recv()
+            check("chat_%d" % i, r is not None and "errno" in r and r["errno"] == 0,
+                  str(r))
+            check("chat_%d_no_forward" % i, clients[i].recv_timeout(0.4))
 
         # 并发登出
         for i in range(n):
