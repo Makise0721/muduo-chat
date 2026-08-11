@@ -18,7 +18,8 @@ trap cleanup EXIT
 
 export DB_PASSWORD="${DB_PASSWORD:-123456}"
 export TSAN_OPTIONS="suppressions=$(dirname "$0")/tsan.supp"
-pkill -f "setarch x86_64 -R .*$SERVER_BIN" 2>/dev/null || true
+# 带端口限定，避免与并行进程测试（RESOURCE_LOCK 下仍保险）互相误杀。
+pkill -f "setarch x86_64 -R .*$SERVER_BIN 127.0.0.1 6000" 2>/dev/null || true
 sleep 0.5
 
 ulimit -n 128

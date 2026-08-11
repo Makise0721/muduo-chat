@@ -35,19 +35,22 @@ wait_server_ready() {
     return 1
 }
 
+# 每个标记必须恰好出现一次（idempotent shutdown 保证）且行号严格递增。
 assert_order() {
     local LOGFILE="$1"
     shift
     local prev=0
     local m
     for m in "$@"; do
-        local line
-        line=$(grep -n "$m" "$LOGFILE" | head -1 | cut -d: -f1)
-        if [ -z "$line" ]; then
-            echo "FAIL: missing marker '$m'"
+        local count
+        count=$(grep -c "$m" "$LOGFILE")
+        if [ "$count" -ne 1 ]; then
+            echo "FAIL: marker '$m' appears $count times (expected exactly 1)"
             cat "$LOGFILE"
             exit 1
         fi
+        local line
+        line=$(grep -n "$m" "$LOGFILE" | head -1 | cut -d: -f1)
         if [ "$line" -le "$prev" ]; then
             echo "FAIL: order broken at '$m' (line $line after $prev)"
             cat "$LOGFILE"
@@ -84,12 +87,6 @@ if [ "$RC" -ne 0 ]; then
     exit 1
 fi
 assert_order "$LOG" STOP_ACCEPT DRAINED EXECUTOR_SHUTDOWN POOL_SHUTDOWN QUIT_LOOPS EXITED
-DRAIN_COUNT=$(grep -c 'DRAINED pending=0' "$LOG" || true)
-if [ "$DRAIN_COUNT" -ne 1 ]; then
-    echo "FAIL: DRAINED count $DRAIN_COUNT (expected 1)"
-    cat "$LOG"
-    exit 1
-fi
 rm -f "$LOG"
 echo "PASS: scenario A (fast drain) exit=$RC"
 
@@ -133,6 +130,8 @@ if [ "$RC" -ne 0 ]; then
     cat "$LOG"
     exit 1
 fi
+# main.cpp:70 已用 !flow->forced 限定：DRAINED 只在非强制路径打印。场景 B 经
+# DRAIN_TIMEOUT 置 forced 后再归零不会打 DRAINED，A/B 标记互斥已落地。
 assert_order "$LOG" STOP_ACCEPT DRAIN_TIMEOUT EXECUTOR_SHUTDOWN POOL_SHUTDOWN QUIT_LOOPS EXITED
 rm -f "$LOG"
 echo "PASS: scenario B (hard deadline) exit=$RC"

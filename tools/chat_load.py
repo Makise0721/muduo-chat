@@ -24,7 +24,10 @@ def recv_line(sock, timeout):
     sock.settimeout(timeout)
     buf = b""
     while b"\n" not in buf:
-        chunk = sock.recv(4096)
+        try:
+            chunk = sock.recv(4096)
+        except (socket.timeout, ConnectionResetError, OSError):
+            return None
         if not chunk:
             return None
         buf += chunk
@@ -36,9 +39,20 @@ def recv_line(sock, timeout):
 
 
 def worker(host, port, worker_id, target_id, duration_ms, out, lock):
-    sock = socket.create_connection((host, port), timeout=10)
+    try:
+        sock = socket.create_connection((host, port), timeout=10)
+    except OSError:
+        with lock:
+            out["errors"] += 1
+        return
     name = "load_%d_%d" % (time.process_time_ns() % 1000000, worker_id)
-    send_line(sock, {"msgid": 4, "name": name, "password": "123456"})
+    try:
+        send_line(sock, {"msgid": 4, "name": name, "password": "123456"})
+    except (socket.timeout, OSError):
+        with lock:
+            out["errors"] += 1
+        sock.close()
+        return
     ack = recv_line(sock, 10)
     if ack is None or ack.get("msgid") != 5 or ack.get("errno") != 0:
         with lock:
@@ -46,7 +60,13 @@ def worker(host, port, worker_id, target_id, duration_ms, out, lock):
         sock.close()
         return
     my_id = ack.get("id", -1)
-    send_line(sock, {"msgid": 1, "id": my_id, "password": "123456"})
+    try:
+        send_line(sock, {"msgid": 1, "id": my_id, "password": "123456"})
+    except (socket.timeout, OSError):
+        with lock:
+            out["errors"] += 1
+        sock.close()
+        return
     ack = recv_line(sock, 10)
     if ack is None or ack.get("msgid") != 2 or ack.get("errno") != 0:
         with lock:
@@ -59,8 +79,14 @@ def worker(host, port, worker_id, target_id, duration_ms, out, lock):
     ok = 0
     while time.time() < deadline:
         start = time.time()
-        send_line(sock, {"msgid": 6, "id": my_id, "toid": target_id,
-                         "msg": "bench payload"})
+        try:
+            send_line(sock, {"msgid": 6, "id": my_id, "toid": target_id,
+                             "msg": "bench payload"})
+        except (socket.timeout, OSError):
+            with lock:
+                out["errors"] += 1
+            sock.close()
+            return
         ack = recv_line(sock, 10)
         if ack is None or ack.get("errno") != 0:
             with lock:

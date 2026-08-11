@@ -28,6 +28,17 @@ void runFriendRepositoryContract(FriendRepository& friends, int64_t aId, int64_t
     AddFriendResult missing = friends.add(aId, 999999);
     EXPECT_FALSE(missing.ok);
     EXPECT_EQ(FriendError::TargetNotFound, missing.error);
+
+    // sender 不存在 + 目标存在 → TargetNotFound（MySQL 走 FK 1452；InMemory
+    // 依赖 sender 存在性校验，R1 修复前跑红属预期）。
+    AddFriendResult missingSender = friends.add(999998, bId);
+    EXPECT_FALSE(missingSender.ok);
+    EXPECT_EQ(FriendError::TargetNotFound, missingSender.error);
+
+    // sender 与目标都不存在 → TargetNotFound。
+    AddFriendResult bothMissing = friends.add(999998, 999999);
+    EXPECT_FALSE(bothMissing.ok);
+    EXPECT_EQ(FriendError::TargetNotFound, bothMissing.error);
 }
 
 TEST(FriendRepositoryContractTest, InMemoryAdapterSatisfiesContract)

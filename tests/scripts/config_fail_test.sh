@@ -2,6 +2,7 @@
 # P2-09 config fail-fast test:
 # - missing file / malformed json / out-of-range value / unknown field
 #   -> process exits nonzero, stderr contains 'config error', no listener.
+# - unreachable db port -> exits nonzero, stderr contains 'pool init failed'.
 # - valid config -> starts, SIGTERM -> exit 0.
 set -u
 
@@ -60,7 +61,25 @@ expect_config_error "unknown field" "$WORK/4.log" --config "$WORK/unknown.json"
 # 5. invalid threads via argv (fail-fast instead of clamping)
 expect_config_error "argv threads=0" "$WORK/5.log" 127.0.0.1 6002 0
 
-# 6. valid config starts and shuts down cleanly
+# 6. unreachable db port -> pool init fail-fast（connect 立即 ECONNREFUSED，
+#    不需要 expect_config_error 的 'config error' 匹配，独立断言 'pool init failed'）
+echo '{"db":{"host":"127.0.0.1","port":1}}' >"$WORK/dbport.json"
+LOG6="$WORK/6.log"
+setarch x86_64 -R "$SERVER_BIN" 127.0.0.1 6002 --config "$WORK/dbport.json" >"$LOG6" 2>&1
+RC=$?
+if [ "$RC" -eq 0 ]; then
+    echo "FAIL: unreachable db port exited 0 (expected pool init failure)"
+    cat "$LOG6"
+    exit 1
+fi
+if ! grep -q 'pool init failed' "$LOG6"; then
+    echo "FAIL: unreachable db port stderr lacks 'pool init failed'"
+    cat "$LOG6"
+    exit 1
+fi
+echo "PASS: unreachable db port (exit=$RC)"
+
+# 7. valid config starts and shuts down cleanly
 cat >"$WORK/ok.json" <<'EOF'
 {"server":{"v1":{"ip":"127.0.0.1","port":6002,"threads":2},
 "v2":{"port":7002}},

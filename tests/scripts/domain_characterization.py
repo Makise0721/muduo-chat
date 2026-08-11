@@ -200,6 +200,24 @@ def main():
         r = v1.recv()
         check("C7_v1 idempotent logout", r is not None and r.get("errno") == 0, str(r))
 
+        # B-25 防御：已知 msgid 但必填字段缺失（{"msgid":1} 无 id/password、
+        # {"msgid":4} 无 name）→ handler 全异常捕获 → 静默不响应、连接保持
+        v1.send({"msgid": 1})
+        check("E1_v1 login missing fields silent", v1.recv_timeout(0.4))
+        v1.send({"msgid": 4})
+        check("E2_v1 reg missing name silent", v1.recv_timeout(0.4))
+        # 连接未断开：继续正常收发（A 重新登录成功）
+        v1.send(login(aid))
+        r = v1.recv()
+        check("E3_v1 conn alive after missing fields", r is not None
+              and r.get("errno") == 0, str(r))
+        # B-13 超长单聊：整条 payload >500 → errno=1 "message too long"（决策
+        # 落地，在线/离线一致；toid=aid 自聊，长度检查先于转发路径）
+        v1.send({"msgid": 6, "id": aid, "toid": aid, "msg": "a" * 600, "time": "t"})
+        r = v1.recv()
+        check("E4_v1 overlong chat rejected", r is not None and r.get("errno") == 1
+              and r.get("errmsg") == "message too long", str(r))
+
         # 准备离线场景：B 登录后登出
         v2.send(login(bid))
         r = v2.recv()
@@ -280,6 +298,12 @@ def main():
         r = v1b.recv()
         check("G7_v1b non-member group chat acked", r is not None and r.get("errno") == 0,
               str(r))
+        # B-19 超长群聊（见 B-13 同款检查）：整条 payload >500 → errno=1 "message too long"（与单聊
+        # E4 一致，长度检查先于成员查询/转发）
+        v1.send({"msgid": 10, "id": aid, "groupid": gid, "msg": "a" * 600, "time": "t"})
+        r = v1.recv()
+        check("G8_v1 overlong group chat rejected", r is not None
+              and r.get("errno") == 1 and r.get("errmsg") == "message too long", str(r))
 
         # B-20 断开释放会话：断开后重连登录成功
         v2.close()

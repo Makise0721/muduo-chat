@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -127,6 +128,34 @@ TEST(BlockingExecutorTest, ExpiredTaskIsSkippedWithoutCallback)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(0, expiredRan.load());
     EXPECT_EQ(0, expiredCompleted.load());
+}
+
+TEST(BlockingExecutorTest, TaskExceptionStillRunsCompletionAndKeepsWorkerAlive)
+{
+    LoopThread lt;
+    BlockingExecutor ex(lt.loop, 1, 4);
+
+    // 异常任务先提交：workerLoop catch 后仍调度 completion。
+    std::promise<void> throwingCompletionDone;
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit([] { throw std::runtime_error("boom"); },
+                        [&throwingCompletionDone] { throwingCompletionDone.set_value(); }));
+    // 随后的正常任务必须照常执行（worker 未被异常打死）。
+    std::promise<void> normalDone;
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit([&normalDone] { normalDone.set_value(); }, [] {}));
+    EXPECT_EQ(std::future_status::ready,
+              normalDone.get_future().wait_for(std::chrono::seconds(5)));
+    // 异常任务的 completion 仍被调度（completion 默认 errno 为非成功值，
+    // 客户端得到失败响应而非悬挂）。
+    EXPECT_EQ(std::future_status::ready,
+              throwingCompletionDone.get_future().wait_for(std::chrono::seconds(5)));
+    // 后续 submit 正常。
+    std::promise<void> laterDone;
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit([&laterDone] { laterDone.set_value(); }, [] {}));
+    EXPECT_EQ(std::future_status::ready,
+              laterDone.get_future().wait_for(std::chrono::seconds(5)));
 }
 
 TEST(BlockingExecutorTest, CompletionIsDispatchedBackToLoopThread)

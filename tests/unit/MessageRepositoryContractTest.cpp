@@ -38,6 +38,11 @@ void runMessageRepositoryContract(MessageRepository& messages, int64_t userId, i
     EXPECT_TRUE(other.ok);
     EXPECT_TRUE(messages.takeOffline(userId).empty());
     ASSERT_EQ(1u, messages.takeOffline(otherUserId).size());
+
+    // 超长消息在服务层拦截：oneChat/groupChat 按整条序列化 payload
+    // （js.dump().size() > 500）拒绝、在线/离线一致 errno=1（ChatService.cpp:318
+    // /435），入库 payload 恒 ≤500、与 OfflineMessage.message VARCHAR(500) 一致；
+    // 仓库契约只验证存取语义，不覆盖服务层拦截。
 }
 
 TEST(MessageRepositoryContractTest, InMemoryAdapterSatisfiesContract)

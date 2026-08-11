@@ -41,6 +41,17 @@ void runCommonUserRepositoryContract(UserRepository& users)
     EXPECT_FALSE(tooLong.ok);
     EXPECT_EQ(UserError::InvalidInput, tooLong.error);
 
+    // password 超长（>50，User.password VARCHAR(50) 上限）：name 合法 + password
+    // 超长组合必须拒绝为 InvalidInput，双 adapter 一致（R1 在 isRepositoryInputValid
+    // 补 password 长度校验前，InMemory 接受、MySQL 返回 StorageFailure，跑红属预期）。
+    CreateUserResult longPwd = users.create("longpw_user", std::string(51, 'p'));
+    EXPECT_FALSE(longPwd.ok);
+    EXPECT_EQ(UserError::InvalidInput, longPwd.error);
+
+    // 边界：50 字符 password 仍合法（校验必须是 >50 而非 >=50）。
+    CreateUserResult edgePwd = users.create("edgepw_user", std::string(50, 'p'));
+    EXPECT_TRUE(edgePwd.ok);
+
     // 认证与状态契约
     AuthResult bad = users.authenticate(firstId, "WRONG");
     EXPECT_FALSE(bad.ok);

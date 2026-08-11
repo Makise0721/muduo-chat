@@ -53,7 +53,7 @@ TEST_F(ConfigTest, FullFileOverridesAll)
         "\"v2\":{\"port\":7100}},"
         "\"db\":{\"host\":\"dbhost\",\"port\":3307,\"user\":\"u1\","
         "\"password\":\"p1\",\"dbname\":\"d1\",\"pool_size\":9},"
-        "\"executor\":{\"workers\":2,\"queue_capacity\":128}}");
+        "\"executor\":{\"workers\":1,\"queue_capacity\":128}}");
     AppConfig cfg;
     std::string err;
     ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
@@ -67,7 +67,9 @@ TEST_F(ConfigTest, FullFileOverridesAll)
     EXPECT_EQ(cfg.db.password, "p1");
     EXPECT_EQ(cfg.db.dbname, "d1");
     EXPECT_EQ(cfg.db.poolSize, 9);
-    EXPECT_EQ(cfg.executor.workers, 2);
+    // workers 只能为 1（多 worker 破坏同连接串行依赖，R1 校验），此处仅能
+    // 验证"显式写 1 合法"；queue_capacity 仍可被覆盖。
+    EXPECT_EQ(cfg.executor.workers, 1);
     EXPECT_EQ(cfg.executor.queueCapacity, 128);
     std::remove(path.c_str());
 }
@@ -124,6 +126,24 @@ TEST_F(ConfigTest, FailFastMatrix)
         {"{\"server\":{\"unknown_field\":1}}", "unknown"},
         {"{\"db\":{\"unknown_field\":1}}", "unknown"},
         {"{\"executor\":{\"unknown_field\":1}}", "unknown"},
+        // 顶层非对象 / 各 section 非对象（类型分支）。
+        {"[1,2]", "root"},
+        {"{\"server\":5}", "server"},
+        {"{\"server\":{\"v1\":5}}", "server.v1"},
+        {"{\"server\":{\"v2\":5}}", "server.v2"},
+        {"{\"db\":5}", "db"},
+        {"{\"executor\":5}", "executor"},
+        // db 字符串字段类型分支。
+        {"{\"db\":{\"password\":5}}", "db.password"},
+        {"{\"db\":{\"host\":5}}", "db.host"},
+        {"{\"db\":{\"user\":5}}", "db.user"},
+        {"{\"db\":{\"dbname\":5}}", "db.dbname"},
+        // 新校验（依赖 R1 实现，未落地前跑红属预期）：executor 单 worker 设计
+        // 上限、v1/v2 端口必须不同、int 溢出（4294967296 超出 int 范围）。
+        {"{\"executor\":{\"workers\":2}}", "executor.workers' must be 1"},
+        {"{\"server\":{\"v1\":{\"port\":6000},\"v2\":{\"port\":6000}}}", "port"},
+        {"{\"executor\":{\"workers\":4294967296}}", "executor.workers"},
+        {"{\"db\":{\"pool_size\":4294967296}}", "db.pool_size"},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         std::string path = writeTempFile(cases[i].json);
@@ -196,7 +216,16 @@ TEST_F(ConfigTest, CliOverridesFailFast)
     EXPECT_FALSE(applyCliOverrides(&cfg, "1.2.3.4", "6000", "-2", &err));
     EXPECT_NE(err.find("threads"), std::string::npos) << err;
 
+    // 超出 int 范围（2^31）：strtoll 成功但 >INT_MAX → 被拒。
+    EXPECT_FALSE(applyCliOverrides(&cfg, "1.2.3.4", "6000", "2147483648", &err));
+    EXPECT_NE(err.find("threads"), std::string::npos) << err;
+
     EXPECT_FALSE(applyCliOverrides(&cfg, "1.2.3.4", "notaport", nullptr, &err));
+    EXPECT_NE(err.find("port"), std::string::npos) << err;
+
+    // 十六进制串：strtoll(..., 10) 解析到 'x' 停止 → 被拒（不存在"0x10 被当作
+    // 16"的怪癖，无需锁怪癖测试；此例仅锁定"十六进制输入非法"的现状行为）。
+    EXPECT_FALSE(applyCliOverrides(&cfg, "1.2.3.4", "0x10", nullptr, &err));
     EXPECT_NE(err.find("port"), std::string::npos) << err;
 }
 

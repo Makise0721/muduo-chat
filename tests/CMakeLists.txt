@@ -155,41 +155,43 @@ add_test(NAME single-compile-check
         ${CMAKE_BINARY_DIR}/compile_commands.json)
 
 find_program(BASH_EXECUTABLE bash REQUIRED)
+# 进程测试共享端口（v1 各异但 v2 恒为 7000）：RESOURCE_LOCK chat_server_ports
+# 防止 ctest -j 并行互杀。
 add_test(NAME process-signal-shutdown
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/signal_shutdown_test.sh
         $<TARGET_FILE:ChatServer>
         20)
-set_tests_properties(process-signal-shutdown PROPERTIES TIMEOUT 60)
+set_tests_properties(process-signal-shutdown PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME process-fd-exhaustion
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fd_exhaustion_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(process-fd-exhaustion PROPERTIES TIMEOUT 90)
+set_tests_properties(process-fd-exhaustion PROPERTIES TIMEOUT 90 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME DomainCharacterization
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/domain_characterization_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180)
+set_tests_properties(DomainCharacterization PROPERTIES TIMEOUT 180 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME MultiReactorProcess
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/multireactor_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(MultiReactorProcess PROPERTIES TIMEOUT 360)
+set_tests_properties(MultiReactorProcess PROPERTIES TIMEOUT 360 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME shutdown-order
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/shutdown_order_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(shutdown-order PROPERTIES TIMEOUT 90)
+set_tests_properties(shutdown-order PROPERTIES TIMEOUT 90 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME config-fail-fast
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/config_fail_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(config-fail-fast PROPERTIES TIMEOUT 90)
+set_tests_properties(config-fail-fast PROPERTIES TIMEOUT 90 RESOURCE_LOCK chat_server_ports)
 
 add_test(NAME server-metrics
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/metrics_test.sh
         $<TARGET_FILE:ChatServer>)
-set_tests_properties(server-metrics PROPERTIES TIMEOUT 60)
+set_tests_properties(server-metrics PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MultiReactorTest ConfigTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
