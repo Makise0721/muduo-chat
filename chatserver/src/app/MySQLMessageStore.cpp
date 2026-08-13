@@ -885,7 +885,7 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
     const std::string sql =
         "SELECT d.message_id, d.recipient_id, d.state, d.attempt_count, d.lease_owner, "
         "UNIX_TIMESTAMP(d.lease_until), UNIX_TIMESTAMP(d.acknowledged_at), "
-        "UNIX_TIMESTAMP(d.expires_at), m.conversation_id "
+        "UNIX_TIMESTAMP(d.expires_at), m.conversation_id, m.sequence "
         "FROM MessageDelivery d JOIN ChatMessage m ON m.id = d.message_id WHERE " + where;
     MYSQL_STMT* stmt = m.prepareStatement(sql.c_str());
     if (!stmt) {
@@ -910,8 +910,9 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
         double ackedSecs = 0;
         double expiresSecs = 0;
         uint64_t conversationId = 0;
-        bool nulls[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-        MYSQL_BIND bindOut[9];
+        uint64_t sequence = 0;
+        bool nulls[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        MYSQL_BIND bindOut[10];
         memset(bindOut, 0, sizeof(bindOut));
         bindOut[0].buffer_type = MYSQL_TYPE_LONGLONG;
         bindOut[0].is_unsigned = 1;
@@ -944,6 +945,10 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
         bindOut[8].is_unsigned = 1;
         bindOut[8].buffer = &conversationId;
         bindOut[8].is_null = &nulls[8];
+        bindOut[9].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[9].is_unsigned = 1;
+        bindOut[9].buffer = &sequence;
+        bindOut[9].is_null = &nulls[9];
         if (mysql_stmt_bind_result(stmt, bindOut) != 0 || mysql_stmt_store_result(stmt) != 0) {
             throwStoreError(mysql_stmt_errno(stmt), "store deliveries load result");
         }
@@ -959,6 +964,7 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
             d.messageId = MessageId{messageId};
             d.recipient = UserId{static_cast<uint64_t>(recipientId)};
             d.conversationId = ConversationId{conversationId};
+            d.sequence = ConversationSequence{sequence};
             d.state = decodeState(state);
             d.attemptCount = static_cast<uint32_t>(attemptCount);
             d.leaseOwner = decodeLeaseOwner(ownerBuf, ownerLen);

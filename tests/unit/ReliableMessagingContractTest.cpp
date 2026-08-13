@@ -45,6 +45,59 @@ bool hasAttempt(const RecordingDeliverySink& sink, MessageId messageId, UserId r
     return false;
 }
 
+// Public-interface fault decorator used to characterize a failure after the
+// durable accept rows exist.  It deliberately injects only the first
+// updateDelivery failure; no production/private store state is inspected.
+class ThrowOnceOnUpdateStore : public MessageStore {
+public:
+    std::shared_ptr<const Message> findAccepted(const ClientMessageId& id, UserId sender) override
+    {
+        return delegate_.findAccepted(id, sender);
+    }
+
+    ConversationId getOrCreateConversation(const SessionIdentity& sender,
+                                           const SendMessageCommand& cmd) override
+    {
+        return delegate_.getOrCreateConversation(sender, cmd);
+    }
+
+    Message insertMessage(const Message& draft) override { return delegate_.insertMessage(draft); }
+
+    void insertDelivery(const Delivery& delivery) override { delegate_.insertDelivery(delivery); }
+
+    void updateDelivery(const Delivery& delivery) override
+    {
+        ++updateCalls_;
+        if (failNextUpdate_) {
+            failNextUpdate_ = false;
+            throw std::runtime_error("injected updateDelivery failure");
+        }
+        delegate_.updateDelivery(delivery);
+    }
+
+    std::vector<Delivery> deliveriesByRecipient(UserId recipient) override
+    {
+        return delegate_.deliveriesByRecipient(recipient);
+    }
+
+    std::vector<Delivery> deliveriesByMessage(MessageId messageId) override
+    {
+        return delegate_.deliveriesByMessage(messageId);
+    }
+
+    std::shared_ptr<const Message> findMessage(MessageId messageId) override
+    {
+        return delegate_.findMessage(messageId);
+    }
+
+    size_t updateCalls() const { return updateCalls_; }
+
+private:
+    InMemoryMessageStore delegate_;
+    bool failNextUpdate_ = true;
+    size_t updateCalls_ = 0;
+};
+
 } // namespace
 
 // 双 adapter 必须共同满足的契约（P3-04 MySQL adapter 复用本函数；确定性时钟为契约一部分）。
@@ -159,17 +212,18 @@ void runReliableMessagingContract(ReliableMessaging& rm, FakeClock& clock, Recor
     EXPECT_TRUE(g2.ok);
     EXPECT_EQ(g1.conversationId.value, g2.conversationId.value);
 
+    // P3-07：accept 提交后对在线接收者立即 claim——g1 的 bob 与 carol 投递都
+    // 在 accept 时发生（bob 自上方 sessionAvailable 在线；carol 亦在线）。
     rm.sessionAvailable(bob);
-    ASSERT_EQ(3u, sink.attempts().size());
+    ASSERT_EQ(4u, sink.attempts().size());
     EXPECT_EQ(g1.messageId.value, sink.attempts()[2].messageId.value);
     EXPECT_EQ(kBob.value, sink.attempts()[2].recipient.value);
-    // bob 上线只 claim 自己名下 Delivery，carol 的保持 Pending
-    EXPECT_FALSE(hasAttempt(sink, g1.messageId, kCarol, 1));
+    // 每接收者独立状态：carol 的 Delivery 由 carol 的 claim 产生（不是 bob 的）
+    EXPECT_EQ(g1.messageId.value, sink.attempts()[3].messageId.value);
+    EXPECT_EQ(kCarol.value, sink.attempts()[3].recipient.value);
 
     rm.sessionAvailable(carol);
     ASSERT_EQ(4u, sink.attempts().size());
-    EXPECT_EQ(g1.messageId.value, sink.attempts()[3].messageId.value);
-    EXPECT_EQ(kCarol.value, sink.attempts()[3].recipient.value);
 
     // --- Conversation 内顺序稳定：同 conv 前序未确认时不投后续 sequence ---
     SendMessageCommand cmd3;
@@ -264,6 +318,56 @@ TEST(ReliableMessagingContractTest, InMemoryAdapterSatisfiesContract)
     RecordingDeliverySink sink;
     ReliableMessaging rm(store, sink, clock, kLeaseMs);
     runReliableMessagingContract(rm, clock, sink);
+}
+
+TEST(ReliableMessagingContractTest, PostCommitDeliveryFailureKeepsAcceptAndRetryClaimsPending)
+{
+    FakeClock clock;
+    clock.set(kNow);
+    ThrowOnceOnUpdateStore store;
+    RecordingDeliverySink sink;
+    ReliableMessaging rm(store, sink, clock, kLeaseMs);
+
+    const SessionIdentity sender{kAlice, 1};
+    const SessionIdentity recipient{kBob, 1};
+    SendMessageCommand cmd;
+    cmd.clientMessageId = ClientMessageId("post-commit-delivery-failure");
+    cmd.kind = SendMessageCommand::Kind::Direct;
+    cmd.directRecipient = recipient.userId;
+    cmd.content = "durable before delivery";
+
+    // Keep the recipient online so accept's post-commit onAccepted path is
+    // exercised.  The first updateDelivery then fails after the sink admits
+    // the attempt, while the Message/Delivery rows remain durable Pending.
+    rm.sessionAvailable(recipient);
+    AcceptOutcome first;
+    bool threw = false;
+    std::string exceptionText;
+    try {
+        first = rm.accept(sender, cmd);
+    } catch (const std::exception& e) {
+        threw = true;
+        exceptionText = e.what();
+    }
+
+    EXPECT_FALSE(threw) << exceptionText;
+    EXPECT_TRUE(first.ok);
+    EXPECT_FALSE(first.duplicate);
+
+    const std::shared_ptr<const Message> durable =
+        store.findAccepted(cmd.clientMessageId, sender.userId);
+    ASSERT_TRUE(durable);
+    EXPECT_EQ(durable->id.value, first.messageId.value);
+    EXPECT_EQ(1u, sink.attempts().size());
+    EXPECT_EQ(1u, store.updateCalls());
+
+    // A same-key retry must preserve the durable identity and re-trigger the
+    // still-Pending online delivery; it must not stop at findAccepted.
+    AcceptOutcome retry = rm.accept(sender, cmd);
+    EXPECT_TRUE(retry.ok);
+    EXPECT_TRUE(retry.duplicate);
+    EXPECT_EQ(first.messageId.value, retry.messageId.value);
+    EXPECT_EQ(2u, sink.attempts().size());
 }
 
 TEST(ReliableMessagingContractTest, ClientMessageIdValidation)

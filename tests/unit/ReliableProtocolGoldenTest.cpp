@@ -9,6 +9,7 @@
 // 客户端 fixture（tests/fixtures/）与 golden 同步：改协议值必须先改 fixture。
 
 #include "ChatService.hpp"
+#include "app/DeliverySink.hpp"
 #include "app/ProtocolCodec.hpp"
 
 #include <gtest/gtest.h>
@@ -223,4 +224,49 @@ TEST(ReliableProtocolGolden, LegacySuccessEchoShapePinned)
         EXPECT_EQ(it.value(), echo[it.key()]) << "echo differs on " << it.key();
     }
     EXPECT_EQ(echo.size(), cmd.size() + 1u);
+}
+
+namespace {
+
+class MarkerDeliverySink : public DeliverySink {
+public:
+    explicit MarkerDeliverySink(DeliverDisposition disposition = DeliverDisposition::Accepted)
+        : disposition_(disposition) {}
+
+    DeliverDisposition deliver(const DeliveryAttempt&) override
+    {
+        return disposition_;
+    }
+
+private:
+    DeliverDisposition disposition_;
+};
+
+} // namespace
+
+TEST(ReliableProtocolGolden, DeliverySinkForwarderFailsClosedUntilBound)
+{
+    DelegatingDeliverySink forwarder;
+    DeliveryAttempt attempt;
+    EXPECT_EQ(DeliverDisposition::Closed, forwarder.deliver(attempt));
+
+    MarkerDeliverySink marker;
+    forwarder.bind(&marker);
+
+    EXPECT_EQ(DeliverDisposition::Accepted, forwarder.deliver(attempt));
+}
+
+TEST(ReliableProtocolGolden, DeliverySinkForwarderBindsOnce)
+{
+    DelegatingDeliverySink forwarder;
+    MarkerDeliverySink first;
+    MarkerDeliverySink second(DeliverDisposition::Closed);
+    DeliveryAttempt attempt;
+
+    EXPECT_FALSE(forwarder.bind(nullptr));
+    EXPECT_EQ(DeliverDisposition::Closed, forwarder.deliver(attempt));
+    EXPECT_TRUE(forwarder.bind(&first));
+    EXPECT_TRUE(forwarder.bind(&first));
+    EXPECT_FALSE(forwarder.bind(&second));
+    EXPECT_EQ(DeliverDisposition::Accepted, forwarder.deliver(attempt));
 }

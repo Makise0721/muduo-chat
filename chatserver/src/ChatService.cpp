@@ -2,6 +2,8 @@
 #include "app/ChatApplication.hpp"
 #include "app/ProtocolCodec.hpp"
 #include "db/MySQLGuards.hpp"
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <exception>
 #include <string>
@@ -43,6 +45,7 @@ ChatService::ChatService()
     _msgHandlerMap.insert({CREATE_GROUP_MSG, bind(&ChatService::createGroup, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({ADD_GROUP_MSG, bind(&ChatService::addGroup, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({GROUP_CHAT_MSG, bind(&ChatService::groupChat, this, placeholders::_1, placeholders::_2, placeholders::_3)});
+    _msgHandlerMap.insert({DELIVERY_ACK_MSG, bind(&ChatService::deliveryAck, this, placeholders::_1, placeholders::_2, placeholders::_3)});
 }
 
 ChatService* ChatService::instance() {
@@ -158,6 +161,12 @@ void restoreOfflineMessages(BlockingExecutor* executor, ChatApplication* app,
 void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity)
 {
     _loop = loop;
+    // P3-07：注册真实投递出口（wiring() 惰性构造时绑定；本调用先于首个
+    // accept/claim，无竞态）。不同出口重复注册会保留原绑定并 fail-fast。
+    if (!registerDeliverySink(&_deliverySink)) {
+        std::cerr << "delivery sink registration failed" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
     // 单 worker：同一连接的串行依赖（如 addFriend 后立即重复 add）按提交顺序
     // 执行；多 worker 会乱序破坏业务语义（P2-10 性能评估后再分片扩并）。
     _executor.reset(new BlockingExecutor(loop, executorWorkers, executorQueueCapacity));
@@ -277,10 +286,36 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
             // 先回登录应答，客户端更容易按顺序处理
             conn->send(response.dump() + "\n");
 
-            // 离线消息下发（补投后 OfflineMessage 已在 worker 清空）
+            // 离线消息下发（补投后 OfflineMessage 已在 worker 清空；旧表补投
+            // 保留至 P3-08 由新路径替换）
             for (size_t i = 0; i < result->offlineMessages.size(); ++i) {
                 conn->send(result->offlineMessages[i] + "\n");
             }
+
+            // P3-07：在 owner EventLoop 上先安装并 fence pressure callback，再
+            // 提交新 Session claim；low-water 恢复也复核同一连接与 generation。
+            _deliveryArmer.armSessionDelivery(
+                conn, BoundSession(id, gen),
+                [this, id, gen] {
+                    if (!_executor) {
+                        return false;
+                    }
+                    return _executor->submit(
+                               [this, id, gen] {
+                                   sessionAvailableDelivery(id, static_cast<uint64_t>(gen));
+                               },
+                               [] {}) == SubmitResult::Accepted;
+                },
+                [this, id, gen] {
+                    if (!_executor) {
+                        return false;
+                    }
+                    return _executor->submit(
+                               [this, id, gen] {
+                                   resumeDelivery(id, static_cast<uint64_t>(gen));
+                               },
+                               [] {}) == SubmitResult::Accepted;
+                });
         });
 }
 
@@ -316,14 +351,54 @@ void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
         });
 }
 
+void ChatService::deliveryAck(const TcpConnectionPtr& conn, json& js, Timestamp time) {
+    // P3-07：接收端按 MessageId 显式确认（spec §2.3）。ACK 主体只来自 Session
+    // （P3-05），payload 不提供 UserId；重复/迟到/他人 ACK 由 DeliveryCoordinator
+    // 幂等且不越权（spec §4 故障点 4/5）。无 ACK 回执（静默）。缺 message_id /
+    // 类型错 → js.at 抛异常 → handler 层 B-25 静默。
+    BoundSession session;
+    if (!_sessions.lookupByConnection(conn, &session)) {
+        return;  // 未登录：忽略（不越权）
+    }
+    if (!_executor) {
+        return;
+    }
+    const uint64_t messageId = js.at("message_id").get<uint64_t>();
+    _executor->submit(
+        [session, messageId] {
+            acknowledgeDelivery(session.userId, static_cast<uint64_t>(session.generation),
+                                messageId);
+        },
+        [] {});
+}
+
 void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp time) {
     int userid = js["id"].get<int>();
+    // P3-07：登出前捕获本连接绑定 Session，提交 sessionClosed（名下 InFlight
+    // 立即回 Pending，spec §3 断开节）。payload id 指向他人会话的病理路径不
+    // 处理（记录于任务卡遗留）。
+    BoundSession bs;
+    _sessions.lookupByConnection(conn, &bs);
+    if (bs.userId != 0) {
+        _deliveryArmer.clearSessionDelivery(conn, bs);
+    }
     // B-10 语义保留：登出按 payload id、未登录也成功（幂等）；经 registry
     // 释放保持双向一致性（同连接/同用户恰好一次）。
     _sessions.unbindUser(userid);
 
     // 会话代次递增：在途登录 completion 不再生效。
-    _app.beginSessionAttempt(userid);
+    if (bs.userId != 0) {
+        _app.invalidateSessionAttempt(bs.userId, bs.generation);
+    } else {
+        _app.beginSessionAttempt(userid);
+    }
+    if (bs.userId != 0 && _executor) {
+        _executor->submit(
+            [bs] {
+                sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));
+            },
+            [] {});
+    }
     if (_executor) {
         _executor->submit(
             [this, userid] { _app.updateUserState(userid, UserState::Offline); },
@@ -547,15 +622,33 @@ void ChatService::addConnection(const TcpConnectionPtr& conn) {
 }
 
 void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
+    // P3-07：解绑前捕获 Session（userId+generation），提交 sessionClosed——
+    // 名下 InFlight 立即回 Pending（spec §3 断开节；lease 释放）。提交在
+    // executor 串行队列，与新 Session 的 login claim 交错安全（leaseOwner 按
+    // SessionIdentity 精确匹配，新 owner 的在途不被旧 close 回滚）。
+    BoundSession bs;
+    _sessions.lookupByConnection(conn, &bs);
+    if (bs.userId != 0) {
+        _deliveryArmer.clearSessionDelivery(conn, bs);
+    }
     // P3-05 对抗审查：先移出活跃连接集合（锁内，登录 completion 的 bind 将
     // 拒绝 ConnectionInactive），再按连接解绑（幂等，恰好释放一次）；
     // 未绑定返回 0，不产生状态写入。
     _sessions.removeConnection(conn);
     int64_t userid = _sessions.unbind(conn);
 
+    if (bs.userId != 0 && _executor) {
+        _executor->submit(
+            [bs] {
+                sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));
+            },
+            [] {});
+    }
     if (userid != 0) {
-        // 会话代次递增：在途登录 completion 不再生效。
-        _app.beginSessionAttempt(userid);
+        // 仅使本连接捕获的会话代次失效；旧 close 不得推进新登录代次。
+        if (bs.userId != 0) {
+            _app.invalidateSessionAttempt(bs.userId, bs.generation);
+        }
         if (_executor) {
             _executor->submit(
                 [this, userid] { _app.updateUserState(userid, UserState::Offline); },

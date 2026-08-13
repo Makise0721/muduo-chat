@@ -6,8 +6,10 @@ protocols produce the same behavior.
 Matrix rows map to docs/specs/domain-behavior-matrix.md (B-01..B-27 plus P3-05
 B-21 tightening checks I1-I6, plus P3-06 accept-path checks: MESSAGE_ACCEPTED
 msgid=11, 幂等重试 duplicate=true, 错误码 101/103/105/106, legacy 旧格式回显).
-P3-06 迁移（B-11/B-12/B-17 在线转发与离线入队退役）：断言"已接受"语义，
-投递属 P3-07（登录补投暂无 Delivery）。
+P3-06 迁移（B-11/B-12/B-17 在线转发与离线入队退役）：断言"已接受"语义；
+P3-07 投递：accept 后在线接收者立即收到投递（旧格式扩展：原命令字段 +
+message_id/conversation_id/sequence），登录 claim 名下 Pending，ACK 放行
+下一 sequence，legacy 投递即隐式确认。
 Exit code 0 iff MATRIX_ALL_PASS.
 """
 import json
@@ -141,6 +143,14 @@ def errresp(r, errno):
     return r is not None and r.get("msgid") == 13 and r.get("errno") == errno
 
 
+def is_delivery(r):
+    # P3-07 投递（冻结格式）：原命令 msgid + message_id/conversation_id/sequence
+    # + content；无 errno、无 duplicate（与 legacy 回显/MESSAGE_ACCEPTED 区分）。
+    return (r is not None and r.get("message_id", 0) > 0
+            and "conversation_id" in r and "sequence" in r and "content" in r
+            and "errno" not in r and "duplicate" not in r)
+
+
 def main():
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     v1port = int(sys.argv[2]) if len(sys.argv) > 2 else 6000
@@ -249,11 +259,17 @@ def main():
                  "content": "b" * MAX_CONTENT_BYTES})
         r = v1.recv()
         check("E4c_v1 16KB boundary accepted", accepted(r) and not r["duplicate"], str(r))
+        mid_bound = r["message_id"]
 
-        # 准备离线场景：B 登录后登出
+        # 准备离线场景：B 登录（P3-07：立即 claim 名下 Pending——E4c 的 16KB
+        # 消息 seq1 此时投递）后登出（seq1 回 Pending）
         v2.send(login(bid))
         r = v2.recv()
         check("C8_v2 login B", r is not None and r.get("errno") == 0, str(r))
+        r = v2.recv()
+        check("C8b_v2 pending delivery on login", is_delivery(r) and r.get("msgid") == 6
+              and r.get("message_id") == mid_bound and r.get("sequence") == 1
+              and r.get("toid") == bid, str(r))
         v2.send({"msgid": 3, "id": bid})
         r = v2.recv()
         check("C9_v2 logout B", r is not None and r.get("errno") == 0, str(r))
@@ -293,12 +309,28 @@ def main():
         check("D7b_v1 legacy msg-field alias accepted", r is not None
               and r.get("errno") == 0 and r.get("toid") == bid and r.get("msgid") == 6
               and r.get("msg") == "hello via msg field", str(r))
-        # B-09（P3-06 迁移）登录：先回 LOGIN_MSG_ACK；补投暂无 Delivery（P3-07），
-        # 不产生任何离线消息。
+        # B-09（P3-07 演进）登录：先回 LOGIN_MSG_ACK，再补投名下 Pending
+        # Delivery。断线（C9 登出）使 seq1 回 Pending → 重登重投同 message_id
+        # （客户端按 MessageId 去重）；ACK 放行 seq2；seq3/seq4 为 legacy
+        # （投递即隐式确认，链式连续放行，客户端无需 ACK）。
         v2.send(login(bid))
         r = v2.recv()
         check("D8_v2 login B again", r is not None and r.get("errno") == 0, str(r))
-        check("D9_v2 no delivery yet (P3-07)", v2.recv_timeout(0.5))
+        r = v2.recv()
+        check("D9a_v2 pending delivery redelivered", is_delivery(r) and r.get("msgid") == 6
+              and r.get("message_id") == mid_bound and r.get("sequence") == 1, str(r))
+        v2.send({"msgid": 12, "message_id": mid_bound})
+        r = v2.recv()
+        check("D9b_v2 ack releases seq2", is_delivery(r) and r.get("message_id") == mid4
+              and r.get("sequence") == 2, str(r))
+        v2.send({"msgid": 12, "message_id": mid4})
+        r = v2.recv()
+        check("D9c_v2 legacy seq3 delivered", is_delivery(r) and r.get("msgid") == 6
+              and r.get("content") == "hello legacy" and r.get("sequence") == 3, str(r))
+        r = v2.recv()
+        check("D9d_v2 legacy seq4 delivered", is_delivery(r)
+              and r.get("content") == "hello via msg field" and r.get("sequence") == 4, str(r))
+        check("D9e_v2 no more deliveries", v2.recv_timeout(0.5))
 
         # B-14 加好友：有向边成功/重复冲突
         v1.send({"msgid": 7, "id": aid, "friendid": bid})
@@ -331,20 +363,46 @@ def main():
         v2.send({"msgid": 9, "id": bid, "groupid": gid})
         r = v2.recv()
         check("G3_v2 duplicate join", r is not None and r.get("errno") == 1, str(r))
-        # B-17（P3-06 迁移）群聊：accept 事务内快照成员（决策表第 8 行），
-        # 发送者收 MESSAGE_ACCEPTED；在线转发退役（投递属 P3-07）。
+        # B-17（P3-07 演进）群聊：accept 事务内快照成员（决策表第 8 行）→
+        # MESSAGE_ACCEPTED；在线成员立即收到投递（含发送者——决策表第 9 行
+        # 自投递不过滤）。completion 回执与投递经不同 loop 排队，到达顺序
+        # 不确定——读两条按形状配对（accepted 有 duplicate 字段，投递没有）。
         gmsg = {"msgid": 10, "id": aid, "groupid": gid, "content": "hi all",
                 "client_message_id": "cm-g4-" + suffix}
         v1.send(gmsg)
-        r = v1.recv()
-        check("G4_v1 group chat accepted", accepted(r) and not r["duplicate"], str(r))
+        r1 = v1.recv()
+        r2 = v1.recv()
+        acc = r1 if (r1 is not None and accepted(r1)) else r2
+        dlv = r2 if acc is r1 else r1
+        check("G4_v1 group chat accepted", acc is not None and accepted(acc)
+              and not acc["duplicate"], str(acc))
+        g4mid = acc["message_id"] if acc is not None else 0
+        check("G4a_v1 sender self-delivery", is_delivery(dlv) and dlv.get("msgid") == 10
+              and dlv.get("message_id") == g4mid and dlv.get("groupid") == gid
+              and dlv.get("sequence") == 1, str(dlv))
+        r = v2.recv()
+        check("G4b_v2 member delivery (B)", is_delivery(r) and r.get("message_id") == g4mid,
+              str(r))
+        v1.send({"msgid": 12, "message_id": g4mid})
+        v2.send({"msgid": 12, "message_id": g4mid})
         # v2 线（BinaryFrame）上同一 accept 语义：B 成员经 v2 codec 接受群聊
         v2.send({"msgid": 10, "id": bid, "groupid": gid, "content": "hi from b",
                  "client_message_id": "cm-g4b-" + suffix})
-        r = v2.recv()
-        check("G4b_v2 group chat accepted (v2 codec)", accepted(r) and not r["duplicate"],
+        r1 = v2.recv()
+        r2 = v2.recv()
+        acc = r1 if (r1 is not None and accepted(r1)) else r2
+        dlv = r2 if acc is r1 else r1
+        check("G4c_v2 group chat accepted (v2 codec)", acc is not None and accepted(acc)
+              and not acc["duplicate"], str(acc))
+        g4bmid = acc["message_id"] if acc is not None else 0
+        check("G4d_v2 sender self-delivery", is_delivery(dlv)
+              and dlv.get("message_id") == g4bmid and dlv.get("sequence") == 2, str(dlv))
+        r = v1.recv()
+        check("G4e_v1 member delivery (A)", is_delivery(r) and r.get("message_id") == g4bmid,
               str(r))
-        check("G5_v2 no delivery yet (P3-07)", v2.recv_timeout(0.5))
+        v2.send({"msgid": 12, "message_id": g4bmid})
+        v1.send({"msgid": 12, "message_id": g4bmid})
+        check("G5_v2 no more deliveries", v2.recv_timeout(0.5))
         # B-18（P3-06 收紧落地）非成员发群聊 → 101（NotConversationMember），
         # 不再 errno=0（P3-05 后发送者身份取自 Session：payload id 必须与连接
         # 绑定用户一致，故用 cid）。
@@ -358,11 +416,21 @@ def main():
                   "client_message_id": "cm-g7-" + suffix})
         r = v1b.recv()
         check("G7_v1b non-member group chat 101", errresp(r, 101), str(r))
-        # legacy 群聊（无 cmid，成员 A）→ 旧格式回显 errno=0
+        # legacy 群聊（无 cmid，成员 A+B）→ 旧格式回显 errno=0 + 双方投递
+        # （legacy implicit-ack：投递即确认，客户端无需 ACK）。顺序不确定，
+        # 读两条按形状配对（echo 有 errno，投递有 message_id）。
         v1.send({"msgid": 10, "id": aid, "groupid": gid, "content": "hi legacy"})
-        r = v1.recv()
-        check("G8_v1 legacy group chat old-format echo", r is not None
-              and r.get("errno") == 0 and r.get("msgid") == 10, str(r))
+        r1 = v1.recv()
+        r2 = v1.recv()
+        echo = r1 if (r1 is not None and "errno" in r1) else r2
+        dlv = r2 if echo is r1 else r1
+        check("G8_v1 legacy group chat old-format echo", echo is not None
+              and echo.get("errno") == 0 and echo.get("msgid") == 10, str(echo))
+        check("G8a_v1 sender self-delivery (legacy)", is_delivery(dlv)
+              and dlv.get("msgid") == 10 and dlv.get("content") == "hi legacy", str(dlv))
+        r = v2.recv()
+        check("G8b_v2 member delivery (legacy)", is_delivery(r)
+              and r.get("content") == "hi legacy", str(r))
         # B-19（P3-06 收紧落地）超长群聊 → 105（v2）/ errno=1（legacy）
         v1.send({"msgid": 10, "id": aid, "groupid": gid, "content": overlong,
                  "client_message_id": "cm-g9-" + suffix})

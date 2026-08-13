@@ -10,6 +10,27 @@ void SessionRegistry::removeConnection(const TcpConnectionPtr& conn)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     activeConnections_.erase(conn);
+    closingConnections_.erase(conn);
+}
+
+bool SessionRegistry::reserveCloseIfBound(const TcpConnectionPtr& conn,
+                                          const BoundSession& expected)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (activeConnections_.find(conn) == activeConnections_.end()) {
+        return false;
+    }
+    auto bound = byConnection_.find(conn);
+    if (bound == byConnection_.end() ||
+        bound->second.userId != expected.userId ||
+        bound->second.generation != expected.generation) {
+        return false;
+    }
+    if (closingConnections_.find(conn) != closingConnections_.end()) {
+        return false;
+    }
+    closingConnections_.insert(conn);
+    return true;
 }
 
 SessionRegistry::BindResult SessionRegistry::bind(const TcpConnectionPtr& conn,
@@ -20,6 +41,9 @@ SessionRegistry::BindResult SessionRegistry::bind(const TcpConnectionPtr& conn,
     // 活跃集合锁内判定：close 回调（removeConnection）先于本 completion 时
     // 连接已不在集合 → 拒绝，杜绝绑定已死连接导致的会话泄漏。
     if (activeConnections_.find(conn) == activeConnections_.end()) {
+        return BindResult::ConnectionInactive;
+    }
+    if (closingConnections_.find(conn) != closingConnections_.end()) {
         return BindResult::ConnectionInactive;
     }
     if (byConnection_.find(conn) != byConnection_.end()) {

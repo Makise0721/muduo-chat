@@ -32,6 +32,17 @@ bool ChatApplication::isSessionCurrent(int64_t userId, int64_t generation) const
     return it != generations_.end() && it->second == generation;
 }
 
+bool ChatApplication::invalidateSessionAttempt(int64_t userId, int64_t generation)
+{
+    std::lock_guard<std::mutex> lock(sessionMutex_);
+    std::map<int64_t, int64_t>::iterator it = generations_.find(userId);
+    if (it == generations_.end() || it->second != generation) {
+        return false;
+    }
+    ++it->second;
+    return true;
+}
+
 AuthResult ChatApplication::authenticate(int64_t userId, const std::string& password)
 {
     return users_->authenticate(userId, password);

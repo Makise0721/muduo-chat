@@ -94,3 +94,26 @@ nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errm
 
 // legacy-mode 计数（spec §5.1 能力差异可观测；正式指标 P3-12 暴露）。
 uint64_t legacyModeCount();
+
+// ---- P3-07 投递与 ACK（executor worker 线程调用；ReliableMessaging 单一调用者
+// 串行驱动）。DeliverySink 仅前向声明：完整定义在 ChatService 侧 mymuduo TU
+// （SessionDeliverySink.cpp），本头保持 mymuduo 无关。----
+class DeliverySink;
+
+// 接线：ChatService::bindLoop 注册真实 SessionDeliverySink（wiring() 惰性构造时
+// 绑定；未注册时 forwarding adapter fail-closed）。返回 false 表示重复绑定了
+// 不同出口或传入空指针，调用方必须 fail-fast。
+bool registerDeliverySink(DeliverySink* sink);
+
+// 接收端按 MessageId 显式确认（msgid=12；UserId 取 Session，spec §2.3）。
+// 静默：重复/迟到/他人 ACK 幂等且不越权（spec §4 故障点 4/5），无 ACK 回执。
+void acknowledgeDelivery(int64_t userId, uint64_t generation, uint64_t messageId);
+
+// Session 上线 claim 名下 Pending Delivery（登录 completion 提交）。
+void sessionAvailableDelivery(int64_t userId, uint64_t generation);
+
+// Session 下线：名下 InFlight 立即回 Pending（断开/登出提交）。
+void sessionClosedDelivery(int64_t userId, uint64_t generation);
+
+// 背压 low-water 恢复（TcpConnection pressure 回调提交；PauseProducer 不自旋）。
+void resumeDelivery(int64_t userId, uint64_t generation);

@@ -26,6 +26,10 @@ public:
     int64_t beginSessionAttempt(int64_t userId);
     bool isSessionCurrent(int64_t userId, int64_t generation) const;
 
+    // Invalidate only the session attempt represented by generation. A delayed
+    // close from an older session must not advance a newer login generation.
+    bool invalidateSessionAttempt(int64_t userId, int64_t generation);
+
     // 供阻塞 executor 的 worker 线程调用的用例操作（内部走 repository）。
     AuthResult authenticate(int64_t userId, const std::string& password);
     bool updateUserState(int64_t userId, UserState state);

@@ -362,6 +362,56 @@ TEST_F(RegistryFixture, AddBindUnbindRebindFullLifecycle)
     EXPECT_EQ(0u, reg.size());
 }
 
+TEST_F(RegistryFixture, ReserveCloseFencesBoundGenerationUntilConnectionRemoved)
+{
+    SessionRegistry reg;
+    TcpConnectionPtr conn = makeConn();
+    reg.addConnection(conn);
+    ASSERT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 1));
+
+    const BoundSession expected(1, 1);
+    EXPECT_TRUE(reg.reserveCloseIfBound(conn, expected));
+    EXPECT_FALSE(reg.reserveCloseIfBound(conn, expected));
+    EXPECT_EQ(SessionRegistry::BindResult::ConnectionInactive,
+              reg.bind(conn, 1, 2));
+
+    EXPECT_EQ(1, reg.unbind(conn));
+    EXPECT_EQ(SessionRegistry::BindResult::ConnectionInactive,
+              reg.bind(conn, 1, 2));
+    reg.removeConnection(conn);
+    reg.addConnection(conn);
+    EXPECT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 2));
+}
+
+TEST_F(RegistryFixture, UnbindUserDoesNotClearCloseFence)
+{
+    SessionRegistry reg;
+    TcpConnectionPtr conn = makeConn();
+    reg.addConnection(conn);
+    ASSERT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 1));
+    ASSERT_TRUE(reg.reserveCloseIfBound(conn, BoundSession(1, 1)));
+
+    EXPECT_EQ(1, reg.unbindUser(1));
+    EXPECT_EQ(SessionRegistry::BindResult::ConnectionInactive,
+              reg.bind(conn, 1, 2));
+
+    reg.removeConnection(conn);
+    reg.addConnection(conn);
+    EXPECT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 2));
+}
+
+TEST_F(RegistryFixture, StaleCloseReservationDoesNotFenceValidBind)
+{
+    SessionRegistry reg;
+    TcpConnectionPtr conn = makeConn();
+    reg.addConnection(conn);
+    ASSERT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 1));
+
+    EXPECT_FALSE(reg.reserveCloseIfBound(conn, BoundSession(1, 2)));
+    EXPECT_EQ(1, reg.unbind(conn));
+    EXPECT_EQ(SessionRegistry::BindResult::Ok, reg.bind(conn, 1, 2));
+}
+
 TEST_F(RegistryFixture, ConcurrentBindVsCloseNoSessionLeak)
 {
     // 对抗审查竞态载体（TSan 聚焦）：同一连接上"登录 completion"(bind) 与

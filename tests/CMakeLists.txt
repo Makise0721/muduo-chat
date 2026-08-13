@@ -182,6 +182,17 @@ target_include_directories(ReliableProtocolGoldenTest PRIVATE ${PROJECT_SOURCE_D
 target_link_libraries(ReliableProtocolGoldenTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(ReliableProtocolGoldenTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(DeliveryCoordinatorTest unit/DeliveryCoordinatorTest.cpp)
+target_link_libraries(DeliveryCoordinatorTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(DeliveryCoordinatorTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(SessionDeliverySinkTest
+    unit/SessionDeliverySinkTest.cpp
+    ${PROJECT_SOURCE_DIR}/chatserver/src/SessionDeliverySink.cpp)
+target_include_directories(SessionDeliverySinkTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(SessionDeliverySinkTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(SessionDeliverySinkTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -212,6 +223,16 @@ add_test(NAME MultiReactorProcess
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(MultiReactorProcess PROPERTIES TIMEOUT 360 RESOURCE_LOCK chat_server_ports)
 
+add_test(NAME DeliveryAckProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/delivery_ack_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(DeliveryAckProcess PROPERTIES TIMEOUT 360 RESOURCE_LOCK chat_server_ports)
+
+add_test(NAME BackpressureDeliveryProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/backpressure_delivery_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(BackpressureDeliveryProcess PROPERTIES TIMEOUT 600 RESOURCE_LOCK chat_server_ports)
+
 add_test(NAME shutdown-order
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/shutdown_order_test.sh
         $<TARGET_FILE:ChatServer>)
@@ -227,7 +248,7 @@ add_test(NAME server-metrics
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(server-metrics PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest SessionDeliverySinkTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(ReliableMessageSchemaTest)
@@ -267,3 +288,5 @@ discover_gtest(ConfigTest)
 discover_gtest(MySQLReliableMessagingTest)
 discover_gtest(MessageAcceptanceApplicationTest)
 discover_gtest(ReliableProtocolGoldenTest)
+discover_gtest(DeliveryCoordinatorTest)
+discover_gtest(SessionDeliverySinkTest)

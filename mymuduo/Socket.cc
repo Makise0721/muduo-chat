@@ -33,7 +33,11 @@ int Socket::accept(InetAddress *peeraddr)
 {
     sockaddr_in addr{};
     socklen_t addrlen = sizeof(addr);
-    int connfd = ::accept(sockfd_, (sockaddr *)&addr, &addrlen);
+    // accept4 显式带 SOCK_NONBLOCK：Linux 的 accept() 不继承监听 socket 的
+    // O_NONBLOCK（P3-07 背压进程测试暴露：慢消费者填满内核缓冲后，阻塞式
+    // write() 卡死整条 IO 线程）。
+    int connfd = ::accept4(sockfd_, (sockaddr *)&addr, &addrlen,
+                           SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (connfd >= 0)
     {
         peeraddr->setSockAddr(addr);

@@ -12,6 +12,7 @@
 #include "app/ChatApplication.hpp"
 #include "app/BlockingExecutor.hpp"
 #include "app/SessionRegistry.hpp"
+#include "app/SessionDeliverySink.hpp"
 #include "app/MySQLUserRepository.hpp"
 #include "app/MySQLFriendRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
@@ -52,6 +53,9 @@ public:
     void createGroup(const TcpConnectionPtr& conn, json& js, Timestamp time);
     void addGroup(const TcpConnectionPtr& conn, json& js, Timestamp time);
     void groupChat(const TcpConnectionPtr& conn, json& js, Timestamp time);
+    // P3-07：接收端按 MessageId 显式确认（msgid=12，spec §2.3）；UserId 取
+    // Session，不由 payload 提供；静默处理（无 ACK 回执），缺字段 B-25 静默。
+    void deliveryAck(const TcpConnectionPtr& conn, json& js, Timestamp time);
     void clientCloseException(const TcpConnectionPtr& conn);
     void reset();
 
@@ -84,6 +88,10 @@ private:
     MySQLGroupRepository _mysqlGroups;
     MySQLMessageRepository _mysqlMessages;
     ChatApplication _app;
+    // P3-07：真实投递出口（bindLoop 时 registerDeliverySink；声明顺序在
+    // _sessions 之后，&_sessions 有效）。
+    SessionDeliverySink _deliverySink{&_sessions};
+    SessionDeliveryArmer _deliveryArmer{&_sessions};
     EventLoop* _loop = nullptr;
     std::unique_ptr<BlockingExecutor> _executor;
 };

@@ -76,7 +76,13 @@ std::vector<Delivery> InMemoryMessageStore::deliveriesByRecipient(UserId recipie
     for (std::map<DeliveryKey, Delivery>::const_iterator it = deliveries_.begin();
          it != deliveries_.end(); ++it) {
         if (it->second.recipient.value == recipient.value) {
-            out.push_back(it->second);
+            Delivery d = it->second;
+            std::map<uint64_t, std::shared_ptr<Message> >::const_iterator m =
+                messagesById_.find(d.messageId.value);
+            if (m != messagesById_.end()) {
+                d.sequence = m->second->sequence;
+            }
+            out.push_back(d);
         }
     }
     return out;
@@ -88,7 +94,13 @@ std::vector<Delivery> InMemoryMessageStore::deliveriesByMessage(MessageId messag
     for (std::map<DeliveryKey, Delivery>::const_iterator it = deliveries_.begin();
          it != deliveries_.end(); ++it) {
         if (it->second.messageId.value == messageId.value) {
-            out.push_back(it->second);
+            Delivery d = it->second;
+            std::map<uint64_t, std::shared_ptr<Message> >::const_iterator m =
+                messagesById_.find(d.messageId.value);
+            if (m != messagesById_.end()) {
+                d.sequence = m->second->sequence;
+            }
+            out.push_back(d);
         }
     }
     return out;

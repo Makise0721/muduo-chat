@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """P2-08 multi-reactor process test: run a concurrent business matrix against a
 ChatServer started with threadNum N (argv[3]): concurrent registration, login,
-direct chat (P3-06: durable accept semantics — sender ack, no forward), logout,
-disconnect and reconnect must all succeed.
+direct chat (P3-06 durable accept; P3-07 online delivery + legacy implicit-ack),
+logout, disconnect and reconnect must all succeed.
 
 Exit code 0 iff MULTIREACTOR_ALL_PASS.
 """
@@ -86,18 +86,24 @@ def main():
             r = clients[i].recv()
             check("login_%d" % i, r is not None and r.get("errno") == 0, str(r))
 
-        # P3-06 迁移（B-11 在线直写退役）：并发互聊（i -> (i+1)%n，目标在线）
-        # 走 durable accept（executor 单 worker 串行）：legacy 命令（无
-        # client_message_id）收旧格式回显 errno=0；目标不再即时收转发
-        # （投递属 P3-07），断言"已接受"语义。
+        # P3-06 迁移（B-11 在线直写退役）+ P3-07 投递：并发互聊（i -> (i+1)%n，
+        # 目标在线）走 durable accept（executor 单 worker 串行）：legacy 命令
+        # （无 client_message_id）收旧格式回显 errno=0；目标（在线）立即收到
+        # 投递（msgid=6 + message_id + content，legacy implicit-ack 无需 ACK）。
+        # 回显与投递经不同 loop 排队，到达顺序不确定——按形状配对断言。
         for i in range(n):
             clients[i].send({"msgid": 6, "id": ids[i], "toid": ids[(i + 1) % n],
                              "content": "hi %d" % i})
         for i in range(n):
-            r = clients[i].recv()
-            check("chat_%d" % i, r is not None and "errno" in r and r["errno"] == 0,
-                  str(r))
-            check("chat_%d_no_forward" % i, clients[i].recv_timeout(0.4))
+            r1 = clients[i].recv()
+            r2 = clients[i].recv()
+            echo = r1 if (r1 is not None and "errno" in r1) else r2
+            dlv = r2 if echo is r1 else r1
+            check("chat_%d" % i, echo is not None and echo.get("errno") == 0, str(echo))
+            check("chat_%d_delivery" % i, dlv is not None and dlv.get("msgid") == 6
+                  and dlv.get("message_id", 0) > 0
+                  and dlv.get("id") == ids[(i - 1) % n]
+                  and dlv.get("content") == "hi %d" % ((i - 1) % n), str(dlv))
 
         # 并发登出
         for i in range(n):

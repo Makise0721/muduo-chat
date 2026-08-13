@@ -1,18 +1,44 @@
 #include "app/ReliableMessaging.hpp"
 
+#include "app/DeliveryCoordinator.hpp"
 #include "app/DeliverySink.hpp"
 #include "app/MessageStore.hpp"
 
-#include <algorithm>
-#include <map>
 #include <memory>
 #include <vector>
 
+namespace {
+
+std::vector<UserId> recipientsFor(const SendMessageCommand& cmd)
+{
+    if (cmd.kind == SendMessageCommand::Kind::Direct) {
+        return std::vector<UserId>(1, cmd.directRecipient);
+    }
+    return cmd.members;
+}
+
+// Durable acceptance is already complete before this callback is entered.
+// Delivery state persistence is therefore best-effort here: a later retry of
+// the same idempotency key re-runs the claim for any still-Pending rows.
+void notifyAcceptedBestEffort(DeliveryCoordinator& coordinator,
+                              const std::vector<UserId>& recipients)
+{
+    try {
+        coordinator.onAccepted(recipients);
+    } catch (...) {
+        // Do not turn a committed Message/Delivery set into DependencyBusy.
+    }
+}
+
+} // namespace
+
 ReliableMessaging::ReliableMessaging(MessageStore& store, DeliverySink& sink, Clock& clock,
                                      uint64_t leaseMs)
-    : store_(store), sink_(sink), clock_(clock), leaseMs_(leaseMs)
+    : store_(store), coordinator_(new DeliveryCoordinator(store, sink, clock, leaseMs))
 {
 }
+
+ReliableMessaging::~ReliableMessaging() = default;
 
 AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const SendMessageCommand& cmd)
 {
@@ -25,6 +51,10 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
             outcome.messageId = existing->id;
             outcome.conversationId = existing->conversationId;
             outcome.sequence = existing->sequence;
+            // A prior post-commit delivery update may have failed after the
+            // durable accept.  Re-run the online claim on a same-key retry;
+            // claimFor fences already InFlight/Acknowledged rows.
+            notifyAcceptedBestEffort(*coordinator_, recipientsFor(existing->command));
         } else {
             outcome.error = AcceptError::IdempotencyConflict;
         }
@@ -37,12 +67,7 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
     draft.conversationId = store_.getOrCreateConversation(sender, cmd);
     const Message accepted = store_.insertMessage(draft);
 
-    std::vector<UserId> recipients;
-    if (cmd.kind == SendMessageCommand::Kind::Direct) {
-        recipients.push_back(cmd.directRecipient);
-    } else {
-        recipients = cmd.members;
-    }
+    const std::vector<UserId> recipients = recipientsFor(cmd);
     for (size_t i = 0; i < recipients.size(); ++i) {
         Delivery delivery;
         delivery.messageId = accepted.id;
@@ -50,6 +75,9 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
         delivery.recipient = recipients[i];
         store_.insertDelivery(delivery);
     }
+
+    // P3-07：对在线接收者立即 claim（在线投递；离线保持 Pending 待登录 claim）。
+    notifyAcceptedBestEffort(*coordinator_, recipients);
 
     outcome.ok = true;
     outcome.messageId = accepted.id;
@@ -60,108 +88,22 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
 
 AckOutcome ReliableMessaging::acknowledge(const SessionIdentity& acker, MessageId messageId)
 {
-    AckOutcome outcome;
-    std::vector<Delivery> deliveries = store_.deliveriesByMessage(messageId);
-    if (deliveries.empty()) {
-        return outcome;  // NotFound
-    }
-    Delivery* mine = nullptr;
-    for (size_t i = 0; i < deliveries.size(); ++i) {
-        if (deliveries[i].recipient == acker.userId) {
-            mine = &deliveries[i];
-            break;
-        }
-    }
-    if (mine == nullptr) {
-        outcome.result = AckResult::NotRecipient;
-        return outcome;
-    }
-    if (mine->state == DeliveryState::Acknowledged) {
-        outcome.result = AckResult::Idempotent;
-        return outcome;
-    }
-    mine->state = DeliveryState::Acknowledged;
-    mine->acknowledgedAtMs = clock_.nowMs();
-    store_.updateDelivery(*mine);
-    claimFor(acker);  // ACK 放行同 Conversation 的下一 sequence
-    outcome.result = AckResult::Acknowledged;
-    return outcome;
+    return coordinator_->acknowledge(acker, messageId);
 }
 
 void ReliableMessaging::sessionAvailable(const SessionIdentity& session)
 {
-    claimFor(session);
+    coordinator_->sessionAvailable(session);
 }
 
 void ReliableMessaging::sessionClosed(const SessionIdentity& session)
 {
-    std::vector<Delivery> deliveries = store_.deliveriesByRecipient(session.userId);
-    for (size_t i = 0; i < deliveries.size(); ++i) {
-        Delivery& d = deliveries[i];
-        if (d.state == DeliveryState::InFlight && d.leaseOwner == session) {
-            d.state = DeliveryState::Pending;
-            d.leaseOwner = SessionIdentity();
-            d.leaseUntilMs = 0;
-            store_.updateDelivery(d);
-        }
-    }
+    coordinator_->sessionClosed(session);
 }
 
-void ReliableMessaging::claimFor(const SessionIdentity& session)
+void ReliableMessaging::resume(const SessionIdentity& session)
 {
-    std::vector<Delivery> deliveries = store_.deliveriesByRecipient(session.userId);
-    std::map<uint64_t, std::vector<Delivery*> > byConversation;
-    for (size_t i = 0; i < deliveries.size(); ++i) {
-        Delivery& d = deliveries[i];
-        if (d.state == DeliveryState::Acknowledged || d.state == DeliveryState::Expired) {
-            continue;
-        }
-        byConversation[d.conversationId.value].push_back(&d);
-    }
-
-    const int64_t now = clock_.nowMs();
-    for (std::map<uint64_t, std::vector<Delivery*> >::iterator it = byConversation.begin();
-         it != byConversation.end(); ++it) {
-        // head-of-line：只考虑同 (recipient, conversation) 内 sequence 最小的未确认 Delivery。
-        Delivery* head = nullptr;
-        ConversationSequence headSequence;
-        std::shared_ptr<const Message> headMessage;
-        for (size_t i = 0; i < it->second.size(); ++i) {
-            Delivery* d = it->second[i];
-            std::shared_ptr<const Message> m = store_.findMessage(d->messageId);
-            if (!m) {
-                continue;  // 存储一致性防御：缺 Message 的 Delivery 不投递
-            }
-            if (head == nullptr || m->sequence.value < headSequence.value) {
-                head = d;
-                headSequence = m->sequence;
-                headMessage = m;
-            }
-        }
-        if (head == nullptr) {
-            continue;
-        }
-        // 单在途：有效 lease 的 InFlight 不被重领；lease 到期可重领。
-        const bool claimable = head->state == DeliveryState::Pending ||
-                               (head->state == DeliveryState::InFlight && head->leaseUntilMs <= now);
-        if (!claimable) {
-            continue;
-        }
-        head->state = DeliveryState::InFlight;
-        head->leaseOwner = session;
-        head->leaseUntilMs = now + static_cast<int64_t>(leaseMs_);
-        head->attemptCount += 1;
-        store_.updateDelivery(*head);
-
-        DeliveryAttempt attempt;
-        attempt.messageId = head->messageId;
-        attempt.conversationId = head->conversationId;
-        attempt.sequence = headSequence;
-        attempt.recipient = head->recipient;
-        attempt.content = headMessage->command.content;
-        attempt.attemptNumber = head->attemptCount;
-        sink_.deliver(attempt);
-    }
+    coordinator_->resume(session);
 }
 
 void ReliableMessaging::start()

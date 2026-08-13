@@ -4,10 +4,15 @@
 
 #include <vector>
 
-// Recording 测试 adapter（计划 §3）：记录全部 DeliveryAttempt，供契约断言。
+// Recording 测试 adapter（计划 §3）：记录全部 DeliveryAttempt（默认 Accepted），
+// 供契约断言。
 class RecordingDeliverySink : public DeliverySink {
 public:
-    void deliver(const DeliveryAttempt& attempt) override { attempts_.push_back(attempt); }
+    DeliverDisposition deliver(const DeliveryAttempt& attempt) override
+    {
+        attempts_.push_back(attempt);
+        return DeliverDisposition::Accepted;
+    }
 
     const std::vector<DeliveryAttempt>& attempts() const { return attempts_; }
 

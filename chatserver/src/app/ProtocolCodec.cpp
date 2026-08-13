@@ -1,12 +1,12 @@
 #include "app/ProtocolCodec.hpp"
 
+#include "app/Clock.hpp"
 #include "app/DeliverySink.hpp"  // DeliverySink 完整定义（ReliableMessaging.hpp 仅前向声明）
 #include "app/MySQLMessageStore.hpp"
 #include "app/ReliableMessaging.hpp"
 #include "db/MySQLGuards.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <cstring>
 
 namespace {
@@ -24,37 +24,29 @@ const uint64_t kFanOutCap = 100;
 // 正式参数在 P3-08 RED 前冻结）。
 const uint64_t kLeaseMsPlaceholder = 30000;
 
-// 生产系统时钟：accept 路径不使用时钟（ack/claim/lease 才用）；正式实现
-// P3-08 引入（FakeClock 注释承诺同款语义）。
-class SystemClock : public Clock {
-public:
-    int64_t nowMs() override
-    {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-    }
-};
+// P3-07 接线：ChatService::bindLoop 注册 SessionDeliverySink. The stable
+// delegating adapter binds the sink once, including after lazy wiring.
+DeliverySink* g_deliverySink = nullptr;
+struct MessagingWiring;
+MessagingWiring* g_wiring = nullptr;
 
-// 投递出口占位：P3-06 无投递路径（accept 不触发 deliver）；P3-07 接真实
-// SessionRegistry adapter。
-class NoopDeliverySink : public DeliverySink {
-public:
-    void deliver(const DeliveryAttempt&) override {}
-};
-
-// P3-06 接线单例：ChatService（mymuduo TU）无法持有 ReliableMessaging 等
-// 领域类型（TimerQueue.h 的 using Clock 与领域 class Clock 全局同名冲突），
-// 接线放本 TU。惰性构造（首用=首个 accept，此时 main 已 init 连接池）；
-// ReliableMessaging 由 executor 单 worker 串行驱动（单一调用者语义）。
+// P3-06 接线单例：store/clock/messaging 全部领域侧对象，保持本 TU（mymuduo
+// 无关）承接 P3-06 结构；P3-07 的 SessionDeliverySink（依赖 TcpConnection）
+// 经 registerDeliverySink 在 ChatService::bindLoop 注册（wiring() 惰性构造时
+// 绑定；bindLoop 先于首个 accept/claim，无竞态）。惰性构造（首用=首个 accept，
+// 此时 main 已 init 连接池）；ReliableMessaging 由 executor 单 worker 串行驱动
+// （单一调用者语义）。
 struct MessagingWiring {
     MessagingWiring()
         : store(ConnectionPool::getInstance(), kFanOutCap),
           messaging(store, sink, clock, kLeaseMsPlaceholder)
     {
+        sink.bind(g_deliverySink);
+        g_wiring = this;
     }
     MySQLMessageStore store;
-    SystemClock clock;
-    NoopDeliverySink sink;
+    UnixEpochClock clock;
+    DelegatingDeliverySink sink;
     ReliableMessaging messaging;
 };
 
@@ -301,4 +293,46 @@ nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errm
 uint64_t legacyModeCount()
 {
     return legacyCounter().load();
+}
+
+// ---- P3-07 投递与 ACK（executor worker 线程；wiring().messaging 单一调用者）----
+
+bool registerDeliverySink(DeliverySink* sink)
+{
+    if (sink == nullptr) {
+        return false;
+    }
+    if (g_deliverySink != nullptr && g_deliverySink != sink) {
+        return false;
+    }
+    if (g_wiring != nullptr) {
+        if (!g_wiring->sink.bind(sink)) {
+            return false;
+        }
+    }
+    g_deliverySink = sink;
+    return true;
+}
+
+void acknowledgeDelivery(int64_t userId, uint64_t generation, uint64_t messageId)
+{
+    wiring().messaging.acknowledge(
+        SessionIdentity(UserId(static_cast<uint64_t>(userId)), generation), MessageId{messageId});
+}
+
+void sessionAvailableDelivery(int64_t userId, uint64_t generation)
+{
+    wiring().messaging.sessionAvailable(
+        SessionIdentity(UserId(static_cast<uint64_t>(userId)), generation));
+}
+
+void sessionClosedDelivery(int64_t userId, uint64_t generation)
+{
+    wiring().messaging.sessionClosed(
+        SessionIdentity(UserId(static_cast<uint64_t>(userId)), generation));
+}
+
+void resumeDelivery(int64_t userId, uint64_t generation)
+{
+    wiring().messaging.resume(SessionIdentity(UserId(static_cast<uint64_t>(userId)), generation));
 }

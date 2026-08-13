@@ -50,6 +50,12 @@ public:
     // 断开时移出活跃集合（close 回调，与 unbind 同调用；幂等）。
     void removeConnection(const TcpConnectionPtr& conn);
 
+    // Reserve a generation-conditional close.  The reservation is a fence
+    // against a later bind on this connection; the caller performs network
+    // cleanup only after this method returns true.
+    bool reserveCloseIfBound(const TcpConnectionPtr& conn,
+                             const BoundSession& expected);
+
     // 登录成功后绑定。单锁内原子判定：连接须在活跃集合中（否则拒绝
     // ConnectionInactive），且恰好一个成功者，无 find+insert 两步竞态。
     BindResult bind(const TcpConnectionPtr& conn, int64_t userId, int64_t generation);
@@ -78,4 +84,5 @@ private:
     std::unordered_map<TcpConnectionPtr, BoundSession> byConnection_;
     std::unordered_map<int64_t, TcpConnectionPtr> byUser_;
     std::unordered_set<TcpConnectionPtr> activeConnections_;
+    std::unordered_set<TcpConnectionPtr> closingConnections_;
 };

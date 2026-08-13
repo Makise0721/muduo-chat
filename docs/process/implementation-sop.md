@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无
+当前活动任务：无（P3-07 已 VERIFIED）
 
-下一任务：[P3-00 固定可靠消息语义与协议场景](../plans/post-p2-implementation-plan.md#p3-00-固定可靠消息语义与协议场景)
+下一任务：[P3-08 实现 ACK timeout、重连续传、过期与保留](../plans/post-p2-implementation-plan.md#p3-08-实现-ack-timeout重连续传过期与保留)
 
 ## 1. 文档与事实优先级
 

@@ -290,3 +290,38 @@ TEST(SessionApplicationTest, FastDisconnectReconnectDiscardsStaleCompletion)
     EXPECT_EQ(1, newCompletions.load());
     drainLoopCompletions(lt.loop);
 }
+
+TEST(SessionApplicationTest, CloseOfOldGenerationDoesNotInvalidateNewLogin)
+{
+    InMemoryUserRepository users;
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
+    int64_t uid = registerUser(users, "alice");
+
+    const int64_t oldGeneration = app.beginSessionAttempt(uid);
+    const int64_t newGeneration = app.beginSessionAttempt(uid);
+
+    // A delayed close callback for the old session must not advance the
+    // generation that already belongs to the new login attempt.
+    EXPECT_FALSE(app.invalidateSessionAttempt(uid, oldGeneration));
+    EXPECT_TRUE(app.isSessionCurrent(uid, newGeneration));
+}
+
+TEST(SessionApplicationTest, CloseOfCurrentGenerationInvalidatesBeforeReconnect)
+{
+    InMemoryUserRepository users;
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    InMemoryMessageRepository messages;
+    ChatApplication app(&users, &friends, &groups, &messages);
+    int64_t uid = registerUser(users, "alice");
+
+    const int64_t oldGeneration = app.beginSessionAttempt(uid);
+    EXPECT_TRUE(app.invalidateSessionAttempt(uid, oldGeneration));
+    EXPECT_FALSE(app.isSessionCurrent(uid, oldGeneration));
+
+    const int64_t newGeneration = app.beginSessionAttempt(uid);
+    EXPECT_TRUE(app.isSessionCurrent(uid, newGeneration));
+}
