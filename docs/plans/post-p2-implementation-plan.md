@@ -4,7 +4,7 @@
 
 计划基线：`main` @ `2e2a7f9`
 
-状态：`READY_FOR_P3-09`（P3-00..P3-08 已 VERIFIED；P3-09 待开卡）
+状态：`READY_FOR_P3-10`（P3-00..P3-09 已 VERIFIED；P3-10 待开卡）
 
 关键输入：
 

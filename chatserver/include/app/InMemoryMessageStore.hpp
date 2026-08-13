@@ -24,6 +24,12 @@ public:
     uint32_t expireDeliveries(int64_t nowMs, uint64_t limit) override;
     uint32_t cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
                                uint64_t limit) override;
+    std::vector<OutboxEvent> claimOutboxEvents(int64_t nowMs, const std::string& leaseOwner,
+                                               int64_t leaseUntilMs, uint64_t limit) override;
+    void markOutboxProcessed(uint64_t eventId, int64_t nowMs) override;
+    void markOutboxPoisoned(uint64_t eventId, int64_t nowMs) override;
+    std::shared_ptr<const OutboxEvent> findOutboxEvent(uint64_t eventId) override;
+    std::vector<OutboxEvent> poisonedOutboxEvents(uint64_t limit) override;
 
 private:
     struct DeliveryKey {
@@ -45,6 +51,8 @@ private:
     std::map<uint64_t, uint64_t> groupConversations_;
     std::map<uint64_t, uint64_t> nextSequenceByConversation_;
     std::map<DeliveryKey, Delivery> deliveries_;
+    std::map<uint64_t, OutboxEvent> outboxEvents_;  // P3-09：accept 同点写入，relay 消费
     uint64_t nextConversationId_ = 1;
     uint64_t nextMessageId_ = 1;
+    uint64_t nextOutboxEventId_ = 1;
 };

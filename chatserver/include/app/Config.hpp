@@ -27,6 +27,17 @@ struct RetryConfig {
     uint32_t retryBatchLimit = 500;          // 每轮重试/到期扫描批次上限
 };
 
+// P3-09 冻结参数（docs/tasks/P3-09.md §冻结参数 RED 前定案）：生产默认 = 卡冻结值；
+// 测试注入小值只经构造参数，绝不作为生产默认。生产配置经 AppConfig.outbox
+// （P2-09 JSON "outbox" 段）→ ProtocolCodec wiring 注入；测试不经 config 文件。
+// 定义于 Config.hpp 而非 LocalOutboxRelay.hpp，与 RetryConfig 同构（mymuduo-safe，
+// 避免 Config/LocalOutboxRelay/MessageStore 循环包含）；LocalOutboxRelay.hpp 引入。
+struct OutboxConfig {
+    uint32_t claimBatchSize = 100;    // 每轮最多 claim/处理的事件数（LIMIT 有界）
+    int64_t scanIntervalMs = 5000;    // 周期扫描间隔（lost wakeup 恢复；timer 驱动）
+    int64_t claimLeaseMs = 30000;     // claim lease 时长（到期可重领，崩溃无清理路径）
+};
+
 struct ServerEndpointConfig {
     std::string ip = "127.0.0.1";
     uint16_t port = 6000;
@@ -58,6 +69,7 @@ struct AppConfig {
     DbConfig db;
     ExecutorConfig executor;
     RetryConfig reliable;  // P3-08 可靠消息参数（默认 = 卡冻结值）
+    OutboxConfig outbox;   // P3-09 outbox relay 参数（默认 = 卡冻结值）
 };
 
 namespace config {

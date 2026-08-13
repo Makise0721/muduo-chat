@@ -1190,3 +1190,207 @@ uint32_t MySQLMessageStore::cleanupDeliveries(int64_t ackedBeforeMs, int64_t exp
     }
     return removed;
 }
+
+// P3-09 outbox 行查询（结果集解析为 OutboxEvent；LIMIT 有界）。列顺序与
+// claim 的 UPDATE…WHERE 回读一致；where 不能含用户输入（全部内部构造）。
+static std::vector<OutboxEvent> queryOutboxEvents(MySQL& m, const std::string& where,
+                                                  MYSQL_BIND* params, unsigned nParams,
+                                                  uint64_t limit)
+{
+    const std::string sql =
+        "SELECT id, aggregate_message_id, event_type, payload, UNIX_TIMESTAMP(available_at), "
+        "lease_owner, UNIX_TIMESTAMP(lease_until), attempt_count, "
+        "UNIX_TIMESTAMP(processed_at) FROM OutboxEvent WHERE " + where +
+        " ORDER BY id LIMIT ?";
+    MYSQL_STMT* stmt = m.prepareStatement(sql.c_str());
+    if (!stmt) {
+        throwStoreError(mysql_errno(m.getConnection()), "prepare outbox query failed");
+    }
+    std::vector<OutboxEvent> out;
+    {
+        PreparedStatementGuard guard(stmt);
+        uint64_t pLimit = limit;
+        MYSQL_BIND limitBind;
+        bindU64(limitBind, &pLimit);
+        MYSQL_BIND allBinds[4];
+        unsigned totalBinds = nParams + 1;
+        for (unsigned i = 0; i < nParams; ++i) {
+            allBinds[i] = params[i];
+        }
+        allBinds[nParams] = limitBind;
+        if (mysql_stmt_bind_param(stmt, allBinds) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "bind outbox query params");
+        }
+        if (mysql_stmt_execute(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "execute outbox query");
+        }
+        uint64_t id = 0;
+        uint64_t aggregateMessageId = 0;
+        char typeBuf[65] = {0};
+        unsigned long typeLen = 0;
+        char payloadProbe = 0;
+        unsigned long payloadLen = 0;
+        double availSecs = 0;
+        char ownerBuf[128] = {0};
+        unsigned long ownerLen = 0;
+        double leaseUntilSecs = 0;
+        int32_t attemptCount = 0;
+        double processedSecs = 0;
+        bool nulls[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        MYSQL_BIND bindOut[9];
+        memset(bindOut, 0, sizeof(bindOut));
+        bindOut[0].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[0].is_unsigned = 1;
+        bindOut[0].buffer = &id;
+        bindOut[0].is_null = &nulls[0];
+        bindOut[1].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[1].is_unsigned = 1;
+        bindOut[1].buffer = &aggregateMessageId;
+        bindOut[1].is_null = &nulls[1];
+        bindOut[2].buffer_type = MYSQL_TYPE_STRING;
+        bindOut[2].buffer = typeBuf;
+        bindOut[2].buffer_length = sizeof(typeBuf);
+        bindOut[2].length = &typeLen;
+        bindOut[2].is_null = &nulls[2];
+        bindOut[3].buffer_type = MYSQL_TYPE_BLOB;
+        bindOut[3].buffer = &payloadProbe;
+        bindOut[3].buffer_length = 1;
+        bindOut[3].length = &payloadLen;
+        bindOut[3].is_null = &nulls[3];
+        bindOut[4].buffer_type = MYSQL_TYPE_DOUBLE;
+        bindOut[4].buffer = &availSecs;
+        bindOut[4].is_null = &nulls[4];
+        bindOut[5].buffer_type = MYSQL_TYPE_STRING;
+        bindOut[5].buffer = ownerBuf;
+        bindOut[5].buffer_length = sizeof(ownerBuf);
+        bindOut[5].length = &ownerLen;
+        bindOut[5].is_null = &nulls[5];
+        bindOut[6].buffer_type = MYSQL_TYPE_DOUBLE;
+        bindOut[6].buffer = &leaseUntilSecs;
+        bindOut[6].is_null = &nulls[6];
+        bindOut[7].buffer_type = MYSQL_TYPE_LONG;
+        bindOut[7].buffer = &attemptCount;
+        bindOut[7].is_null = &nulls[7];
+        bindOut[8].buffer_type = MYSQL_TYPE_DOUBLE;
+        bindOut[8].buffer = &processedSecs;
+        bindOut[8].is_null = &nulls[8];
+        if (mysql_stmt_bind_result(stmt, bindOut) != 0 || mysql_stmt_store_result(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "store outbox query result");
+        }
+        while (true) {
+            int rc = mysql_stmt_fetch(stmt);
+            if (rc == MYSQL_NO_DATA) {
+                break;
+            }
+            // BLOB payload 以 1 字节探针绑定：行长于探针时 fetch 返回
+            // MYSQL_DATA_TRUNCATED（正常，length 已写实际长度），随后
+            // fetchBlob 二段读取全量——与 loadMessage 同款处理；把截断当错误
+            // 会把每次 claim 回读变成异常，事件永远无法 processed。
+            if (rc != 0 && rc != MYSQL_DATA_TRUNCATED) {
+                throwStoreError(mysql_stmt_errno(stmt), "fetch outbox query result");
+            }
+            OutboxEvent e;
+            e.id = id;
+            e.aggregateMessageId = MessageId{aggregateMessageId};
+            e.eventType = std::string(typeBuf, typeLen);
+            e.payload = fetchBlob(stmt, 3, payloadLen);
+            e.availableAtMs = secsToMs(availSecs);
+            e.leaseOwner = nulls[5] ? std::string() : std::string(ownerBuf, ownerLen);
+            e.leaseUntilMs = nulls[6] ? 0 : secsToMs(leaseUntilSecs);
+            e.attemptCount = static_cast<uint32_t>(attemptCount);
+            e.processedAtMs = nulls[8] ? 0 : secsToMs(processedSecs);
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+std::vector<OutboxEvent> MySQLMessageStore::claimOutboxEvents(int64_t nowMs,
+                                                              const std::string& leaseOwner,
+                                                              int64_t leaseUntilMs,
+                                                              uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    int64_t nowSecs = nowMs / 1000;
+    int64_t leaseSecs = leaseUntilMs / 1000;
+    unsigned long ownerLen = 0;
+    MYSQL_BIND binds[5];
+    bindString(binds[0], &leaseOwner, &ownerLen);
+    bindI64(binds[1], &leaseSecs);
+    bindI64(binds[2], &nowSecs);
+    bindI64(binds[3], &nowSecs);
+    bindU64(binds[4], &limit);
+    // 单条原子 UPDATE…WHERE…LIMIT：行锁串行化两 relay 竞争——先到者写
+    // lease（到期前不满足 WHERE），后者跳过，恰好一者得 lease。
+    (void)execAffected(*mysql,
+        "UPDATE OutboxEvent SET lease_owner=?, lease_until=FROM_UNIXTIME(?), "
+        "attempt_count=attempt_count+1 WHERE processed_at IS NULL "
+        "AND available_at <= FROM_UNIXTIME(?) "
+        "AND (lease_owner IS NULL OR lease_until <= FROM_UNIXTIME(?)) ORDER BY id LIMIT ?",
+        binds, 5);
+    // 回读本实例刚 claim 的行（owner+lease_until 精确匹配；processed 防御）。
+    MYSQL_BIND rb[2];
+    unsigned long rbOwnerLen = 0;
+    bindString(rb[0], &leaseOwner, &rbOwnerLen);
+    bindI64(rb[1], &leaseSecs);
+    return queryOutboxEvents(*mysql,
+        "lease_owner=? AND UNIX_TIMESTAMP(lease_until)=? AND processed_at IS NULL", rb, 2,
+        limit);
+}
+
+void MySQLMessageStore::markOutboxProcessed(uint64_t eventId, int64_t nowMs)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    int64_t nowSecs = nowMs / 1000;
+    MYSQL_BIND binds[2];
+    bindI64(binds[0], &nowSecs);
+    bindU64(binds[1], &eventId);
+    (void)execAffected(*mysql,
+        "UPDATE OutboxEvent SET processed_at=FROM_UNIXTIME(?), lease_owner=NULL, "
+        "lease_until=NULL WHERE id=? AND processed_at IS NULL",
+        binds, 2);
+}
+
+void MySQLMessageStore::markOutboxPoisoned(uint64_t eventId, int64_t nowMs)
+{
+    (void)eventId;
+    (void)nowMs;
+    // poison 谓词 = 未处理（processed_at NULL）：事件已保持未 processed、lease 保留
+    // 由到期驱动重领重试；可查询、绝不静默丢弃。此处无额外状态要写。
+}
+
+std::shared_ptr<const OutboxEvent> MySQLMessageStore::findOutboxEvent(uint64_t eventId)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MYSQL_BIND binds[1];
+    bindU64(binds[0], &eventId);
+    std::vector<OutboxEvent> rows = queryOutboxEvents(*acq.lease.get(), "id=?", binds, 1, 1);
+    if (rows.empty()) {
+        return std::shared_ptr<const OutboxEvent>();
+    }
+    return std::shared_ptr<const OutboxEvent>(new OutboxEvent(rows[0]));
+}
+
+std::vector<OutboxEvent> MySQLMessageStore::poisonedOutboxEvents(uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    return queryOutboxEvents(*acq.lease.get(), "processed_at IS NULL", nullptr, 0, limit);
+}

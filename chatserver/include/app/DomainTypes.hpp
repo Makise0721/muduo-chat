@@ -162,6 +162,10 @@ struct Message {
     ConversationSequence sequence;
     UserId senderId;
     SendMessageCommand command;
+    // P3-09：accept 事务内的接受时刻（InMemory 写 OutboxEvent.available_at 用，
+    // 与 MySQL 的 DEFAULT CURRENT_TIMESTAMP 对称；MySQL adapter 忽略本字段，
+    // loadMessage/backfill 等非 accept 构造路径保持 0 = 立即可见）。
+    int64_t acceptedAtMs = 0;
 };
 
 // 幂等键下 payload 是否一致（同一消息意图）：kind/目标/成员/content 全部相同。
@@ -258,4 +262,22 @@ struct Delivery {
     // 由 claim/lease 路径处理）。
     int64_t lastSentAtMs = 0;
     int64_t nextAttemptAtMs = 0;
+};
+
+// P3-09 outbox 事件（schema §3.6 OutboxEvent）：accept 事务内随 Message/Delivery
+// 一起持久化（commit 与 outbox 原子），relay 只消费、不删除行——删除会破坏
+// findAccepted 的幂等回读 JOIN（P3-09 非目标）。值类型对应列：
+//   available_at/lease_until/processed_at 为 Unix epoch 毫秒（MySQL DATETIME(0)
+//   秒精度持久化，round-trip 见 MySQLMessageStore）。
+struct OutboxEvent {
+    OutboxEvent() = default;
+    uint64_t id = 0;                  // store 分配的事件 id（MySQL AUTO_INCREMENT）
+    MessageId aggregateMessageId;     // 关联 ChatMessage.id
+    std::string eventType;            // "MessageAccepted"（accept 事务写入）
+    std::string payload;              // 命令快照 JSON（P3-04 冻结编码）
+    int64_t availableAtMs = 0;        // 可见时刻（claim 判定 available_at<=now）
+    std::string leaseOwner;           // "" = 未租用
+    int64_t leaseUntilMs = 0;         // 0 = 未租用
+    uint32_t attemptCount = 0;        // 每次 claim +1
+    int64_t processedAtMs = 0;        // 0 = 未处理（处理成功才写）
 };

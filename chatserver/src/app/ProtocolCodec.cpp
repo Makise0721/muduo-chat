@@ -1,8 +1,9 @@
 #include "app/ProtocolCodec.hpp"
 
 #include "app/Clock.hpp"
-#include "app/Config.hpp"  // RetryConfig（P3-08 生产参数注入）
+#include "app/Config.hpp"  // RetryConfig/OutboxConfig（P3-08/P3-09 生产参数注入）
 #include "app/DeliverySink.hpp"  // DeliverySink 完整定义（ReliableMessaging.hpp 仅前向声明）
+#include "app/LocalOutboxRelay.hpp"
 #include "app/MySQLMessageStore.hpp"
 #include "app/ReliableMessaging.hpp"
 #include "db/MySQLGuards.hpp"
@@ -35,6 +36,19 @@ MessagingWiring* g_wiring = nullptr;
 // 缺省 = 卡冻结值（docs/tasks/P3-08.md）。测试不经本入口。
 RetryConfig g_reliableConfig;
 
+// P3-09 生产 outbox relay 参数：main 经 configureOutboxRelay 注入（首用前）；
+// 缺省 = 卡冻结值（docs/tasks/P3-09.md §冻结参数）。测试不经本入口。
+OutboxConfig g_outboxConfig;
+
+// P3-09 relay 消费出口 adapter：把 relay 派生的接收者转成 ReliableMessaging 的
+// 幂等 wakeup（claimFor fencing + scheduler 幂等 → 同一事件重放不重复投递）。
+// wakeupAccepted 传播存储异常 → relay 保持事件未 processed、lease 到期重试（relay 不判 poison，见 P3-09 M）。
+// 实现定义于 wiring() 之后（需完整 MessagingWiring 以访问 .messaging）。
+class OutboxWakeupConsumer : public MessageAcceptedConsumer {
+public:
+    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override;
+};
+
 // P3-06 接线单例：store/clock/messaging 全部领域侧对象，保持本 TU（mymuduo
 // 无关）承接 P3-06 结构；P3-07 的 SessionDeliverySink（依赖 TcpConnection）
 // 经 registerDeliverySink 在 ChatService::bindLoop 注册（wiring() 惰性构造时
@@ -45,7 +59,8 @@ RetryConfig g_reliableConfig;
 struct MessagingWiring {
     MessagingWiring()
         : store(ConnectionPool::getInstance(), kFanOutCap),
-          messaging(store, sink, clock, kLeaseMsPlaceholder, g_reliableConfig)
+          messaging(store, sink, clock, kLeaseMsPlaceholder, g_reliableConfig),
+          relay(store, wakeup, clock, g_outboxConfig)
     {
         sink.bind(g_deliverySink);
         g_wiring = this;
@@ -54,12 +69,24 @@ struct MessagingWiring {
     UnixEpochClock clock;
     DelegatingDeliverySink sink;
     ReliableMessaging messaging;
+    // P3-09：relay 单 worker 周期扫描 outbox 并对在线接收者重放幂等 wakeup
+    // （accept 提交后的 best-effort wakeup 丢失/进程崩溃由周期扫描恢复）。
+    // 声明顺序：relay 依赖 wakeup（消费出口）与 store/clock，均在其前。
+    OutboxWakeupConsumer wakeup;
+    LocalOutboxRelay relay;
 };
 
 MessagingWiring& wiring()
 {
     static MessagingWiring w;
     return w;
+}
+
+void OutboxWakeupConsumer::onAccepted(const OutboxEvent& event,
+                                      const std::vector<UserId>& recipients)
+{
+    (void)event;
+    wiring().messaging.wakeupAccepted(recipients);
 }
 
 // legacy-mode 计数：每条生成 legacy identity（到达 accept）的 legacy 命令 +1。
@@ -348,6 +375,24 @@ void resumeDelivery(int64_t userId, uint64_t generation)
 void configureReliableMessaging(const RetryConfig& cfg)
 {
     g_reliableConfig = cfg;
+}
+
+void configureOutboxRelay(const OutboxConfig& cfg)
+{
+    g_outboxConfig = cfg;
+}
+
+void startOutboxRelay()
+{
+    wiring().relay.start();
+}
+
+void stopOutboxRelay(int64_t deadlineMs)
+{
+    // wiring 从未构造（无任何消息活动）时 no-op，避免 shutdown 期反构造 store。
+    if (g_wiring != nullptr) {
+        g_wiring->relay.stop(deadlineMs);
+    }
 }
 
 void startReliableMessaging()

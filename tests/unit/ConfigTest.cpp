@@ -57,6 +57,10 @@ TEST_F(ConfigTest, Defaults)
     EXPECT_EQ(cfg.reliable.cleanupBatch, 100u);
     EXPECT_EQ(cfg.reliable.cleanupCycleMs, 60LL * 1000);
     EXPECT_EQ(cfg.reliable.retryBatchLimit, 500u);
+    // P3-09：outbox 生产默认 = 卡冻结值（测试小值绝不成为生产默认）。
+    EXPECT_EQ(cfg.outbox.claimBatchSize, 100u);
+    EXPECT_EQ(cfg.outbox.scanIntervalMs, 5000);
+    EXPECT_EQ(cfg.outbox.claimLeaseMs, 30000);
 }
 
 TEST_F(ConfigTest, FullFileOverridesAll)
@@ -122,6 +126,33 @@ TEST_F(ConfigTest, ReliablePartialKeepsFrozenDefaults)
     EXPECT_EQ(cfg.reliable.ackTimeoutMs, 100);
     EXPECT_EQ(cfg.reliable.backoffBaseMs, 1000);  // 缺失字段保持卡冻结默认
     EXPECT_EQ(cfg.reliable.messageRetentionMs, 7LL * 24 * 3600 * 1000);
+    std::remove(path.c_str());
+}
+
+TEST_F(ConfigTest, OutboxSectionOverrides)
+{
+    std::string path = writeTempFile(
+        "{\"outbox\":{\"claim_batch\":5,\"scan_interval_ms\":200,\"claim_lease_ms\":4000}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.outbox.claimBatchSize, 5u);
+    EXPECT_EQ(cfg.outbox.scanIntervalMs, 200);
+    EXPECT_EQ(cfg.outbox.claimLeaseMs, 4000);
+    // 未出现字段保持卡冻结默认。
+    EXPECT_EQ(cfg.reliable.ackTimeoutMs, 30000);
+    std::remove(path.c_str());
+}
+
+TEST_F(ConfigTest, OutboxPartialKeepsFrozenDefaults)
+{
+    std::string path = writeTempFile("{\"outbox\":{\"scan_interval_ms\":100}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.outbox.scanIntervalMs, 100);
+    EXPECT_EQ(cfg.outbox.claimBatchSize, 100u);  // 缺失字段保持卡冻结默认
+    EXPECT_EQ(cfg.outbox.claimLeaseMs, 30000);
     std::remove(path.c_str());
 }
 
@@ -205,6 +236,14 @@ TEST_F(ConfigTest, FailFastMatrix)
         {"{\"reliable\":{\"retry_batch_limit\":4294967296}}", "reliable.retry_batch_limit"},
         {"{\"reliable\":{\"unknown_field\":1}}", "reliable.unknown_field"},
         {"{\"reliable\":5}", "reliable"},
+        // P3-09 outbox 段校验（类型/范围/未知字段/非对象）。
+        {"{\"outbox\":{\"claim_batch\":0}}", "outbox.claim_batch"},
+        {"{\"outbox\":{\"scan_interval_ms\":0}}", "outbox.scan_interval_ms"},
+        {"{\"outbox\":{\"scan_interval_ms\":-5}}", "outbox.scan_interval_ms"},
+        {"{\"outbox\":{\"scan_interval_ms\":\"100\"}}", "outbox.scan_interval_ms"},
+        {"{\"outbox\":{\"claim_lease_ms\":0}}", "outbox.claim_lease_ms"},
+        {"{\"outbox\":{\"unknown_field\":1}}", "outbox.unknown_field"},
+        {"{\"outbox\":5}", "outbox"},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         std::string path = writeTempFile(cases[i].json);

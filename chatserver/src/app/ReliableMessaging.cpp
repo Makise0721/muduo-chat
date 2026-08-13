@@ -106,6 +106,7 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
     draft.senderId = sender.userId;
     draft.command = cmd;
     draft.conversationId = store_.getOrCreateConversation(sender, cmd);
+    draft.acceptedAtMs = clock_.nowMs();  // P3-09：outbox available_at（InMemory 对称 MySQL CURRENT_TIMESTAMP）
     const Message accepted = store_.insertMessage(draft);
 
     const std::vector<UserId> recipients = recipientsFor(cmd);
@@ -154,6 +155,17 @@ void ReliableMessaging::resume(const SessionIdentity& session)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     coordinator_->resume(session);
+}
+
+void ReliableMessaging::wakeupAccepted(const std::vector<UserId>& recipients)
+{
+    std::lock_guard<std::mutex> lk(mutex_);
+    // 让 coordinator_.onAccepted 的存储异常传播到调用方（LocalOutboxRelay 的逐
+    // 事件 try/catch）：wakeup 失败时事件保持未 processed、lease 到期重试——
+    // "处理成功才标 processed"与 lost wakeup 恢复才真实成立。不经
+    // notifyAcceptedBestEffort（那是 accept 路径语义：提交结果不得因在线 claim
+    // 失败而反转，P3-07；wakeup 路径没有已提交结果要保护）。
+    coordinator_->onAccepted(recipients);
 }
 
 int64_t ReliableMessaging::runTick()

@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P3-08 已 VERIFIED）
+当前活动任务：无（P3-09 已 VERIFIED）
 
-下一任务：[P3-09 让 Outbox 在单机路径真实工作](../plans/post-p2-implementation-plan.md#p3-09-让-outbox-在单机路径真实工作)
+下一任务：[P3-10 迁移旧 `OfflineMessage` 并完成 expand/migrate/contract](../plans/post-p2-implementation-plan.md#p3-10-迁移旧-offlinemessage-并完成-expandmigratecontract)
 
 ## 1. 文档与事实优先级
 

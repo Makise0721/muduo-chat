@@ -86,6 +86,16 @@ public:
     // 暂停并重新 claim（PauseProducer/WouldBlock 不自旋，spec §3 网络联动）。
     void resume(const SessionIdentity& session);
 
+    // P3-09 outbox relay 出口：对 payload 派生接收者触发 coordinator 的幂等接受
+    // 通知（与 accept 提交后的在线 claim 等价）。同一 MessageAccepted 事件重放只
+    // 产生幂等 wakeup——DeliveryCoordinator claimFor 对已 InFlight/Acknowledged
+    // 行 fencing、scheduler 幂等，不重复投递、不新建 Message/Delivery。
+    // 存储异常传播给调用方（relay 逐事件 try/catch）：wakeup 失败时事件保持未
+    // processed、lease 到期重试——"处理成功才标 processed"与 lost wakeup 恢复成立
+    // （不经 accept 路径的 notifyAcceptedBestEffort；见 P3-09 M）。由 relay worker
+    // 线程调用，与 executor/scheduler 经 mutex_ 串行化。
+    void wakeupAccepted(const std::vector<UserId>& recipients);
+
     void start();
 
     // P3-08：有界退出——通知 scheduler 线程后 join（tick 批次有界，drain 有界）；

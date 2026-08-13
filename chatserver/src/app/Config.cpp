@@ -271,6 +271,22 @@ bool parseReliableSection(const json& reliable, AppConfig* out,
     return ok;
 }
 
+// P3-09 outbox relay 参数（字段与 OutboxConfig 一一对应；缺失保持卡冻结默认）。
+bool parseOutboxSection(const json& outbox, AppConfig* out,
+                        std::vector<FieldError>* errors)
+{
+    checkKnownFields(outbox, {"claim_batch", "scan_interval_ms", "claim_lease_ms"},
+                     errors, "outbox.");
+    bool ok = true;
+    ok = getUint32Positive(outbox, "claim_batch", &out->outbox.claimBatchSize,
+                           errors, "outbox.") && ok;
+    ok = getInt64Positive(outbox, "scan_interval_ms", &out->outbox.scanIntervalMs,
+                          errors, "outbox.") && ok;
+    ok = getInt64Positive(outbox, "claim_lease_ms", &out->outbox.claimLeaseMs,
+                          errors, "outbox.") && ok;
+    return ok;
+}
+
 } // namespace
 
 namespace config {
@@ -298,7 +314,7 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
     }
 
     std::vector<FieldError> errors;
-    checkKnownFields(root, {"server", "db", "executor", "reliable"}, &errors, "");
+    checkKnownFields(root, {"server", "db", "executor", "reliable", "outbox"}, &errors, "");
 
     if (root.contains("server")) {
         if (!root["server"].is_object()) {
@@ -326,6 +342,13 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
             errors.push_back({"reliable", "must be an object"});
         } else {
             parseReliableSection(root["reliable"], out, &errors);
+        }
+    }
+    if (root.contains("outbox")) {
+        if (!root["outbox"].is_object()) {
+            errors.push_back({"outbox", "must be an object"});
+        } else {
+            parseOutboxSection(root["outbox"], out, &errors);
         }
     }
 

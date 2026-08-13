@@ -174,6 +174,9 @@ void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQue
     // scheduler（timer 驱动、幂等）；stop 在 shutdownApp（EXECUTOR_SHUTDOWN 后、
     // POOL_SHUTDOWN 前）有界 join。
     startReliableMessaging();
+    // P3-09：启动 outbox relay 单 worker 周期扫描（lost wakeup 恢复：accept 提交
+    // 后 wakeup 丢失/进程崩溃，重启后未处理事件仍可被 claim 并重放）。
+    startOutboxRelay();
 }
 
 void ChatService::shutdownApp()
@@ -181,6 +184,11 @@ void ChatService::shutdownApp()
     if (_executor) {
         _executor->shutdown();
     }
+    // P3-09：relay worker（其 wakeup 消费 wiring().messaging）先于 messaging stop
+    // 有界 join（单轮批次有界）。顺序：EXECUTOR_SHUTDOWN → OUTBOX_STOP →
+    // MESSAGING_STOP → POOL_SHUTDOWN。
+    std::cout << "OUTBOX_STOP" << std::endl;
+    stopOutboxRelay(5000);
     // P3-08：scheduler 线程先于 ConnectionPool 失效退出（有界 join；wiring 未
     // 构造时 no-op）。顺序：EXECUTOR_SHUTDOWN → MESSAGING_STOP → POOL_SHUTDOWN。
     std::cout << "MESSAGING_STOP" << std::endl;

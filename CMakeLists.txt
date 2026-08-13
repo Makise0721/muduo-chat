@@ -30,6 +30,7 @@ add_library(chatserver_core STATIC
     chatserver/src/app/InMemoryMessageRepository.cpp
     chatserver/src/app/InMemoryMessageStore.cpp
     chatserver/src/app/InMemoryUserRepository.cpp
+    chatserver/src/app/LocalOutboxRelay.cpp
     chatserver/src/app/MySQLFriendRepository.cpp
     chatserver/src/app/MySQLGroupRepository.cpp
     chatserver/src/app/MySQLMessageRepository.cpp

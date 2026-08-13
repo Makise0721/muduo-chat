@@ -126,6 +126,21 @@ struct RetryConfig;  // 定义见 app/Config.hpp（mymuduo-safe，本头不引�
 // 测试直接构造 RetryConfig 注入 ReliableMessaging，不经本入口。
 void configureReliableMessaging(const RetryConfig& cfg);
 
+// ---- P3-09 outbox relay 生产接线（与上面同构；缺省 = 卡冻结值）----
+struct OutboxConfig;  // 定义见 app/Config.hpp
+
+// main 在加载 AppConfig 后调用（"outbox" 段 → cfg.outbox）。未调用时 wiring 使用
+// 卡冻结默认；测试直接构造 OutboxConfig 注入 LocalOutboxRelay，不经本入口。
+void configureOutboxRelay(const OutboxConfig& cfg);
+
+// server 就绪（bindLoop，pool 已 init）后启动 relay 单 worker 周期扫描（幂等）。
+void startOutboxRelay();
+
+// 挂进 shutdown 顺序：EXECUTOR_SHUTDOWN 之后、MESSAGING_STOP 之前调用——relay
+// worker（其 wakeup 消费 wiring().messaging）先于 messaging stop 有界 join。
+// wiring 从未构造时 no-op；deadlineMs 为有界 drain 软提示。
+void stopOutboxRelay(int64_t deadlineMs);
+
 // server 就绪（ChatService::bindLoop，pool 已 init、sink 已注册）后启动内部
 // scheduler（timer 驱动，幂等）。
 void startReliableMessaging();

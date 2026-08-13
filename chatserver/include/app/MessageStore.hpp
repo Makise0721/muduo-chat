@@ -76,4 +76,53 @@ public:
         (void)limit;
         return 0;
     }
+
+    // ---- P3-09 outbox port（InMemory/MySQL 双 adapter；默认空实现沿用
+    // deliveriesDueForRetry 模式，既有测试替身如 ReliableMessagingContractTest::
+    // ThrowOnceOnUpdateStore 不实现时无 outbox 消费）----
+
+    // 原子 claim 未处理（processed_at NULL）且 available_at<=nowMs 且（lease 为空
+    // 或已到期）的事件，最多 limit 行；写 lease_owner+lease_until、attempt_count+1。
+    // MySQL 用单条 UPDATE … WHERE … LIMIT（行锁串行化两 relay 竞争）；InMemory
+    // 锁内完成。返回已 claim 事件（含递增后的 attempt_count）。
+    virtual std::vector<OutboxEvent> claimOutboxEvents(int64_t nowMs,
+                                                       const std::string& leaseOwner,
+                                                       int64_t leaseUntilMs, uint64_t limit)
+    {
+        (void)nowMs;
+        (void)leaseOwner;
+        (void)leaseUntilMs;
+        (void)limit;
+        return std::vector<OutboxEvent>();
+    }
+
+    // 处理成功后才标 processed_at（nowMs）；同时释放 lease。失败/崩溃保持未
+    // processed，lease 到期可重领。
+    virtual void markOutboxProcessed(uint64_t eventId, int64_t nowMs)
+    {
+        (void)eventId;
+        (void)nowMs;
+    }
+
+    // 处理失败/不可解析标记：事件保持未 processed（poison 谓词可查询、绝不
+    // 静默丢弃），lease 保留由到期驱动重试（P3-12 再接管精确指标）。
+    virtual void markOutboxPoisoned(uint64_t eventId, int64_t nowMs)
+    {
+        (void)eventId;
+        (void)nowMs;
+    }
+
+    // 单事件查询（测试断言 / 管理查询）。
+    virtual std::shared_ptr<const OutboxEvent> findOutboxEvent(uint64_t eventId)
+    {
+        (void)eventId;
+        return std::shared_ptr<const OutboxEvent>();
+    }
+
+    // poison/未处理谓词（SQL：processed_at IS NULL），最多 limit 行；不静默丢弃。
+    virtual std::vector<OutboxEvent> poisonedOutboxEvents(uint64_t limit)
+    {
+        (void)limit;
+        return std::vector<OutboxEvent>();
+    }
 };

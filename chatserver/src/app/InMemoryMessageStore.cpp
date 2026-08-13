@@ -2,6 +2,32 @@
 
 #include <algorithm>
 
+#include "json.hpp"
+
+namespace {
+
+// 与 MySQLMessageStore 的命令快照编码一致（kind/direct_recipient|group_id/
+// members 保序），使双 adapter 的 OutboxEvent.payload 可观测对称。
+std::string encodeOutboxPayload(const SendMessageCommand& cmd)
+{
+    nlohmann::json j;
+    if (cmd.kind == SendMessageCommand::Kind::Direct) {
+        j["kind"] = "DIRECT";
+        j["direct_recipient"] = cmd.directRecipient.value;
+    } else {
+        j["kind"] = "GROUP";
+        j["group_id"] = cmd.groupId.value;
+        nlohmann::json members = nlohmann::json::array();
+        for (size_t i = 0; i < cmd.members.size(); ++i) {
+            members.push_back(cmd.members[i].value);
+        }
+        j["members"] = members;
+    }
+    return j.dump();
+}
+
+} // namespace
+
 std::shared_ptr<const Message> InMemoryMessageStore::findAccepted(const ClientMessageId& clientMessageId,
                                                                   UserId sender)
 {
@@ -48,6 +74,15 @@ Message InMemoryMessageStore::insertMessage(const Message& draft)
     messagesById_.insert(std::make_pair(m.id.value, stored));
     acceptedByKey_.insert(std::make_pair(
         std::make_pair(m.senderId.value, m.command.clientMessageId.value()), stored));
+    // P3-09：与 MySQLMessageStore 事务内写入对称（accept 同点写 OutboxEvent）。
+    // available_at 取 accept 时刻（Message.acceptedAtMs；MySQL 用 CURRENT_TIMESTAMP）。
+    OutboxEvent ev;
+    ev.id = nextOutboxEventId_++;
+    ev.aggregateMessageId = m.id;
+    ev.eventType = "MessageAccepted";
+    ev.payload = encodeOutboxPayload(m.command);
+    ev.availableAtMs = m.acceptedAtMs;
+    outboxEvents_.insert(std::make_pair(ev.id, ev));
     return m;
 }
 
@@ -169,4 +204,64 @@ uint32_t InMemoryMessageStore::cleanupDeliveries(int64_t ackedBeforeMs, int64_t 
         }
     }
     return removedAcked + removedExpired;
+}
+
+std::vector<OutboxEvent> InMemoryMessageStore::claimOutboxEvents(int64_t nowMs,
+                                                                 const std::string& leaseOwner,
+                                                                 int64_t leaseUntilMs,
+                                                                 uint64_t limit)
+{
+    std::vector<OutboxEvent> out;
+    for (std::map<uint64_t, OutboxEvent>::iterator it = outboxEvents_.begin();
+         it != outboxEvents_.end() && out.size() < limit; ++it) {
+        OutboxEvent& e = it->second;
+        if (e.processedAtMs == 0 && e.availableAtMs <= nowMs &&
+            (e.leaseOwner.empty() || e.leaseUntilMs <= nowMs)) {
+            e.leaseOwner = leaseOwner;
+            e.leaseUntilMs = leaseUntilMs;
+            e.attemptCount += 1;
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+void InMemoryMessageStore::markOutboxProcessed(uint64_t eventId, int64_t nowMs)
+{
+    std::map<uint64_t, OutboxEvent>::iterator it = outboxEvents_.find(eventId);
+    if (it == outboxEvents_.end()) {
+        return;
+    }
+    it->second.processedAtMs = nowMs;
+    it->second.leaseOwner.clear();
+    it->second.leaseUntilMs = 0;
+}
+
+void InMemoryMessageStore::markOutboxPoisoned(uint64_t eventId, int64_t nowMs)
+{
+    (void)nowMs;
+    // poison 谓词 = 未处理（processed_at NULL）：事件已保持未 processed、lease
+    // 保留由到期驱动重领重试；可查询、绝不静默丢弃。此处无额外状态要写。
+    (void)eventId;
+}
+
+std::shared_ptr<const OutboxEvent> InMemoryMessageStore::findOutboxEvent(uint64_t eventId)
+{
+    std::map<uint64_t, OutboxEvent>::iterator it = outboxEvents_.find(eventId);
+    if (it == outboxEvents_.end()) {
+        return std::shared_ptr<const OutboxEvent>();
+    }
+    return std::shared_ptr<const OutboxEvent>(new OutboxEvent(it->second));
+}
+
+std::vector<OutboxEvent> InMemoryMessageStore::poisonedOutboxEvents(uint64_t limit)
+{
+    std::vector<OutboxEvent> out;
+    for (std::map<uint64_t, OutboxEvent>::iterator it = outboxEvents_.begin();
+         it != outboxEvents_.end() && out.size() < limit; ++it) {
+        if (it->second.processedAtMs == 0) {
+            out.push_back(it->second);
+        }
+    }
+    return out;
 }

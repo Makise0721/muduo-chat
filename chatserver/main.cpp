@@ -139,6 +139,8 @@ int main(int argc, char** argv) {
     config::applyEnvOverrides(&cfg);
     // P3-08：可靠消息生产参数注入（缺省 = 卡冻结值，见 AppConfig.reliable）。
     configureReliableMessaging(cfg.reliable);
+    // P3-09：outbox relay 生产参数注入（缺省 = 卡冻结值，见 AppConfig.outbox）。
+    configureOutboxRelay(cfg.outbox);
 
     auto& connPool = ConnectionPool::getInstance();
     connPool.init(cfg.db.host, cfg.db.user, cfg.db.password, cfg.db.dbname,
