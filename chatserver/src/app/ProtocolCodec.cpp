@@ -1,6 +1,7 @@
 #include "app/ProtocolCodec.hpp"
 
 #include "app/Clock.hpp"
+#include "app/Config.hpp"  // RetryConfig（P3-08 生产参数注入）
 #include "app/DeliverySink.hpp"  // DeliverySink 完整定义（ReliableMessaging.hpp 仅前向声明）
 #include "app/MySQLMessageStore.hpp"
 #include "app/ReliableMessaging.hpp"
@@ -30,16 +31,21 @@ DeliverySink* g_deliverySink = nullptr;
 struct MessagingWiring;
 MessagingWiring* g_wiring = nullptr;
 
+// P3-08 生产可靠消息参数：main 经 configureReliableMessaging 注入（首用前）；
+// 缺省 = 卡冻结值（docs/tasks/P3-08.md）。测试不经本入口。
+RetryConfig g_reliableConfig;
+
 // P3-06 接线单例：store/clock/messaging 全部领域侧对象，保持本 TU（mymuduo
 // 无关）承接 P3-06 结构；P3-07 的 SessionDeliverySink（依赖 TcpConnection）
 // 经 registerDeliverySink 在 ChatService::bindLoop 注册（wiring() 惰性构造时
-// 绑定；bindLoop 先于首个 accept/claim，无竞态）。惰性构造（首用=首个 accept，
-// 此时 main 已 init 连接池）；ReliableMessaging 由 executor 单 worker 串行驱动
+// 绑定；bindLoop 先于首个 accept/claim，无竞态）。P3-08：startReliableMessaging
+// 在 bindLoop 显式构造并启动 scheduler（pool 已 init、sink 已绑定）；首个 accept
+// 也可惰性触发（等价，幂等）。ReliableMessaging 由 executor 单 worker 串行驱动
 // （单一调用者语义）。
 struct MessagingWiring {
     MessagingWiring()
         : store(ConnectionPool::getInstance(), kFanOutCap),
-          messaging(store, sink, clock, kLeaseMsPlaceholder)
+          messaging(store, sink, clock, kLeaseMsPlaceholder, g_reliableConfig)
     {
         sink.bind(g_deliverySink);
         g_wiring = this;
@@ -335,4 +341,24 @@ void sessionClosedDelivery(int64_t userId, uint64_t generation)
 void resumeDelivery(int64_t userId, uint64_t generation)
 {
     wiring().messaging.resume(SessionIdentity(UserId(static_cast<uint64_t>(userId)), generation));
+}
+
+// ---- P3-08 生产接线：可靠消息生命周期与参数注入 ----
+
+void configureReliableMessaging(const RetryConfig& cfg)
+{
+    g_reliableConfig = cfg;
+}
+
+void startReliableMessaging()
+{
+    wiring().messaging.start();
+}
+
+void stopReliableMessaging(int64_t deadlineMs)
+{
+    // wiring 从未构造（无任何消息活动）时 no-op，避免 shutdown 期反构造 store。
+    if (g_wiring != nullptr) {
+        g_wiring->messaging.stop(deadlineMs);
+    }
 }

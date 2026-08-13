@@ -1,7 +1,7 @@
 #!/bin/bash
 # P2-09 ordered shutdown test:
 # - scenario A: no connections -> SIGTERM -> STOP_ACCEPT, DRAINED, EXECUTOR_SHUTDOWN,
-#   POOL_SHUTDOWN, QUIT_LOOPS, EXITED in order; DRAINED exactly once; exit 0.
+#   MESSAGING_STOP, POOL_SHUTDOWN, QUIT_LOOPS, EXITED in order; DRAINED exactly once; exit 0.
 # - scenario B: held connection -> CHAT_SHUTDOWN_TIMEOUT_MS hard deadline ->
 #   DRAIN_TIMEOUT then same tail order; exit 0.
 set -u
@@ -86,7 +86,7 @@ if [ "$RC" -ne 0 ]; then
     cat "$LOG"
     exit 1
 fi
-assert_order "$LOG" STOP_ACCEPT DRAINED EXECUTOR_SHUTDOWN POOL_SHUTDOWN QUIT_LOOPS EXITED
+assert_order "$LOG" STOP_ACCEPT DRAINED EXECUTOR_SHUTDOWN MESSAGING_STOP POOL_SHUTDOWN QUIT_LOOPS EXITED
 rm -f "$LOG"
 echo "PASS: scenario A (fast drain) exit=$RC"
 
@@ -132,7 +132,7 @@ if [ "$RC" -ne 0 ]; then
 fi
 # main.cpp:70 已用 !flow->forced 限定：DRAINED 只在非强制路径打印。场景 B 经
 # DRAIN_TIMEOUT 置 forced 后再归零不会打 DRAINED，A/B 标记互斥已落地。
-assert_order "$LOG" STOP_ACCEPT DRAIN_TIMEOUT EXECUTOR_SHUTDOWN POOL_SHUTDOWN QUIT_LOOPS EXITED
+assert_order "$LOG" STOP_ACCEPT DRAIN_TIMEOUT EXECUTOR_SHUTDOWN MESSAGING_STOP POOL_SHUTDOWN QUIT_LOOPS EXITED
 rm -f "$LOG"
 echo "PASS: scenario B (hard deadline) exit=$RC"
 exit 0

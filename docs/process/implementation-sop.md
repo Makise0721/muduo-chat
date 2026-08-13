@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P3-07 已 VERIFIED）
+当前活动任务：无（P3-08 已 VERIFIED）
 
-下一任务：[P3-08 实现 ACK timeout、重连续传、过期与保留](../plans/post-p2-implementation-plan.md#p3-08-实现-ack-timeout重连续传过期与保留)
+下一任务：[P3-09 让 Outbox 在单机路径真实工作](../plans/post-p2-implementation-plan.md#p3-09-让-outbox-在单机路径真实工作)
 
 ## 1. 文档与事实优先级
 

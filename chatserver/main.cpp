@@ -1,6 +1,7 @@
 #include "ChatServer.hpp"
 #include "ChatService.hpp"
 #include "app/Config.hpp"
+#include "app/ProtocolCodec.hpp"  // P3-08 configureReliableMessaging（可靠消息参数注入）
 #include "db/ConnectionPool.hpp"
 #include <chrono>
 #include <iostream>
@@ -136,6 +137,8 @@ int main(int argc, char** argv) {
         exit(1);
     }
     config::applyEnvOverrides(&cfg);
+    // P3-08：可靠消息生产参数注入（缺省 = 卡冻结值，见 AppConfig.reliable）。
+    configureReliableMessaging(cfg.reliable);
 
     auto& connPool = ConnectionPool::getInstance();
     connPool.init(cfg.db.host, cfg.db.user, cfg.db.password, cfg.db.dbname,

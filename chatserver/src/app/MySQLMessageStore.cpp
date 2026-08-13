@@ -212,31 +212,54 @@ SendMessageCommand decodeCommandSnapshot(const std::string& payloadJson,
     return cmd;
 }
 
-std::string encodeLeaseOwner(const SessionIdentity& owner)
+// P3-08：lease_owner 列编 "uid:gen[:bootid]"——boot id（进程实例标识）保证
+// 跨进程重启后 owner 必不同（generation 重置可能使 "uid:gen" 与新 owner 相同，
+// 否则 P3-07 的 generation fencing 失效，HOL 被卡到 lease 到期）。VARCHAR(64)
+// 足够容纳（uid 为 int32，gen/bootid 为 uint64 十进制，最坏约 52 字符）。
+std::string encodeLeaseOwner(const SessionIdentity& owner, uint64_t bootId)
 {
     if (owner.userId.value == 0) {
         return std::string();
     }
-    return std::to_string(owner.userId.value) + ":" + std::to_string(owner.generation);
+    return std::to_string(owner.userId.value) + ":" + std::to_string(owner.generation) + ":" +
+           std::to_string(bootId);
 }
 
-SessionIdentity decodeLeaseOwner(const char* s, unsigned long len)
+// 旧格式 "uid:gen"（无 boot id，启动前遗留行）按 bootId=0 解码；任何该进程
+// 新 claim 的 boot id 均非 0，故遗留行必然不等，会被立即回收（安全方向）。
+void decodeLeaseOwner(const char* s, unsigned long len, SessionIdentity* owner, uint64_t* bootId)
 {
     if (len == 0) {
-        return SessionIdentity();
+        *owner = SessionIdentity();
+        *bootId = 0;
+        return;
     }
-    size_t colon = 0;
-    while (colon < len && s[colon] != ':') {
-        ++colon;
+    // "uid:gen[:bootid]"
+    size_t colon1 = 0;
+    while (colon1 < len && s[colon1] != ':') {
+        ++colon1;
     }
-    if (colon == 0 || colon + 1 >= len) {
+    if (colon1 == 0 || colon1 + 1 >= len) {
         throw MessageStoreError(StoreErrorKind::Storage, "malformed lease owner");
     }
+    size_t colon2 = len;
+    for (size_t i = colon1 + 1; i < len; ++i) {
+        if (s[i] == ':') {
+            colon2 = i;
+            break;
+        }
+    }
     const uint64_t uid =
-        static_cast<uint64_t>(strtoull(std::string(s, colon).c_str(), nullptr, 10));
+        static_cast<uint64_t>(strtoull(std::string(s, colon1).c_str(), nullptr, 10));
     const uint64_t gen = static_cast<uint64_t>(
-        strtoull(std::string(s + colon + 1, len - colon - 1).c_str(), nullptr, 10));
-    return SessionIdentity(UserId{uid}, gen);
+        strtoull(std::string(s + colon1 + 1, colon2 - colon1 - 1).c_str(), nullptr, 10));
+    const uint64_t boot = (colon2 < len)
+                              ? static_cast<uint64_t>(
+                                    strtoull(std::string(s + colon2 + 1, len - colon2 - 1).c_str(),
+                                             nullptr, 10))
+                              : 0;
+    *owner = SessionIdentity(UserId{uid}, gen);
+    *bootId = boot;
 }
 
 int32_t encodeState(DeliveryState state)
@@ -708,14 +731,24 @@ void MySQLMessageStore::insertDelivery(const Delivery& delivery)
         fire(Step::InsertDelivery);
         uint64_t pMid = delivery.messageId.value;
         int32_t pRecipient = static_cast<int32_t>(delivery.recipient.value);
-        MYSQL_BIND binds[2];
+        // P3-08：expires_at 必须随行持久化（accept 注入的 retention deadline）。
+        // 旧实现写死 NULL，MySQL 侧 expireDeliveries 的 `expires_at IS NOT NULL`
+        // 永不命中，Expired 转移与 retention cleanup 在真实库上静默失效。
+        int64_t expiresSecs = delivery.expiresAtMs / 1000;
+        unsigned long expiresLen = 0;
+        MYSQL_BIND binds[3];
         bindU64(binds[0], &pMid);
         bindInt(binds[1], &pRecipient);
+        if (delivery.expiresAtMs == 0) {
+            bindNull(binds[2]);
+        } else {
+            bindI64(binds[2], &expiresSecs);
+        }
         unsigned int err = execStmt(m,
             "INSERT INTO MessageDelivery(message_id, recipient_id, state, attempt_count, "
             "next_attempt_at, lease_owner, lease_until, last_sent_at, acknowledged_at, "
-            "expires_at) VALUES(?,?,0,0,NULL,NULL,NULL,NULL,NULL,NULL)",
-            binds, 2);
+            "expires_at) VALUES(?,?,0,0,NULL,NULL,NULL,NULL,NULL,FROM_UNIXTIME(?))",
+            binds, 3);
         if (err == 1062) {
             // 同 (message_id, recipient_id) 已存在：并发重复 accept 或同 key 竞争
             // 恢复路径的原消息投递——幂等 no-op（message_id 全局唯一，PK 冲突
@@ -741,14 +774,21 @@ void MySQLMessageStore::updateDelivery(const Delivery& delivery)
     MySQL* mysql = acq.lease.get();
     int32_t pState = encodeState(delivery.state);
     int32_t pAttempts = static_cast<int32_t>(delivery.attemptCount);
-    const std::string owner = encodeLeaseOwner(delivery.leaseOwner);
+    const std::string owner = encodeLeaseOwner(delivery.leaseOwner, delivery.leaseBootId);
     int64_t leaseSecs = delivery.leaseUntilMs / 1000;
     int64_t ackedSecs = delivery.acknowledgedAtMs / 1000;
     int64_t expiresSecs = delivery.expiresAtMs / 1000;
+    // P3-08：ACK timeout 扫描字段（spec §3/§4）。
+    int64_t lastSentSecs = delivery.lastSentAtMs / 1000;
+    // 补缺轮 M2：next_attempt_at 必须向上取整（ceil），绝不早于写入时刻。因
+    // DATETIME(0) 秒精度，floor(ms/1000) 会使到期判定 `next_attempt_at <=
+    // floor(now/1000)` 提前至多 999ms（不安全方向：在排程时刻前重投）。仅此列
+    // 取 ceil；lease_until 等其它列保持 floor（既有 round-trip 语义不动）。
+    int64_t nextAttemptSecs = (delivery.nextAttemptAtMs + 999) / 1000;
     uint64_t pMid = delivery.messageId.value;
     int32_t pRecipient = static_cast<int32_t>(delivery.recipient.value);
     unsigned long ownerLen = 0;
-    MYSQL_BIND binds[8];
+    MYSQL_BIND binds[10];
     bindInt(binds[0], &pState);
     bindInt(binds[1], &pAttempts);
     if (delivery.leaseOwner.userId.value == 0) {
@@ -771,15 +811,26 @@ void MySQLMessageStore::updateDelivery(const Delivery& delivery)
     } else {
         bindI64(binds[5], &expiresSecs);
     }
-    bindU64(binds[6], &pMid);
-    bindInt(binds[7], &pRecipient);
+    if (delivery.lastSentAtMs == 0) {
+        bindNull(binds[6]);
+    } else {
+        bindI64(binds[6], &lastSentSecs);
+    }
+    if (delivery.nextAttemptAtMs == 0) {
+        bindNull(binds[7]);
+    } else {
+        bindI64(binds[7], &nextAttemptSecs);
+    }
+    bindU64(binds[8], &pMid);
+    bindInt(binds[9], &pRecipient);
     // DATETIME(0) 秒精度（任务卡登记：契约时间值均为秒的倍数，round-trip 精确；
     // P3-08 需要亚秒精度时另提 migration）。
     (void)execStmt(*mysql,
         "UPDATE MessageDelivery SET state=?, attempt_count=?, lease_owner=?, "
         "lease_until=FROM_UNIXTIME(?), acknowledged_at=FROM_UNIXTIME(?), "
-        "expires_at=FROM_UNIXTIME(?) WHERE message_id=? AND recipient_id=?",
-        binds, 8);
+        "expires_at=FROM_UNIXTIME(?), last_sent_at=FROM_UNIXTIME(?), "
+        "next_attempt_at=FROM_UNIXTIME(?) WHERE message_id=? AND recipient_id=?",
+        binds, 10);
 }
 
 std::shared_ptr<const Message> MySQLMessageStore::loadMessage(MySQL& m, const std::string& where,
@@ -885,7 +936,8 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
     const std::string sql =
         "SELECT d.message_id, d.recipient_id, d.state, d.attempt_count, d.lease_owner, "
         "UNIX_TIMESTAMP(d.lease_until), UNIX_TIMESTAMP(d.acknowledged_at), "
-        "UNIX_TIMESTAMP(d.expires_at), m.conversation_id, m.sequence "
+        "UNIX_TIMESTAMP(d.expires_at), UNIX_TIMESTAMP(d.last_sent_at), "
+        "UNIX_TIMESTAMP(d.next_attempt_at), m.conversation_id, m.sequence "
         "FROM MessageDelivery d JOIN ChatMessage m ON m.id = d.message_id WHERE " + where;
     MYSQL_STMT* stmt = m.prepareStatement(sql.c_str());
     if (!stmt) {
@@ -909,10 +961,12 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
         double leaseSecs = 0;
         double ackedSecs = 0;
         double expiresSecs = 0;
+        double lastSentSecs = 0;
+        double nextAttemptSecs = 0;
         uint64_t conversationId = 0;
         uint64_t sequence = 0;
-        bool nulls[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        MYSQL_BIND bindOut[10];
+        bool nulls[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        MYSQL_BIND bindOut[12];
         memset(bindOut, 0, sizeof(bindOut));
         bindOut[0].buffer_type = MYSQL_TYPE_LONGLONG;
         bindOut[0].is_unsigned = 1;
@@ -941,14 +995,20 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
         bindOut[7].buffer_type = MYSQL_TYPE_DOUBLE;
         bindOut[7].buffer = &expiresSecs;
         bindOut[7].is_null = &nulls[7];
-        bindOut[8].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindOut[8].is_unsigned = 1;
-        bindOut[8].buffer = &conversationId;
+        bindOut[8].buffer_type = MYSQL_TYPE_DOUBLE;
+        bindOut[8].buffer = &lastSentSecs;
         bindOut[8].is_null = &nulls[8];
-        bindOut[9].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindOut[9].is_unsigned = 1;
-        bindOut[9].buffer = &sequence;
+        bindOut[9].buffer_type = MYSQL_TYPE_DOUBLE;
+        bindOut[9].buffer = &nextAttemptSecs;
         bindOut[9].is_null = &nulls[9];
+        bindOut[10].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[10].is_unsigned = 1;
+        bindOut[10].buffer = &conversationId;
+        bindOut[10].is_null = &nulls[10];
+        bindOut[11].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[11].is_unsigned = 1;
+        bindOut[11].buffer = &sequence;
+        bindOut[11].is_null = &nulls[11];
         if (mysql_stmt_bind_result(stmt, bindOut) != 0 || mysql_stmt_store_result(stmt) != 0) {
             throwStoreError(mysql_stmt_errno(stmt), "store deliveries load result");
         }
@@ -967,10 +1027,12 @@ std::vector<Delivery> MySQLMessageStore::deliveriesWhere(MySQL& m, const std::st
             d.sequence = ConversationSequence{sequence};
             d.state = decodeState(state);
             d.attemptCount = static_cast<uint32_t>(attemptCount);
-            d.leaseOwner = decodeLeaseOwner(ownerBuf, ownerLen);
+            decodeLeaseOwner(ownerBuf, ownerLen, &d.leaseOwner, &d.leaseBootId);
             d.leaseUntilMs = nulls[5] ? 0 : secsToMs(leaseSecs);
             d.acknowledgedAtMs = nulls[6] ? 0 : secsToMs(ackedSecs);
             d.expiresAtMs = nulls[7] ? 0 : secsToMs(expiresSecs);
+            d.lastSentAtMs = nulls[8] ? 0 : secsToMs(lastSentSecs);
+            d.nextAttemptAtMs = nulls[9] ? 0 : secsToMs(nextAttemptSecs);
             out.push_back(d);
         }
     }
@@ -1014,4 +1076,117 @@ std::shared_ptr<const Message> MySQLMessageStore::findMessage(MessageId messageI
     MYSQL_BIND binds[1];
     bindU64(binds[0], &pMid);
     return loadMessage(*acq.lease.get(), "m.id=?", binds, 1);
+}
+
+// 带参 UPDATE/DELETE（LIMIT 有界），返回 affected rows；失败抛映射后的
+// MessageStoreError（与 execStmt 同风格，但需暴露影响行数）。
+static uint64_t execAffected(MySQL& m, const char* sql, MYSQL_BIND* binds, unsigned nBinds)
+{
+    MYSQL_STMT* stmt = m.prepareStatement(sql);
+    if (!stmt) {
+        throwStoreError(mysql_errno(m.getConnection()), std::string("prepare failed: ") + sql);
+    }
+    uint64_t affected = 0;
+    {
+        PreparedStatementGuard guard(stmt);
+        if (binds != nullptr && mysql_stmt_bind_param(stmt, binds) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), std::string("bind failed: ") + sql);
+        }
+        if (mysql_stmt_execute(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), std::string("stmt failed: ") + sql);
+        }
+        affected = static_cast<uint64_t>(mysql_stmt_affected_rows(stmt));
+    }
+    return affected;
+}
+
+std::vector<Delivery> MySQLMessageStore::deliveriesDueForRetry(int64_t nowMs, uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    // InFlight(1) 且 next_attempt_at <= now：一次有界查询（LIMIT）返回全部到期
+    // 重投候选，避免按活动会话逐人扫描（无界）。列顺序与 deliveriesWhere 一致。
+    int64_t nowSecs = nowMs / 1000;
+    uint64_t pLimit = limit;
+    MYSQL_BIND binds[2];
+    bindI64(binds[0], &nowSecs);
+    bindU64(binds[1], &pLimit);
+    return deliveriesWhere(*acq.lease.get(),
+        "d.state=1 AND d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= "
+        "FROM_UNIXTIME(?) LIMIT ?",
+        binds, 2);
+}
+
+// F1：DATETIME(0) 秒精度持久化（M2 ceil 写 + due 判定 floor(now_sec)>=ceil）。
+// scheduler 唤醒对齐到秒边界，避免提前 1..999ms 空转（回退 ackTimeoutMs 轮询）。
+uint32_t MySQLMessageStore::timeGranularityMs()
+{
+    return 1000;
+}
+
+uint32_t MySQLMessageStore::expireDeliveries(int64_t nowMs, uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    int64_t nowSecs = nowMs / 1000;
+    uint64_t pLimit = limit;
+    MYSQL_BIND binds[2];
+    bindI64(binds[0], &nowSecs);
+    bindU64(binds[1], &pLimit);
+    // 未确认（Pending=0/InFlight=1）且已过 expires_at → state=3（Expired），
+    // 释放 lease/重投排程；不删除（spec §3 Expired 可查询，audited cleanup 清理）。
+    return static_cast<uint32_t>(execAffected(*mysql,
+        "UPDATE MessageDelivery SET state=3, lease_owner=NULL, lease_until=NULL, "
+        "next_attempt_at=NULL, last_sent_at=NULL "
+        "WHERE state IN (0,1) AND expires_at IS NOT NULL AND expires_at < FROM_UNIXTIME(?) "
+        "LIMIT ?",
+        binds, 2));
+}
+
+uint32_t MySQLMessageStore::cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
+                                              uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    uint32_t removed = 0;
+    // acked_retention：Acknowledged(2) 且 acknowledged_at < ceil(截止/1000)。
+    // 持久化 acknowledged_at = floor(ackMs/1000)；旧 `<= floor(cutoff/1000)` 会把
+    // ackMs∈(floor(cutoff/1000)*1000, cutoff] 的行（秒截断后等于 floor 值）提前
+    // 至多 999ms 删除（不安全方向）。改 `< ceil`：绝不早删，至多晚 <1s。
+    {
+        int64_t ackedSecs = (ackedBeforeMs + 999) / 1000;
+        uint64_t pLimit = limit;
+        MYSQL_BIND binds[2];
+        bindI64(binds[0], &ackedSecs);
+        bindU64(binds[1], &pLimit);
+        removed += static_cast<uint32_t>(execAffected(*mysql,
+            "DELETE FROM MessageDelivery WHERE state=2 AND acknowledged_at IS NOT NULL "
+            "AND acknowledged_at < FROM_UNIXTIME(?) LIMIT ?",
+            binds, 2));
+    }
+    // expired_retention：Expired(3) 且 expires_at < ceil(截止/1000)。与 acked 分支
+    // 同理（旧 `<= floor` 早删至多 999ms）：改 `< ceil`，绝不早删，至多晚 <1s。
+    {
+        int64_t expiredSecs = (expiredBeforeMs + 999) / 1000;
+        uint64_t pLimit = limit;
+        MYSQL_BIND binds[2];
+        bindI64(binds[0], &expiredSecs);
+        bindU64(binds[1], &pLimit);
+        removed += static_cast<uint32_t>(execAffected(*mysql,
+            "DELETE FROM MessageDelivery WHERE state=3 AND expires_at IS NOT NULL "
+            "AND expires_at < FROM_UNIXTIME(?) LIMIT ?",
+            binds, 2));
+    }
+    return removed;
 }

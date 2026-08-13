@@ -117,3 +117,20 @@ void sessionClosedDelivery(int64_t userId, uint64_t generation);
 
 // 背压 low-water 恢复（TcpConnection pressure 回调提交；PauseProducer 不自旋）。
 void resumeDelivery(int64_t userId, uint64_t generation);
+
+// ---- P3-08 可靠消息生产接线（生命周期与参数注入；缺省 = 卡冻结值）----
+struct RetryConfig;  // 定义见 app/Config.hpp（mymuduo-safe，本头不引入领域类型）
+
+// main 在加载 AppConfig 后、首个 accept 前调用：生产可靠消息参数注入
+// （P2-09 "reliable" 段 → cfg.reliable）。未调用时 wiring 使用卡冻结默认；
+// 测试直接构造 RetryConfig 注入 ReliableMessaging，不经本入口。
+void configureReliableMessaging(const RetryConfig& cfg);
+
+// server 就绪（ChatService::bindLoop，pool 已 init、sink 已注册）后启动内部
+// scheduler（timer 驱动，幂等）。
+void startReliableMessaging();
+
+// 挂进既有 shutdown 顺序：EXECUTOR_SHUTDOWN（executor worker 已 join）之后、
+// POOL_SHUTDOWN 之前调用——scheduler 线程先于 store/pool 失效退出（有界 join）。
+// wiring 从未构造时 no-op；deadlineMs 为有界 drain 软提示。
+void stopReliableMessaging(int64_t deadlineMs);

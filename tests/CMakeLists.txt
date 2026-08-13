@@ -186,6 +186,18 @@ add_executable(DeliveryCoordinatorTest unit/DeliveryCoordinatorTest.cpp)
 target_link_libraries(DeliveryCoordinatorTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(DeliveryCoordinatorTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(DeliveryRetryTest unit/DeliveryRetryTest.cpp)
+target_link_libraries(DeliveryRetryTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(DeliveryRetryTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MessageRetentionTest unit/MessageRetentionTest.cpp)
+target_link_libraries(MessageRetentionTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MessageRetentionTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+add_executable(MySqlLeaseRoundTripTest unit/MySqlLeaseRoundTripTest.cpp)
+target_link_libraries(MySqlLeaseRoundTripTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(MySqlLeaseRoundTripTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 add_executable(SessionDeliverySinkTest
     unit/SessionDeliverySinkTest.cpp
     ${PROJECT_SOURCE_DIR}/chatserver/src/SessionDeliverySink.cpp)
@@ -248,7 +260,12 @@ add_test(NAME server-metrics
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(server-metrics PROPERTIES TIMEOUT 60 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest SessionDeliverySinkTest)
+add_test(NAME ReconnectReplayProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/reconnect_replay_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(ReconnectReplayProcess PROPERTIES TIMEOUT 180 RESOURCE_LOCK chat_server_ports)
+
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest MessageRetentionTest MySqlLeaseRoundTripTest SessionDeliverySinkTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(ReliableMessageSchemaTest)
@@ -289,4 +306,7 @@ discover_gtest(MySQLReliableMessagingTest)
 discover_gtest(MessageAcceptanceApplicationTest)
 discover_gtest(ReliableProtocolGoldenTest)
 discover_gtest(DeliveryCoordinatorTest)
+discover_gtest(DeliveryRetryTest)
+discover_gtest(MessageRetentionTest)
+discover_gtest(MySqlLeaseRoundTripTest)
 discover_gtest(SessionDeliverySinkTest)

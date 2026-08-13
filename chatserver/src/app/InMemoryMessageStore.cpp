@@ -114,3 +114,59 @@ std::shared_ptr<const Message> InMemoryMessageStore::findMessage(MessageId messa
     }
     return it->second;
 }
+
+std::vector<Delivery> InMemoryMessageStore::deliveriesDueForRetry(int64_t nowMs, uint64_t limit)
+{
+    std::vector<Delivery> due;
+    for (std::map<DeliveryKey, Delivery>::iterator it = deliveries_.begin();
+         it != deliveries_.end() && due.size() < limit; ++it) {
+        Delivery& d = it->second;
+        if (d.state == DeliveryState::InFlight && d.nextAttemptAtMs > 0 &&
+            d.nextAttemptAtMs <= nowMs) {
+            due.push_back(d);
+        }
+    }
+    return due;
+}
+
+uint32_t InMemoryMessageStore::expireDeliveries(int64_t nowMs, uint64_t limit)
+{
+    uint32_t moved = 0;
+    for (std::map<DeliveryKey, Delivery>::iterator it = deliveries_.begin();
+         it != deliveries_.end() && moved < limit; ++it) {
+        Delivery& d = it->second;
+        if (d.state != DeliveryState::Acknowledged && d.state != DeliveryState::Expired &&
+            d.expiresAtMs > 0 && nowMs > d.expiresAtMs) {
+            d.state = DeliveryState::Expired;
+            ++moved;
+        }
+    }
+    return moved;
+}
+
+uint32_t InMemoryMessageStore::cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
+                                                 uint64_t limit)
+{
+    // 与 MySQL adapter 一致：每类最多 limit 行（acked/expired 各计各的上限，
+    // 总处理 <= 2*limit，有界幂等）。
+    uint32_t removedAcked = 0;
+    uint32_t removedExpired = 0;
+    std::map<DeliveryKey, Delivery>::iterator it = deliveries_.begin();
+    while (it != deliveries_.end()) {
+        const Delivery& d = it->second;
+        const bool dueAcked = d.state == DeliveryState::Acknowledged && d.acknowledgedAtMs > 0 &&
+                              d.acknowledgedAtMs <= ackedBeforeMs;
+        const bool dueExpired = d.state == DeliveryState::Expired && d.expiresAtMs > 0 &&
+                                d.expiresAtMs <= expiredBeforeMs;
+        if (dueAcked && removedAcked < limit) {
+            it = deliveries_.erase(it);
+            ++removedAcked;
+        } else if (dueExpired && removedExpired < limit) {
+            it = deliveries_.erase(it);
+            ++removedExpired;
+        } else {
+            ++it;
+        }
+    }
+    return removedAcked + removedExpired;
+}

@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <random>
 #include <set>
 #include <vector>
 
@@ -13,18 +14,26 @@
 // 背压暂停/活动会话/legacy implicit-ack。ReliableMessaging（P3-02 冻结的对外
 // interface）持有本类并委托 acknowledge/sessionAvailable/sessionClosed/resume，
 // accept 提交后经 onAccepted 通知在线接收者立即 claim。
+// P3-08：ACK timeout 重投扫描（runRetryScan）与 backoff+jitter 排程（spec §3/§4）；
+// 参数来自注入 RetryConfig（生产默认 = 卡冻结值，测试注入小值）。
 //
 // 内联实现说明（docs/tasks/P3-07.md Diff 审查）：chatserver_core 源列表冻结
 // （任务不碰 CMakeLists，注册由编排者合并），独立 .cpp 会使本任务构建树的
 // ChatServer 与既有测试链接失败（undefined ref）——内联使任何引入本头的 TU
 // 都自带实现。
 //
-// 线程约束：与 ReliableMessaging 一致，由单一调用者串行驱动（executor 单 worker）。
+// 线程约束：与 ReliableMessaging 一致，接口由单一调用者串行驱动，P3-08 起
+// 内部 scheduler tick 与接口调用经 ReliableMessaging::mutex_ 串行化（本类无锁）。
 
 class DeliveryCoordinator {
 public:
-    DeliveryCoordinator(MessageStore& store, DeliverySink& sink, Clock& clock, uint64_t leaseMs)
-        : store_(store), sink_(sink), clock_(clock), leaseMs_(leaseMs)
+    // P3-08：bootId 为该 ReliableMessaging 实例（进程）的启动标识，由
+    // ReliableMessaging 构造时生成；claim 落 owner 时与 leaseOwner 一并持久化，
+    // 使跨进程重启后 owner 必不同（见 DomainTypes.hpp leaseBootId）。
+    DeliveryCoordinator(MessageStore& store, DeliverySink& sink, Clock& clock, uint64_t leaseMs,
+                        const RetryConfig& config, uint64_t bootId)
+        : store_(store), sink_(sink), clock_(clock), leaseMs_(leaseMs), config_(config),
+          bootId_(bootId), rng_(config.jitterSeed)
     {
     }
 
@@ -95,14 +104,17 @@ public:
         }
         // A generation change fences any InFlight claim owned by an older
         // session immediately; waiting for lease expiry would leave the new
-        // session unable to claim its Pending work.
+        // session unable to claim its Pending work.  Cross-process the boot id
+        // breaks owner-equality even when the generation counter was reset to
+        // the same value after a restart ("uid:gen" owner string collision).
         std::vector<Delivery> deliveries = store_.deliveriesByRecipient(session.userId);
         for (size_t i = 0; i < deliveries.size(); ++i) {
             Delivery& d = deliveries[i];
             if (d.state == DeliveryState::InFlight && d.leaseOwner.userId == session.userId &&
-                d.leaseOwner != session) {
+                !(d.leaseOwner == session && d.leaseBootId == bootId_)) {
                 d.state = DeliveryState::Pending;
                 d.leaseOwner = SessionIdentity();
+                d.leaseBootId = 0;
                 d.leaseUntilMs = 0;
                 store_.updateDelivery(d);
             }
@@ -129,6 +141,7 @@ public:
             if (d.state == DeliveryState::InFlight && d.leaseOwner == session) {
                 d.state = DeliveryState::Pending;
                 d.leaseOwner = SessionIdentity();
+                d.leaseBootId = 0;
                 d.leaseUntilMs = 0;
                 store_.updateDelivery(d);
             }
@@ -171,7 +184,90 @@ public:
         }
     }
 
+    // P3-08 内部 seam（非 P3-02 契约）：到期重投扫描——只处理活动会话的到期
+    // InFlight（offline 不消耗重试额度、Paused 跳过）。next_attempt_at<=now 的
+    // InFlight 回 Pending 并立即 claimFor 重投同一 MessageId（attempt+1，HOL 保持）。
+    // 批次有界：store 侧一次 LIMIT 查询返回到期候选（config_.retryBatchLimit 行/轮），
+    // 不按活动会话逐人扫描（避免 O(activeSessions) 查询风暴）。幂等：重复扫描无副作用。
+    // 返回本扫描重投行新写入的 nextAttemptAtMs（供 scheduler 计算下一唤醒间隔，
+    // 补缺轮 M1）；空 = 本 tick 无重投，调用方按 ackTimeoutMs 轮询。
+    std::vector<int64_t> runRetryScan(int64_t now)
+    {
+        tickNextAttemptsMs_.clear();
+        std::vector<Delivery> due = store_.deliveriesDueForRetry(now, config_.retryBatchLimit);
+        if (due.empty()) {
+            return std::vector<int64_t>();
+        }
+        std::set<SessionIdentity> toClaim;
+        for (size_t i = 0; i < due.size(); ++i) {
+            const Delivery& d = due[i];
+            // 只回滚活动且未暂停会话名下的 InFlight（offline 不消耗额度；
+            // 他人 lease 不触碰；generation fencing 已由 sessionAvailable 处理）。
+            std::map<UserId, SessionIdentity>::iterator active =
+                activeByUser_.find(d.recipient);
+            if (active == activeByUser_.end()) {
+                continue;  // 离线：不消耗重试额度，等重连立即 claim
+            }
+            if (paused_.count(active->second) != 0) {
+                continue;  // 背压暂停：不自旋，等 low-water resume
+            }
+            if (!(d.leaseOwner == active->second)) {
+                continue;  // 本会话不拥有该 lease（不重领他人 Delivery）
+            }
+            Delivery copy = d;
+            copy.state = DeliveryState::Pending;
+            copy.leaseOwner = SessionIdentity();
+            copy.leaseBootId = 0;
+            copy.leaseUntilMs = 0;
+            store_.updateDelivery(copy);
+            toClaim.insert(active->second);
+        }
+        // 立即重投到期头；同 conversation 前序未确认不越序（HOL 由 claimFor 保持）。
+        for (std::set<SessionIdentity>::iterator it = toClaim.begin(); it != toClaim.end(); ++it) {
+            claimFor(*it);
+        }
+        return tickNextAttemptsMs_;
+    }
+
 private:
+    // P3-08 backoff（卡冻结公式）：min(base * 乘子^(attempt-1), cap)，±jitterFraction
+    // 均匀分布（测试注入 jitter=0 时精确为 base*乘子^(n-1)）。attempt 为 1 基。
+    int64_t backoffMs(uint32_t attempt) const
+    {
+        int64_t delay = config_.backoffBaseMs;
+        for (uint32_t i = 1; i < attempt && delay < config_.backoffCapMs; ++i) {
+            // 饱和乘算：delay 已超过 cap/乘子 时，本次与后续乘算必超 cap（且可能
+            // int64 溢出 = UB），直接取 cap 退出（行为与"乘完再封顶"一致，方向安全）。
+            if (config_.backoffMultiplier > 1 &&
+                delay > config_.backoffCapMs / config_.backoffMultiplier) {
+                delay = config_.backoffCapMs;
+                break;
+            }
+            delay *= config_.backoffMultiplier;
+        }
+        if (delay > config_.backoffCapMs) {
+            delay = config_.backoffCapMs;
+        }
+        if (config_.jitterFraction > 0.0 && delay > 1) {
+            std::uniform_real_distribution<double> dist(-config_.jitterFraction,
+                                                        config_.jitterFraction);
+            const double f = 1.0 + dist(rng_);
+            delay = static_cast<int64_t>(static_cast<double>(delay) * f);
+            if (delay < 1) {
+                delay = 1;
+            }
+        }
+        return delay;
+    }
+
+    // 一次 attempt 后的重投间隔：max(ack_timeout, backoff)——ack_timeout 保证
+    // 接收端有展示+ACK 时间（spec §4），backoff 增长后接管退避。
+    int64_t retryDelayMs(uint32_t attempt) const
+    {
+        const int64_t backoff = backoffMs(attempt);
+        return backoff > config_.ackTimeoutMs ? backoff : config_.ackTimeoutMs;
+    }
+
     // 单在途 head-of-line claim：每 (recipient, conversation) 至多一个未确认
     // sequence；只有 sink 返回 Accepted 才落 InFlight+lease+attempt（spec §3：
     // socket 准入成功才转 InFlight；Closed 保留 Pending；Paused 暂停不自旋）。
@@ -247,14 +343,23 @@ private:
                     // 准入成功才落状态（claim token = lease_owner/lease_until）。
                     head->state = DeliveryState::InFlight;
                     head->leaseOwner = session;
+                    head->leaseBootId = bootId_;
                     head->leaseUntilMs = now + static_cast<int64_t>(leaseMs_);
                     head->attemptCount += 1;
+                    // P3-08：记录 ACK timeout 排程——下次允许重投时刻 =
+                    // 本次投递 + max(ack_timeout, backoff(attemptCount))。
+                    head->lastSentAtMs = now;
+                    head->nextAttemptAtMs = now + retryDelayMs(head->attemptCount);
                     if (isLegacyClientMessageId(headMessage->command.clientMessageId.value())) {
                         // legacy implicit-ack（spec §5.1，P3-07 冻结决策 2）：
                         // socket 准入后即视为已确认，不进入 ACK timeout/重投循环；
                         // 同 conversation 链式放行下一 sequence。
                         head->state = DeliveryState::Acknowledged;
                         head->acknowledgedAtMs = now;
+                    } else {
+                        // 补缺轮 M1：记录本 tick 重投行的新 nextAttemptAtMs，
+                        // 供 runRetryScan 返回给 scheduler 计算下一唤醒间隔。
+                        tickNextAttemptsMs_.push_back(head->nextAttemptAtMs);
                     }
                     store_.updateDelivery(*head);
                     continue;
@@ -272,10 +377,18 @@ private:
     DeliverySink& sink_;
     Clock& clock_;
     uint64_t leaseMs_;
+    RetryConfig config_;          // P3-08 重试/保留参数（生产默认 = 卡冻结值）
+    uint64_t bootId_;             // P3-08 进程实例标识（ReliableMessaging 构造时生成）
+    mutable std::mt19937 rng_;    // jitter 随机源（注入 seed 确定性测试）
     std::set<SessionIdentity> paused_;                     // 背压暂停的 Session（low-water 解除）
     std::map<UserId, SessionIdentity> activeByUser_;       // 上线 Session（在线投递寻址）
     // Highest Session generation observed for each user. It is intentionally
     // retained after close so delayed older events/ACKs remain fenced; users
     // with no entry preserve ACK-before-delivery compatibility.
     std::map<UserId, uint64_t> observedGenerationByUser_;
+    // 补缺轮 M1：本 tick（runRetryScan）重投行新写入的 nextAttemptAtMs，供
+    // scheduler 计算下一唤醒间隔（claimFor 在落 InFlight 时填充；runRetryScan
+    // 起始清空、结束返回）。非 tick 路径的 claimFor 填充会在下一次 runRetryScan
+    // 被清空，不污染唤醒计算。
+    std::vector<int64_t> tickNextAttemptsMs_;
 };

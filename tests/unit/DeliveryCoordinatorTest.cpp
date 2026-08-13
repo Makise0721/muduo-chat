@@ -530,6 +530,43 @@ TEST(DeliveryCoordinatorTest, StaleResumeCannotReclaimOrRebindNewGeneration)
               h.rm.acknowledge(SessionIdentity{kBob, 2}, first.messageId).result);
 }
 
+// P3-08 跨进程重启 owner 碰撞 RED：模拟服务 kill 后重启（无 sessionClosed 清理），
+// 新 coordinator 实例看到与自身完全相同的 (uid, gen) 的未到期 InFlight lease。
+// 现状（MySQL 侧 lease_owner 仅编 "uid:gen"，跨进程生成代重置后字符串相同）：
+// sessionAvailable 的 generation-fencing 判定 `d.leaseOwner != session` 为假，
+// 不会立即回收，HOL 被卡到 lease 到期。期望：进程实例标识使跨进程 owner 必不同，
+// 重启后立即重领（不等 lease 到期、不等 ack-timeout）。时钟只前进 50ms
+// （< ack_timeout、<< lease），排除 runRetryScan / lease 到期路径（RED 依据）。
+TEST(DeliveryCoordinatorTest, RestartWithSameGenerationReclaimsStaleLease)
+{
+    FakeClock clock;
+    InMemoryMessageStore store;
+    ScriptedDeliverySink sink;
+    clock.set(kNow);
+
+    // Process A: {bob,1} claims the delivery, then crashes (no sessionClosed).
+    AcceptOutcome a;
+    {
+        ReliableMessaging rmA(store, sink, clock, kLeaseMs);
+        a = rmA.accept(SessionIdentity{kAlice, 1}, directTo(kBob, "m1", "hello"));
+        ASSERT_TRUE(a.ok);
+        rmA.sessionAvailable(SessionIdentity{kBob, 1});
+        ASSERT_EQ(1u, sink.attempts().size());
+        EXPECT_EQ(1u, sink.attempts()[0].attemptNumber);
+    }
+
+    // Restart: a fresh coordinator instance observes the same uid:gen {bob,1}.
+    // Lease not expired and ack-timeout not elapsed; only the stale owner
+    // (identical "uid:gen" across processes) would block immediate reclaim.
+    clock.advance(50);
+    ReliableMessaging rmB(store, sink, clock, kLeaseMs);
+    rmB.sessionAvailable(SessionIdentity{kBob, 1});
+    ASSERT_EQ(2u, sink.attempts().size());  // RED: stuck at 1 until lease expiry
+    EXPECT_EQ(a.messageId.value, sink.attempts()[1].messageId.value);
+    EXPECT_EQ(2u, sink.attempts()[1].attemptNumber);
+    rmB.stop(0);
+}
+
 TEST(DeliveryCoordinatorTest, ResumeAfterClosedSessionCannotClaimWithoutActiveSession)
 {
     Harness h;

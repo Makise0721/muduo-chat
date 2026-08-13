@@ -20,6 +20,10 @@ public:
     std::vector<Delivery> deliveriesByRecipient(UserId recipient) override;
     std::vector<Delivery> deliveriesByMessage(MessageId messageId) override;
     std::shared_ptr<const Message> findMessage(MessageId messageId) override;
+    std::vector<Delivery> deliveriesDueForRetry(int64_t nowMs, uint64_t limit) override;
+    uint32_t expireDeliveries(int64_t nowMs, uint64_t limit) override;
+    uint32_t cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
+                               uint64_t limit) override;
 
 private:
     struct DeliveryKey {

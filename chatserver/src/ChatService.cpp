@@ -170,6 +170,10 @@ void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQue
     // 单 worker：同一连接的串行依赖（如 addFriend 后立即重复 add）按提交顺序
     // 执行；多 worker 会乱序破坏业务语义（P2-10 性能评估后再分片扩并）。
     _executor.reset(new BlockingExecutor(loop, executorWorkers, executorQueueCapacity));
+    // P3-08：server 就绪（pool 已 init、sink 已绑定）后启动可靠消息内部
+    // scheduler（timer 驱动、幂等）；stop 在 shutdownApp（EXECUTOR_SHUTDOWN 后、
+    // POOL_SHUTDOWN 前）有界 join。
+    startReliableMessaging();
 }
 
 void ChatService::shutdownApp()
@@ -177,6 +181,10 @@ void ChatService::shutdownApp()
     if (_executor) {
         _executor->shutdown();
     }
+    // P3-08：scheduler 线程先于 ConnectionPool 失效退出（有界 join；wiring 未
+    // 构造时 no-op）。顺序：EXECUTOR_SHUTDOWN → MESSAGING_STOP → POOL_SHUTDOWN。
+    std::cout << "MESSAGING_STOP" << std::endl;
+    stopReliableMessaging(5000);
 }
 
 int ChatService::executorQueueDepth() const
@@ -364,6 +372,9 @@ void ChatService::deliveryAck(const TcpConnectionPtr& conn, json& js, Timestamp 
         return;
     }
     const uint64_t messageId = js.at("message_id").get<uint64_t>();
+    // P3-08 冻结策略（docs/tasks/P3-08.md rejection carryover）：submit 被拒
+    // （RejectedFull/RejectedShutdown）= 丢弃，等价 ACK 丢失——P3-08 ack-timeout
+    // 对同一 MessageId 重投即恢复路径，客户端按 message_id 去重；不主动重试。
     _executor->submit(
         [session, messageId] {
             acknowledgeDelivery(session.userId, static_cast<uint64_t>(session.generation),
@@ -393,6 +404,10 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
         _app.beginSessionAttempt(userid);
     }
     if (bs.userId != 0 && _executor) {
+        // P3-08 冻结策略（docs/tasks/P3-08.md rejection carryover）：submit 被拒
+        // （RejectedFull/RejectedShutdown）= 不新增立即动作——名下 InFlight 保持，
+        // 由 scheduler 在 lease 到期后回退 Pending（等待重连 claim），与 P3-07
+        // 已闭合的 sessionAvailable/pressure resume 拒绝策略对称。
         _executor->submit(
             [bs] {
                 sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));
@@ -638,6 +653,10 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
     int64_t userid = _sessions.unbind(conn);
 
     if (bs.userId != 0 && _executor) {
+        // P3-08 冻结策略（docs/tasks/P3-08.md rejection carryover）：submit 被拒
+        // （RejectedFull/RejectedShutdown）= 不新增立即动作——名下 InFlight 保持，
+        // 由 scheduler 在 lease 到期后回退 Pending（等待重连 claim），与 P3-07
+        // 已闭合的 sessionAvailable/pressure resume 拒绝策略对称。
         _executor->submit(
             [bs] {
                 sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));

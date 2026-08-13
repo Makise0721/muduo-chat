@@ -55,6 +55,66 @@ bool getIntMin1(const json& obj, const std::string& key, int* out,
     return true;
 }
 
+// P3-08 正整数 int64（毫秒/期限等）。uint64 上限以 LLONG_MAX 收口，避免负数。
+bool getInt64Positive(const json& obj, const std::string& key, int64_t* out,
+                      std::vector<FieldError>* errors, const std::string& path)
+{
+    if (!obj.contains(key)) {
+        return true;
+    }
+    if (!obj[key].is_number_integer()) {
+        errors->push_back({path + key, "must be an integer"});
+        return false;
+    }
+    long long v = obj[key].get<long long>();
+    if (v < 1) {
+        errors->push_back({path + key, "must be >= 1"});
+        return false;
+    }
+    *out = static_cast<int64_t>(v);
+    return true;
+}
+
+// P3-08 正整数 uint32（batch/limit）。
+bool getUint32Positive(const json& obj, const std::string& key, uint32_t* out,
+                       std::vector<FieldError>* errors, const std::string& path)
+{
+    if (!obj.contains(key)) {
+        return true;
+    }
+    if (!obj[key].is_number_integer()) {
+        errors->push_back({path + key, "must be an integer"});
+        return false;
+    }
+    long long v = obj[key].get<long long>();
+    if (v < 1 || v > 4294967295LL) {
+        errors->push_back({path + key, "must be in [1,4294967295]"});
+        return false;
+    }
+    *out = static_cast<uint32_t>(v);
+    return true;
+}
+
+// P3-08 jitter 比例：[0,1]。
+bool getJitterFraction(const json& obj, const std::string& key, double* out,
+                       std::vector<FieldError>* errors, const std::string& path)
+{
+    if (!obj.contains(key)) {
+        return true;
+    }
+    if (!obj[key].is_number()) {
+        errors->push_back({path + key, "must be a number"});
+        return false;
+    }
+    double v = obj[key].get<double>();
+    if (v < 0.0 || v > 1.0) {
+        errors->push_back({path + key, "must be in [0,1]"});
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
 bool getNonEmptyString(const json& obj, const std::string& key, std::string* out,
                        std::vector<FieldError>* errors, const std::string& path)
 {
@@ -167,6 +227,50 @@ bool parseExecutorSection(const json& executor, AppConfig* out,
     return ok;
 }
 
+// P3-08 可靠消息参数（字段与 RetryConfig 一一对应；缺失保持卡冻结默认）。
+bool parseReliableSection(const json& reliable, AppConfig* out,
+                          std::vector<FieldError>* errors)
+{
+    checkKnownFields(reliable,
+                     {"ack_timeout_ms", "backoff_base_ms", "backoff_cap_ms",
+                      "backoff_multiplier", "jitter_fraction", "jitter_seed",
+                      "message_retention_ms", "acked_retention_ms", "expired_retention_ms",
+                      "cleanup_batch", "cleanup_cycle_ms", "retry_batch_limit"},
+                     errors, "reliable.");
+    bool ok = true;
+    ok = getInt64Positive(reliable, "ack_timeout_ms", &out->reliable.ackTimeoutMs,
+                          errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "backoff_base_ms", &out->reliable.backoffBaseMs,
+                          errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "backoff_cap_ms", &out->reliable.backoffCapMs,
+                          errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "backoff_multiplier", &out->reliable.backoffMultiplier,
+                          errors, "reliable.") && ok;
+    ok = getJitterFraction(reliable, "jitter_fraction", &out->reliable.jitterFraction,
+                           errors, "reliable.") && ok;
+    {
+        uint32_t jitterSeed = 0;
+        if (getUint32Positive(reliable, "jitter_seed", &jitterSeed, errors, "reliable.")) {
+            out->reliable.jitterSeed = jitterSeed;
+        } else {
+            ok = false;
+        }
+    }
+    ok = getInt64Positive(reliable, "message_retention_ms",
+                          &out->reliable.messageRetentionMs, errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "acked_retention_ms", &out->reliable.ackedRetentionMs,
+                          errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "expired_retention_ms", &out->reliable.expiredRetentionMs,
+                          errors, "reliable.") && ok;
+    ok = getUint32Positive(reliable, "cleanup_batch", &out->reliable.cleanupBatch,
+                           errors, "reliable.") && ok;
+    ok = getInt64Positive(reliable, "cleanup_cycle_ms", &out->reliable.cleanupCycleMs,
+                          errors, "reliable.") && ok;
+    ok = getUint32Positive(reliable, "retry_batch_limit", &out->reliable.retryBatchLimit,
+                           errors, "reliable.") && ok;
+    return ok;
+}
+
 } // namespace
 
 namespace config {
@@ -194,7 +298,7 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
     }
 
     std::vector<FieldError> errors;
-    checkKnownFields(root, {"server", "db", "executor"}, &errors, "");
+    checkKnownFields(root, {"server", "db", "executor", "reliable"}, &errors, "");
 
     if (root.contains("server")) {
         if (!root["server"].is_object()) {
@@ -215,6 +319,13 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
             errors.push_back({"executor", "must be an object"});
         } else {
             parseExecutorSection(root["executor"], out, &errors);
+        }
+    }
+    if (root.contains("reliable")) {
+        if (!root["reliable"].is_object()) {
+            errors.push_back({"reliable", "must be an object"});
+        } else {
+            parseReliableSection(root["reliable"], out, &errors);
         }
     }
 

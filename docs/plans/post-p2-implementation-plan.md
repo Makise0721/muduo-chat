@@ -4,7 +4,7 @@
 
 计划基线：`main` @ `2e2a7f9`
 
-状态：`READY_FOR_P3-08`（P3-00..P3-07 已 VERIFIED；P3-08 待开卡）
+状态：`READY_FOR_P3-09`（P3-00..P3-08 已 VERIFIED；P3-09 待开卡）
 
 关键输入：
 
@@ -223,7 +223,7 @@ flowchart TD
 - 初始参数：任务卡在 RED 前记录 ack timeout、backoff cap、message retention 和 cleanup batch；正式值须由 fault test/负载报告支持，不把测试小值带入生产。
 - 验证命令：`ctest --test-dir /tmp/muduo-chat-build/debug -R 'DeliveryRetry|ReconnectReplay|MessageRetention' --output-on-failure`；kill/restart process test。
 - 完成定义：当前 `takeOffline` 读删流程已不在新路径；重试任务有界、退出可 drain/cancel；过期可查询而非静默丢失。
-- 提交边界：retry/reconnect 与 retention 分两个提交，分别建议 `feat(message): retry unacknowledged deliveries`、`feat(message): expire and retain delivery records`。
+- 提交边界：retry/reconnect 与 retention 分两个提交，分别建议 `feat(message): retry unacknowledged deliveries`、`feat(message): expire and retain delivery records`。2026-08-13 复审修订：retry 与 retention 共享 scheduler 线程/runTick/RetryConfig/store 四虚方法/双 adapter/混合测试用例，无法 `git add -p` 干净切分，切分会制造无法独立编译的中间态，改为**单一原子提交**，消息 `feat(message): retry unacknowledged deliveries and retain records`（详见 docs/tasks/P3-08.md Commit 节）。
 
 ### P3-09 让 Outbox 在单机路径真实工作
 

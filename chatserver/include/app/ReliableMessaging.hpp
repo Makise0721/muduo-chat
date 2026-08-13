@@ -1,8 +1,14 @@
 #pragma once
 
+#include "app/Config.hpp"       // P3-08 冻结参数 RetryConfig（生产 config 注入，默认=卡冻结值）
 #include "app/DomainTypes.hpp"
 
+#include <condition_variable>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 // P3-02 可靠消息模块：领域值类型见 app/DomainTypes.hpp（本头保持 mymuduo-safe：
 // 只前向声明 class Clock——mymuduo TimerQueue.h 的全局 `using Clock` 与领域
@@ -16,15 +22,45 @@ class MessageStore;
 class DeliverySink;
 class DeliveryCoordinator;
 
+// P3-08 补缺轮 M1：scheduler 下一次唤醒间隔。固定 ack_timeout(30s) 轮询使
+// attempt<6 的 backoff（base*2^n，均 < 30s）因轮询粒度不可观测；改为取"本 tick
+// 触碰行中最早的 nextAttemptAtMs"与 ackTimeoutMs 的 min 作为下次唤醒间隔——
+// backoff 早于 30s 时被精确唤醒，晚于 backoff 是 at-least-once 允许的容差（方向
+// 安全）。纯函数（可单测）：nowMs 之后最早需要再次扫描的毫秒数（>=1；无触碰行
+// 时按 ackTimeoutMs 轮询）。
+inline int64_t computeNextWakeMs(int64_t nowMs, int64_t ackTimeoutMs,
+                                 const std::vector<int64_t>& nextAttemptAtMs)
+{
+    int64_t wakeMs = ackTimeoutMs;
+    for (size_t i = 0; i < nextAttemptAtMs.size(); ++i) {
+        int64_t remain = nextAttemptAtMs[i] - nowMs;
+        if (remain < 1) {
+            remain = 1;  // 已到期行按 1ms 最小唤醒（避免零等待自旋）
+        }
+        if (remain < wakeMs) {
+            wakeMs = remain;
+        }
+    }
+    if (wakeMs < 1) {
+        wakeMs = 1;
+    }
+    return wakeMs;
+}
+
 // P3 深模块（计划 §3）：网络层只学习 accept/acknowledge/sessionAvailable/sessionClosed，
 // 重试、租约、Conversation 分配、幂等与状态机全部在模块内部（P3-07 起
 // claim/lease/ACK/背压状态机委托给 DeliveryCoordinator）。
 // 同一实现将以 MySQL MessageStore 复用（P3-04），测试只穿过本 interface。
-// 线程约束：实例须由单一调用者串行驱动（P3-05 接入后为 SessionSerialExecutor 或等价串行执行器）；
-// 接口内部非原子（读-改-写），并发调用未定义行为。
+// 线程约束：P3-07 起由单一调用者串行驱动（executor 单 worker）；P3-08 引入
+// 内部有界 batch scheduler（单后台线程），接口调用与 scheduler tick 经内部
+// 互斥串行化（接口仍满足"同一时刻至多一个调用者在接口上"，scheduler 只做
+// 幂等的到期重投/过期/清理扫描）。
 class ReliableMessaging {
 public:
     ReliableMessaging(MessageStore& store, DeliverySink& sink, Clock& clock, uint64_t leaseMs);
+    // P3-08：注入重试/保留参数（测试用）；生产经 AppConfig 注入，默认 = 冻结值。
+    ReliableMessaging(MessageStore& store, DeliverySink& sink, Clock& clock, uint64_t leaseMs,
+                      const RetryConfig& config);
     ReliableMessaging(const ReliableMessaging&) = delete;
     ReliableMessaging& operator=(const ReliableMessaging&) = delete;
     ~ReliableMessaging();
@@ -52,10 +88,33 @@ public:
 
     void start();
 
-    // in-memory 无后台任务，stop 为空操作；P3-08 引入 timer 后有界退出。
+    // P3-08：有界退出——通知 scheduler 线程后 join（tick 批次有界，drain 有界）；
+    // stop 幂等，重复调用直接返回。
     void stop(int64_t deadlineMs);
 
 private:
+    // P3-08 内部有界 batch scheduler：单后台线程，timer 驱动（注入 Clock 计算
+    // 下一到期时刻），接口调用与 scheduler tick 经 mutex_ 串行化。
+    // runTick：到期重投 + 过期转移 + retention cleanup（幂等、批次有界）。
+    // 内部 seam（scheduler 与 sessionAvailable 触发），须在持 mutex_ 时调用。
+    void schedulerLoop();
+
     MessageStore& store_;  // accept 直用；claim/ack 委托给 coordinator_（共享同一 store）
+    Clock& clock_;
     std::unique_ptr<DeliveryCoordinator> coordinator_;
+    RetryConfig config_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::thread schedulerThread_;
+    bool running_ = false;        // start() 后 true，stop() 后 false（幂等 gate）
+    bool stopRequested_ = false;  // scheduler 退出标志
+    int64_t lastCleanupMs_ = 0;   // 上次 retention cleanup 时刻（周期扫描）
+
+public:
+    // 内部 seam（非 P3-02 契约）：单轮到期扫描（重投/过期/清理）。接口触发路径
+    // （sessionAvailable 等）也驱动一次扫描（幂等）；生产另有 scheduler 定时驱动；
+    // 调用方须与其它 RM 调用串行化（内部均持锁）。返回下次唤醒间隔毫秒数
+    // （computeNextWakeMs 语义；schedulerLoop 使用，sessionAvailable 触发路径忽略）。
+    // 测试经 sessionAvailable 驱动，不直接调用。
+    int64_t runTick();
 };

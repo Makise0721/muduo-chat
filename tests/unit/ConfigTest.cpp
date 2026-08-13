@@ -44,6 +44,19 @@ TEST_F(ConfigTest, Defaults)
     EXPECT_EQ(cfg.db.poolSize, 5);
     EXPECT_EQ(cfg.executor.workers, 1);
     EXPECT_EQ(cfg.executor.queueCapacity, 64);
+    // P3-08：reliable 生产默认 = 卡冻结值（测试小值绝不成为生产默认）。
+    EXPECT_EQ(cfg.reliable.ackTimeoutMs, 30000);
+    EXPECT_EQ(cfg.reliable.backoffBaseMs, 1000);
+    EXPECT_EQ(cfg.reliable.backoffCapMs, 60000);
+    EXPECT_EQ(cfg.reliable.backoffMultiplier, 2);
+    EXPECT_DOUBLE_EQ(cfg.reliable.jitterFraction, 0.2);
+    EXPECT_EQ(cfg.reliable.jitterSeed, 20260813u);
+    EXPECT_EQ(cfg.reliable.messageRetentionMs, 7LL * 24 * 3600 * 1000);
+    EXPECT_EQ(cfg.reliable.ackedRetentionMs, 24LL * 3600 * 1000);
+    EXPECT_EQ(cfg.reliable.expiredRetentionMs, 24LL * 3600 * 1000);
+    EXPECT_EQ(cfg.reliable.cleanupBatch, 100u);
+    EXPECT_EQ(cfg.reliable.cleanupCycleMs, 60LL * 1000);
+    EXPECT_EQ(cfg.reliable.retryBatchLimit, 500u);
 }
 
 TEST_F(ConfigTest, FullFileOverridesAll)
@@ -71,6 +84,44 @@ TEST_F(ConfigTest, FullFileOverridesAll)
     // 验证"显式写 1 合法"；queue_capacity 仍可被覆盖。
     EXPECT_EQ(cfg.executor.workers, 1);
     EXPECT_EQ(cfg.executor.queueCapacity, 128);
+    std::remove(path.c_str());
+}
+
+TEST_F(ConfigTest, ReliableSectionOverrides)
+{
+    std::string path = writeTempFile(
+        "{\"reliable\":{\"ack_timeout_ms\":500,\"backoff_base_ms\":50,"
+        "\"backoff_cap_ms\":2000,\"backoff_multiplier\":3,\"jitter_fraction\":0.1,"
+        "\"jitter_seed\":7,\"message_retention_ms\":60000,\"acked_retention_ms\":5000,"
+        "\"expired_retention_ms\":4000,\"cleanup_batch\":5,\"cleanup_cycle_ms\":1000,"
+        "\"retry_batch_limit\":10}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.reliable.ackTimeoutMs, 500);
+    EXPECT_EQ(cfg.reliable.backoffBaseMs, 50);
+    EXPECT_EQ(cfg.reliable.backoffCapMs, 2000);
+    EXPECT_EQ(cfg.reliable.backoffMultiplier, 3);
+    EXPECT_DOUBLE_EQ(cfg.reliable.jitterFraction, 0.1);
+    EXPECT_EQ(cfg.reliable.jitterSeed, 7u);
+    EXPECT_EQ(cfg.reliable.messageRetentionMs, 60000);
+    EXPECT_EQ(cfg.reliable.ackedRetentionMs, 5000);
+    EXPECT_EQ(cfg.reliable.expiredRetentionMs, 4000);
+    EXPECT_EQ(cfg.reliable.cleanupBatch, 5u);
+    EXPECT_EQ(cfg.reliable.cleanupCycleMs, 1000);
+    EXPECT_EQ(cfg.reliable.retryBatchLimit, 10u);
+    std::remove(path.c_str());
+}
+
+TEST_F(ConfigTest, ReliablePartialKeepsFrozenDefaults)
+{
+    std::string path = writeTempFile("{\"reliable\":{\"ack_timeout_ms\":100}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.reliable.ackTimeoutMs, 100);
+    EXPECT_EQ(cfg.reliable.backoffBaseMs, 1000);  // 缺失字段保持卡冻结默认
+    EXPECT_EQ(cfg.reliable.messageRetentionMs, 7LL * 24 * 3600 * 1000);
     std::remove(path.c_str());
 }
 
@@ -144,6 +195,16 @@ TEST_F(ConfigTest, FailFastMatrix)
         {"{\"server\":{\"v1\":{\"port\":6000},\"v2\":{\"port\":6000}}}", "port"},
         {"{\"executor\":{\"workers\":4294967296}}", "executor.workers"},
         {"{\"db\":{\"pool_size\":4294967296}}", "db.pool_size"},
+        // P3-08 reliable 段校验（类型/范围/未知字段/非对象）。
+        {"{\"reliable\":{\"ack_timeout_ms\":0}}", "reliable.ack_timeout_ms"},
+        {"{\"reliable\":{\"ack_timeout_ms\":-5}}", "reliable.ack_timeout_ms"},
+        {"{\"reliable\":{\"ack_timeout_ms\":\"100\"}}", "reliable.ack_timeout_ms"},
+        {"{\"reliable\":{\"jitter_fraction\":1.5}}", "reliable.jitter_fraction"},
+        {"{\"reliable\":{\"jitter_fraction\":-0.1}}", "reliable.jitter_fraction"},
+        {"{\"reliable\":{\"cleanup_batch\":0}}", "reliable.cleanup_batch"},
+        {"{\"reliable\":{\"retry_batch_limit\":4294967296}}", "reliable.retry_batch_limit"},
+        {"{\"reliable\":{\"unknown_field\":1}}", "reliable.unknown_field"},
+        {"{\"reliable\":5}", "reliable"},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         std::string path = writeTempFile(cases[i].json);

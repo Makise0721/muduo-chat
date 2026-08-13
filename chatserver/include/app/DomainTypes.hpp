@@ -241,8 +241,21 @@ struct Delivery {
     UserId recipient;
     DeliveryState state = DeliveryState::Pending;
     SessionIdentity leaseOwner;  // 当前 lease 持有者（Pending 时为默认值）
+    // P3-08 进程实例标识（boot id）：ReliableMessaging 构造时生成，claim 时与
+    // leaseOwner 一并写入并持久化（MySQL lease_owner 列编 "uid:gen:bootid"）。
+    // 跨进程重启后 generation 重置可能使新 owner 字符串与旧行相同（"uid:gen"）；
+    // boot id 保证跨进程 owner 必不同，同进程同代匹配仍精确（P3-07 C fencing
+    // 不失效，重启后新 Session 可立即重领自己名下 Pending，不等 lease 到期）。
+    uint64_t leaseBootId = 0;
     int64_t leaseUntilMs = 0;
     uint32_t attemptCount = 0;
     int64_t acknowledgedAtMs = 0;
     int64_t expiresAtMs = 0;
+    // P3-08：ACK timeout 扫描用（spec §3/§4）。lastSentAtMs = 最近一次
+    // DeliveryAttempt 的准入时刻；nextAttemptAtMs = 该次投递后下一次允许重投的
+    // 最早时刻（= lastSentAtMs + max(ack_timeout, backoff)），由协调器在 claim
+    // 落 InFlight 时推进；0 = 从未投递/未排程（此时不参与 ack-timeout 扫描，
+    // 由 claim/lease 路径处理）。
+    int64_t lastSentAtMs = 0;
+    int64_t nextAttemptAtMs = 0;
 };
