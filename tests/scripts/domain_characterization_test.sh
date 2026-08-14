@@ -3,6 +3,7 @@
 # hardcoded on 7000) against a dedicated migrated schema (chat_p306) and run the
 # full use-case matrix over both protocols, asserting v1/v2 agree
 # (see docs/specs/domain-behavior-matrix.md).
+# P3-11: EXECUTOR_WORKERS env (default 1) injects executor workers into the server config.
 # P3-06: matrix asserts durable accept semantics (MESSAGE_ACCEPTED msgid=11、
 # 稳定错误码 101..107、幂等重试) which require the ledger tables — the harness
 # recreates and migrates chat_p306 (dbmigrate) before starting the server.
@@ -45,7 +46,7 @@ cat >"$WORK/server.json" <<EOF
 "v2":{"port":7000}},
 "db":{"host":"127.0.0.1","port":3306,"user":"root",
 "password":"$DB_PASSWORD","dbname":"chat_p306","pool_size":4},
-"executor":{"workers":1,"queue_capacity":32}}
+"executor":{"workers":${EXECUTOR_WORKERS:-1},"queue_capacity":32}}
 EOF
 
 setarch x86_64 -R "$SERVER_BIN" 127.0.0.1 6000 --config "$WORK/server.json" >"$LOG" 2>&1 &

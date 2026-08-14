@@ -3,6 +3,7 @@
 # 7000) against a dedicated migrated schema (chat_p307) and run the delivery +
 # client-ACK matrix (online HOL/ACK release, duplicate ACK, disconnect replay,
 # foreign ACK, offline login claim, legacy implicit-ack).
+# P3-11: EXECUTOR_WORKERS env (default 1) injects executor workers into the server config.
 set -u
 
 SERVER_BIN="$1"
@@ -40,7 +41,7 @@ cat >"$WORK/server.json" <<EOF
 "v2":{"port":7000}},
 "db":{"host":"127.0.0.1","port":3306,"user":"root",
 "password":"$DB_PASSWORD","dbname":"chat_p307","pool_size":4},
-"executor":{"workers":1,"queue_capacity":32}}
+"executor":{"workers":${EXECUTOR_WORKERS:-1},"queue_capacity":32}}
 EOF
 
 setarch x86_64 -R "$SERVER_BIN" 127.0.0.1 6000 --config "$WORK/server.json" >"$LOG" 2>&1 &

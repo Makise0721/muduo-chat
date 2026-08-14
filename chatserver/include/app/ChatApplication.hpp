@@ -4,6 +4,7 @@
 #include "app/FriendRepository.hpp"
 #include "app/GroupRepository.hpp"
 #include "app/Reply.hpp"
+#include "app/SessionRegistry.hpp"
 #include "app/UserRepository.hpp"
 
 #include <cstdint>
@@ -32,6 +33,13 @@ public:
     // 供阻塞 executor 的 worker 线程调用的用例操作（内部走 repository）。
     AuthResult authenticate(int64_t userId, const std::string& password);
     bool updateUserState(int64_t userId, UserState state);
+
+    // P3-11 M2：Offline 状态写入守卫。跨代 lane 并行下（keyed executor 多
+    // worker），旧代次 lane 的 Offline 写入可能在 DB 层面覆盖新代次已在线用户
+    // （旧单 worker 全局 FIFO 曾保证顺序）。以 SessionRegistry 为权威：仍有
+    // 活动会话（lookupByUser 非空）则跳过写 Offline。registry 线程安全，可在
+    // executor worker 线程调用。返回是否实际写入 Offline。
+    bool updateUserStateOfflineUnlessActive(SessionRegistry& sessions, int64_t userId);
     AddFriendResult addFriend(int64_t userId, int64_t friendId);
     CreateGroupResult createGroup(int64_t ownerId, const std::string& name,
                                   const std::string& desc);

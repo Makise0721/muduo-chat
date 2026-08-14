@@ -5,6 +5,7 @@
 # exact pid is captured for `kill -9` (no broad pkill can hit an unrelated
 # process); this .sh owns schema migration, config, env, log tee and cleanup.
 # Any step failure exits 1 (no skip).
+# P3-11: EXECUTOR_WORKERS env (default 1) injects executor workers into the server config.
 set -u
 
 SERVER_BIN="$1"
@@ -50,7 +51,7 @@ cat >"$WORK/server.json" <<EOF
 "v2":{"port":$V2_PORT}},
 "db":{"host":"127.0.0.1","port":3306,"user":"root",
 "password":"$DB_PASSWORD","dbname":"$DB_NAME","pool_size":4},
-"executor":{"workers":1,"queue_capacity":32}}
+"executor":{"workers":${EXECUTOR_WORKERS:-1},"queue_capacity":32}}
 EOF
 
 python3 "$(dirname "$0")/reconnect_replay_test.py" \

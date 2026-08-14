@@ -10,7 +10,7 @@
 #include "db/MySQL.hpp"
 #include "db/ConnectionPool.hpp"
 #include "app/ChatApplication.hpp"
-#include "app/BlockingExecutor.hpp"
+#include "app/SessionSerialExecutor.hpp"
 #include "app/SessionRegistry.hpp"
 #include "app/SessionDeliverySink.hpp"
 #include "app/MySQLUserRepository.hpp"
@@ -67,7 +67,10 @@ public:
     // P2-05：EventLoop 绑定与阻塞执行器（main 在服务器启动前调用；
     // 退出前调用 shutdownApp 使 worker 有界退出）。
     // P2-09：executor 容量来自配置（workers/queueCapacity，>=1）。
-    void bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity);
+    // P3-11：executor 替换为 keyed SessionSerialExecutor；lane 上限生产默认
+    // = 卡冻结值（SessionSerialExecutor::kDefaultLaneCapacity）。
+    void bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity,
+                  int executorLaneCapacity = SessionSerialExecutor::kDefaultLaneCapacity);
     void shutdownApp();
 
     // P2-10：executor 运行期指标（未绑定/空 executor 时返回 0）。
@@ -91,5 +94,5 @@ private:
     SessionDeliverySink _deliverySink{&_sessions};
     SessionDeliveryArmer _deliveryArmer{&_sessions};
     EventLoop* _loop = nullptr;
-    std::unique_ptr<BlockingExecutor> _executor;
+    std::unique_ptr<SessionSerialExecutor> _executor;
 };

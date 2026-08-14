@@ -219,9 +219,11 @@ bool parseExecutorSection(const json& executor, AppConfig* out,
     ok = getIntMin1(executor, "workers", &out->executor.workers, errors, "executor.") && ok;
     ok = getIntMin1(executor, "queue_capacity", &out->executor.queueCapacity,
                     errors, "executor.") && ok;
-    // P2-10：多 worker 破坏同连接串行依赖，P3 前只允许单 worker。
-    if (ok && out->executor.workers != 1) {
-        errors->push_back({"executor.workers", "must be 1"});
+    // P3-11：correctness 全绿后放宽单 worker 强制（P2-06/P2-10 决策）；多 worker
+    // 下同 Session 串行由 SessionSerialExecutor 的 per-key lane 保证（仅跨 Session
+    // 并行），故保留下限 ≥1 并设上限 8 防误配。
+    if (ok && out->executor.workers > 8) {
+        errors->push_back({"executor.workers", "must be in [1,8]"});
         ok = false;
     }
     return ok;

@@ -3,6 +3,7 @@
 #include "app/ProtocolCodec.hpp"
 #include "db/MySQLGuards.hpp"
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <exception>
@@ -10,6 +11,25 @@
 #include <vector>
 
 namespace {
+
+// P3-11 任务 key 推导（docs/tasks/P3-11.md §冻结参数）：pre-login=ConnectionId；
+// 登录后=(UserId,generation)。
+// 连接 id：进程内以连接对象地址低 32 位作稳定标识（连接生命周期内不变；
+// 极端截断碰撞仅造成过度串行，无正确性影响）。
+uint32_t connectionKey(const TcpConnectionPtr& conn)
+{
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(conn.get()));
+}
+
+// 有绑定会话 → (UserId,generation) lane；否则回退 ConnectionId lane。
+SessionExecutorKey submitKeyFor(const TcpConnectionPtr& conn, const SessionRegistry& sessions)
+{
+    BoundSession bs;
+    if (sessions.lookupByConnection(conn, &bs) && bs.userId != 0) {
+        return SessionExecutorKey::session(bs.userId, bs.generation);
+    }
+    return SessionExecutorKey::connection(connectionKey(conn));
+}
 
 // 失败回复（决策表第 4/10 行）：v2 → msgid=13 + errno + errmsg（+client_message_id
 // 可解析时回显）；legacy → 旧格式回显 errno=1 + errmsg。errmsg 一律由 errno 派生
@@ -134,7 +154,8 @@ void loadLoginExtras(LoginDbResult* r)
 
 } // namespace
 
-void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity)
+void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQueueCapacity,
+                           int executorLaneCapacity)
 {
     _loop = loop;
     // P3-07：注册真实投递出口（wiring() 惰性构造时绑定；本调用先于首个
@@ -143,9 +164,12 @@ void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQue
         std::cerr << "delivery sink registration failed" << std::endl;
         std::exit(EXIT_FAILURE);
     }
-    // 单 worker：同一连接的串行依赖（如 addFriend 后立即重复 add）按提交顺序
-    // 执行；多 worker 会乱序破坏业务语义（P2-10 性能评估后再分片扩并）。
-    _executor.reset(new BlockingExecutor(loop, executorWorkers, executorQueueCapacity));
+    // P3-11：keyed serial executor 替换全局 BlockingExecutor。同 key（连接或
+    // 用户+代次）任务 lane 串行（P2-06 根因消除），不同 key 可并行；completion
+    // 经 runInLoop 回主 loop（P2-08 语义不变）；config 强制 workers==1 保持
+    // （P3-11 卡：correctness 全绿 + 1/2/4/8 等价验证 + 吞吐报告后才放宽）。
+    _executor.reset(new SessionSerialExecutor(loop, executorWorkers,
+                                              executorQueueCapacity, executorLaneCapacity));
     // P3-08：server 就绪（pool 已 init、sink 已绑定）后启动可靠消息内部
     // scheduler（timer 驱动、幂等）；stop 在 shutdownApp（EXECUTOR_SHUTDOWN 后、
     // POOL_SHUTDOWN 前）有界 join。
@@ -203,6 +227,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
     int64_t gen = _app.beginSessionAttempt(id);
     auto result = std::make_shared<LoginDbResult>();
     _executor->submit(
+        submitKeyFor(conn, _sessions),
         [this, id, pwd, gen, result] {
             result->auth = _app.authenticate(id, pwd);
             // state 只读不改：单会话以 SessionRegistry（活动连接）为真相，
@@ -256,6 +281,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
             }
             // DB 状态影子异步落库（登录成功后必须是 online）。
             _executor->submit(
+                SessionExecutorKey::session(id, gen),
                 [this, id] { _app.updateUserState(id, UserState::Online); },
                 [] {});
             response["errno"] = 0;
@@ -284,6 +310,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                         return false;
                     }
                     return _executor->submit(
+                               SessionExecutorKey::session(id, gen),
                                [this, id, gen] {
                                    sessionAvailableDelivery(id, static_cast<uint64_t>(gen));
                                },
@@ -294,6 +321,7 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                         return false;
                     }
                     return _executor->submit(
+                               SessionExecutorKey::session(id, gen),
                                [this, id, gen] {
                                    resumeDelivery(id, static_cast<uint64_t>(gen));
                                },
@@ -320,6 +348,7 @@ void ChatService::reg(const TcpConnectionPtr& conn, json& js, Timestamp time) {
 
     auto reply = std::make_shared<Reply>();
     _executor->submit(
+        submitKeyFor(conn, _sessions),
         [this, cmd, reply] { _app.handle(SessionContext(), cmd, reply.get()); },
         [conn, reply] {
             json response;
@@ -351,6 +380,7 @@ void ChatService::deliveryAck(const TcpConnectionPtr& conn, json& js, Timestamp 
     // （RejectedFull/RejectedShutdown）= 丢弃，等价 ACK 丢失——P3-08 ack-timeout
     // 对同一 MessageId 重投即恢复路径，客户端按 message_id 去重；不主动重试。
     _executor->submit(
+        SessionExecutorKey::session(session.userId, session.generation),
         [session, messageId] {
             acknowledgeDelivery(session.userId, static_cast<uint64_t>(session.generation),
                                 messageId);
@@ -384,14 +414,22 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
         // 由 scheduler 在 lease 到期后回退 Pending（等待重连 claim），与 P3-07
         // 已闭合的 sessionAvailable/pressure resume 拒绝策略对称。
         _executor->submit(
+            SessionExecutorKey::session(bs.userId, bs.generation),
             [bs] {
                 sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));
             },
             [] {});
     }
+    // P3-11：登出清理任务与 sessionClosed 同 lane（同代次）保持提交顺序。
+    const SessionExecutorKey offlineKey = bs.userId != 0
+        ? SessionExecutorKey::session(bs.userId, bs.generation)
+        : submitKeyFor(conn, _sessions);
     if (_executor) {
+        // P3-11 M2：Offline 写入经守卫——执行时用户仍有活动会话（新代次已
+        // 登录）则跳过，防跨代 lane 并行下旧 Offline 覆盖新 Online。
         _executor->submit(
-            [this, userid] { _app.updateUserState(userid, UserState::Offline); },
+            offlineKey,
+            [this, userid] { _app.updateUserStateOfflineUnlessActive(_sessions, userid); },
             [conn, userid] {
                 json response;
                 response["msgid"] = LOGINOUT_MSG;
@@ -448,6 +486,7 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
     // 预检与 accept 在 ProtocolCodec（worker 线程，ReliableMessaging 单一调用者）。
     auto view = std::make_shared<AcceptResultView>();
     _executor->submit(
+        SessionExecutorKey::session(session.userId, session.generation),
         [this, session, parsed, view] {
             acceptChatCommand(&_app, session.userId, session.generation, parsed,
                               ChatCommandKind::Direct, view.get());
@@ -487,6 +526,7 @@ void ChatService::addFriend(const TcpConnectionPtr& conn, json& js, Timestamp ti
     auto result = std::make_shared<AddFriendResult>();
     std::string payload = js.dump();
     _executor->submit(
+        submitKeyFor(conn, _sessions),
         [this, userid, friendid, result] { *result = _app.addFriend(userid, friendid); },
         [conn, payload, result] {
             json response = json::parse(payload);
@@ -510,6 +550,7 @@ void ChatService::createGroup(const TcpConnectionPtr& conn, json& js, Timestamp 
     }
     auto result = std::make_shared<CreateGroupResult>();
     _executor->submit(
+        submitKeyFor(conn, _sessions),
         [this, userid, groupname, groupdesc, result] {
             *result = _app.createGroup(userid, groupname, groupdesc);
         },
@@ -540,6 +581,7 @@ void ChatService::addGroup(const TcpConnectionPtr& conn, json& js, Timestamp tim
     auto result = std::make_shared<JoinGroupResult>();
     std::string payload = js.dump();
     _executor->submit(
+        submitKeyFor(conn, _sessions),
         [this, userid, groupid, result] { *result = _app.joinGroup(groupid, userid); },
         [conn, payload, result] {
             json response = json::parse(payload);
@@ -584,6 +626,7 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
     // 非成员→101、群不存在→106、查询失败→104）；在线转发/离线入队退役。
     auto view = std::make_shared<AcceptResultView>();
     _executor->submit(
+        SessionExecutorKey::session(session.userId, session.generation),
         [this, session, parsed, view] {
             acceptChatCommand(&_app, session.userId, session.generation, parsed,
                               ChatCommandKind::Group, view.get());
@@ -634,6 +677,7 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
         // 由 scheduler 在 lease 到期后回退 Pending（等待重连 claim），与 P3-07
         // 已闭合的 sessionAvailable/pressure resume 拒绝策略对称。
         _executor->submit(
+            SessionExecutorKey::session(bs.userId, bs.generation),
             [bs] {
                 sessionClosedDelivery(bs.userId, static_cast<uint64_t>(bs.generation));
             },
@@ -645,8 +689,14 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
             _app.invalidateSessionAttempt(bs.userId, bs.generation);
         }
         if (_executor) {
+            // P3-11：清理任务与 sessionClosed 同 lane（同代次）保持提交顺序。
+            const SessionExecutorKey offlineKey = bs.userId != 0
+                ? SessionExecutorKey::session(bs.userId, bs.generation)
+                : submitKeyFor(conn, _sessions);
+            // P3-11 M2：Offline 写入经守卫（见 loginout 同款）。
             _executor->submit(
-                [this, userid] { _app.updateUserState(userid, UserState::Offline); },
+                offlineKey,
+                [this, userid] { _app.updateUserStateOfflineUnlessActive(_sessions, userid); },
                 [] {});
         }
     }

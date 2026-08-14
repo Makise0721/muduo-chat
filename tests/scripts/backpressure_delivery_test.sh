@@ -3,6 +3,7 @@
 # the Python harness observes an accepted-count barrier and the server's own
 # Channel pressure event).  The Python harness then uses one reader owner for
 # B's socket and verifies the low-water recovery event and delivery drain.
+# P3-11: EXECUTOR_WORKERS env (default 1) injects executor workers into the server config.
 set -u
 
 SERVER_BIN="$1"
@@ -43,7 +44,7 @@ cat >"$WORK/server.json" <<EOF
 "v2":{"port":$V2_PORT}},
 "db":{"host":"127.0.0.1","port":3306,"user":"root",
 "password":"$DB_PASSWORD","dbname":"$DB_NAME","pool_size":4},
-"executor":{"workers":1,"queue_capacity":32}}
+"executor":{"workers":${EXECUTOR_WORKERS:-1},"queue_capacity":32}}
 EOF
 
 setarch x86_64 -R "$SERVER_BIN" 127.0.0.1 "$V1_PORT" --config "$WORK/server.json" >"$LOG" 2>&1 &

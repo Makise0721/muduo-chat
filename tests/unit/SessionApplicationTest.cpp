@@ -3,13 +3,21 @@
 #include "app/InMemoryFriendRepository.hpp"
 #include "app/InMemoryGroupRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
+#include "app/SessionRegistry.hpp"
+#include "app/SessionSerialExecutor.hpp"
 #include "EventLoop.h"
+#include "TcpConnection.h"
 
 #include <gtest/gtest.h>
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -314,4 +322,49 @@ TEST(SessionApplicationTest, CloseOfCurrentGenerationInvalidatesBeforeReconnect)
 
     const int64_t newGeneration = app.beginSessionAttempt(uid);
     EXPECT_TRUE(app.isSessionCurrent(uid, newGeneration));
+}
+
+// P3-11 M2 RED：跨代影子状态竞态。旧代次断线/登出的 Offline 与新登录的 Online
+// 分属两个 lane 可并行，旧 Offline 若在 Online 完成之后执行会覆盖 DB 状态。
+// 确定性交错（InlineSessionSerialExecutor 同步执行）：新登录 Online 先完成、
+// 旧代 Offline 任务后执行，断言 User 状态不被旧 Offline 覆盖。修复前
+// updateUserStateOfflineUnlessActive 不存在 → 编译失败（RED）；修复后守卫跳过。
+TEST(SessionApplicationTest, OldGenCloseOfflineDoesNotOverwriteNewLoginOnline)
+{
+    InMemoryUserRepository users;
+    InMemoryFriendRepository friends(users);
+    InMemoryGroupRepository groups(users);
+    ChatApplication app(&users, &friends, &groups);
+    int64_t uid = registerUser(users, "alice");
+
+    // 旧会话（genOld）断开；用户随后在新连接重连登录（genNew）并绑定活动会话，
+    // DB 影子状态置 online。
+    SessionRegistry registry;
+    EventLoop loop;
+    int fds[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    close(fds[0]);
+    TcpConnectionPtr connNew(
+        new TcpConnection(&loop, "newconn", fds[1], InetAddress(0), InetAddress(0)));
+    registry.addConnection(connNew);
+    const int64_t genOld = app.beginSessionAttempt(uid);
+    const int64_t genNew = app.beginSessionAttempt(uid);
+    ASSERT_EQ(SessionRegistry::BindResult::Ok, registry.bind(connNew, uid, genNew));
+    app.updateUserState(uid, UserState::Online);
+
+    // 确定性交错：Online（新代 lane）先完成，旧代断线的 Offline 任务随后执行。
+    InlineSessionSerialExecutor ex;
+    const SessionExecutorKey newLane = SessionExecutorKey::session(uid, genNew);
+    const SessionExecutorKey oldLane = SessionExecutorKey::session(uid, genOld);
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit(newLane,
+                        [&] { app.updateUserState(uid, UserState::Online); },
+                        [] {}));
+    ASSERT_EQ(SubmitResult::Accepted,
+              ex.submit(oldLane,
+                        [&] { app.updateUserStateOfflineUnlessActive(registry, uid); },
+                        [] {}));
+
+    // 用户实际在线：旧 Offline 不得覆盖 Online。
+    EXPECT_EQ(UserState::Online, users.authenticate(uid, "pw").state);
 }

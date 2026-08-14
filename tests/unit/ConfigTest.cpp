@@ -84,8 +84,8 @@ TEST_F(ConfigTest, FullFileOverridesAll)
     EXPECT_EQ(cfg.db.password, "p1");
     EXPECT_EQ(cfg.db.dbname, "d1");
     EXPECT_EQ(cfg.db.poolSize, 9);
-    // workers 只能为 1（多 worker 破坏同连接串行依赖，R1 校验），此处仅能
-    // 验证"显式写 1 合法"；queue_capacity 仍可被覆盖。
+    // workers 合法范围 1..8（P3-11 放宽：同 Session 串行由 keyed lane 保证），
+    // 此处验证"显式写 1 合法"；queue_capacity 仍可被覆盖。
     EXPECT_EQ(cfg.executor.workers, 1);
     EXPECT_EQ(cfg.executor.queueCapacity, 128);
     std::remove(path.c_str());
@@ -156,6 +156,44 @@ TEST_F(ConfigTest, OutboxPartialKeepsFrozenDefaults)
     std::remove(path.c_str());
 }
 
+// P3-11：executor 段部分覆盖（最小解析用例）——只出现 queue_capacity 时
+// workers 保持卡冻结默认 1（缺失字段不改变默认；显式多 worker 见
+// ExecutorWorkersMultiValueAllowed）。
+TEST_F(ConfigTest, ExecutorPartialKeepsFrozenDefaults)
+{
+    std::string path = writeTempFile("{\"executor\":{\"queue_capacity\":32}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.executor.queueCapacity, 32);
+    EXPECT_EQ(cfg.executor.workers, 1);  // 缺失字段保持卡冻结默认
+    std::remove(path.c_str());
+}
+
+// P3-11：correctness 全绿后放宽 `must be 1` 强制——显式 workers 2/8 合法并被
+// 解析，默认仍 1；9（越 [1,8] 上限）与 0/-1（越下限）仍被拒（见 FailFastMatrix）。
+TEST_F(ConfigTest, ExecutorWorkersMultiValueAllowed)
+{
+    for (int w : {2, 8}) {
+        std::string json = "{\"executor\":{\"workers\":" + std::to_string(w) + "}}";
+        std::string path = writeTempFile(json.c_str());
+        AppConfig cfg;
+        std::string err;
+        ASSERT_TRUE(loadConfigFile(path, &cfg, &err))
+            << "workers=" << w << " should be legal: " << err;
+        EXPECT_EQ(cfg.executor.workers, w);
+        EXPECT_EQ(cfg.executor.queueCapacity, 64);  // 缺失字段保持卡冻结默认
+        std::remove(path.c_str());
+    }
+    // 缺省（无 executor 段）路径默认值不变。
+    std::string path = writeTempFile("{}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.executor.workers, 1);
+    std::remove(path.c_str());
+}
+
 TEST_F(ConfigTest, PartialFileKeepsDefaults)
 {
     std::string path = writeTempFile("{\"server\":{\"v1\":{\"port\":6101}}}");
@@ -220,9 +258,9 @@ TEST_F(ConfigTest, FailFastMatrix)
         {"{\"db\":{\"host\":5}}", "db.host"},
         {"{\"db\":{\"user\":5}}", "db.user"},
         {"{\"db\":{\"dbname\":5}}", "db.dbname"},
-        // 新校验（依赖 R1 实现，未落地前跑红属预期）：executor 单 worker 设计
-        // 上限、v1/v2 端口必须不同、int 溢出（4294967296 超出 int 范围）。
-        {"{\"executor\":{\"workers\":2}}", "executor.workers' must be 1"},
+        // 新校验（依赖 R1 实现，未落地前跑红属预期）：workers 上限 [1,8]、
+        // v1/v2 端口必须不同、int 溢出（4294967296 超出 int 范围）。
+        {"{\"executor\":{\"workers\":9}}", "executor.workers"},
         {"{\"server\":{\"v1\":{\"port\":6000},\"v2\":{\"port\":6000}}}", "port"},
         {"{\"executor\":{\"workers\":4294967296}}", "executor.workers"},
         {"{\"db\":{\"pool_size\":4294967296}}", "db.pool_size"},

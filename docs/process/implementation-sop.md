@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P3-10 已 VERIFIED）
+当前活动任务：无（P3-11 已 VERIFIED）
 
-下一任务：[P3-11 用 keyed serial executor 替代全局单 worker](../plans/post-p2-implementation-plan.md#p3-11-用-keyed-serial-executor-替代全局单-worker)
+下一任务：[P3-12 建立可靠消息指标与故障矩阵](../plans/post-p2-implementation-plan.md#p3-12-建立可靠消息指标与故障矩阵)
 
 ## 1. 文档与事实优先级
 

@@ -3,6 +3,7 @@
 # against a dedicated migrated schema (chat_p306) and run a concurrent business
 # matrix (register/login/direct chat/logout/disconnect/reconnect) over 8
 # connections. Correctness must hold on 2 and 4 I/O loops.
+# P3-11: EXECUTOR_WORKERS env (default 1) injects executor workers into the server config.
 # P3-06: chat matrix asserts durable accept semantics which require the ledger
 # tables — recreate and migrate chat_p306 before starting the server.
 set -u
@@ -42,7 +43,7 @@ cat >"$WORK/server.json" <<EOF
 "v2":{"port":7000}},
 "db":{"host":"127.0.0.1","port":3306,"user":"root",
 "password":"$DB_PASSWORD","dbname":"chat_p306","pool_size":4},
-"executor":{"workers":1,"queue_capacity":32}}
+"executor":{"workers":${EXECUTOR_WORKERS:-1},"queue_capacity":32}}
 EOF
 
 for LOOPS in 2 4; do

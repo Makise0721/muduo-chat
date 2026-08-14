@@ -1,4 +1,5 @@
 #include "app/ChatApplication.hpp"
+#include "app/SessionRegistry.hpp"
 
 namespace {
 
@@ -51,6 +52,15 @@ AuthResult ChatApplication::authenticate(int64_t userId, const std::string& pass
 bool ChatApplication::updateUserState(int64_t userId, UserState state)
 {
     return users_->updateState(userId, state);
+}
+
+bool ChatApplication::updateUserStateOfflineUnlessActive(SessionRegistry& sessions,
+                                                         int64_t userId)
+{
+    if (sessions.lookupByUser(userId) != nullptr) {
+        return false;
+    }
+    return updateUserState(userId, UserState::Offline);
 }
 
 AddFriendResult ChatApplication::addFriend(int64_t userId, int64_t friendId)
