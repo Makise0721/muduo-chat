@@ -13,7 +13,6 @@
 #include "app/GroupRepository.hpp"
 #include "app/MySQLFriendRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
-#include "app/MySQLMessageRepository.hpp"
 #include "app/MySQLUserRepository.hpp"
 #include "app/ProtocolCodec.hpp"
 
@@ -99,12 +98,11 @@ struct AppHarness
     MySQLUserRepository users;
     MySQLFriendRepository friends;
     MySQLGroupRepository groups;
-    MySQLMessageRepository messages;
     ChatApplication app;
 
     AppHarness()
-        : users(pool()), friends(pool()), groups(pool()), messages(pool()),
-          app(&users, &friends, &groups, &messages)
+        : users(pool()), friends(pool()), groups(pool()),
+          app(&users, &friends, &groups)
     {
     }
 };
@@ -348,8 +346,7 @@ TEST_F(MessageAcceptanceApplication, GroupMembershipQueryFailureReturns104)
     MySQLUserRepository users(pool());
     MySQLFriendRepository friends(pool());
     FailingGroupRepository groups;
-    MySQLMessageRepository messages(pool());
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     AcceptResultView view = acceptCommand(&app, 1, 1, ChatCommandKind::Group,
                                           groupCommand("acc-104", 7, "hi all"));
     ASSERT_FALSE(view.ok);

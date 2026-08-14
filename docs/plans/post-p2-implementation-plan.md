@@ -4,7 +4,7 @@
 
 计划基线：`main` @ `2e2a7f9`
 
-状态：`READY_FOR_P3-10`（P3-00..P3-09 已 VERIFIED；P3-10 待开卡）
+状态：`READY_FOR_P3-11`（P3-00..P3-10 已 VERIFIED；P3-11 待开卡）
 
 关键输入：
 
@@ -244,7 +244,7 @@ flowchart TD
 - 发布顺序：expand → 新代码兼容读 → backfill → 比对计数/hash → 新路径默认 → 观察窗口 → 禁止旧写 → 独立 contract migration。应用回滚窗口关闭前不 DROP 表。
 - 验证命令：`ctest --test-dir /tmp/muduo-chat-build/debug -R 'LegacyOfflineMigration|SchemaMigration|ReconnectReplay' --output-on-failure`；完整数据库快照升级/回滚演练。
 - 完成定义：源行=已迁移+quarantine，重复运行不增加 Message；线上代码不再调用 `storeOffline/takeOffline`；旧表删除是单独、可延后的提交。
-- 提交边界：backfill、cutover、contract 三个提交，最后建议 `refactor(message): retire legacy offline queue`。
+- 提交边界：backfill、cutover、contract 三个提交，最后建议 `refactor(message): retire legacy offline queue`。2026-08-14 复审修订：contract migration 按 spec §5.2 顺序延后至观察窗口关闭（回滚窗口未关不 DROP），本卡两个原子提交。
 
 ### P3-11 用 keyed serial executor 替代全局单 worker
 

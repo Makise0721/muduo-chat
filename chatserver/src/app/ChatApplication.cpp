@@ -14,8 +14,8 @@ bool validRegistrationInput(const Command& cmd)
 } // namespace
 
 ChatApplication::ChatApplication(UserRepository* users, FriendRepository* friends,
-                                 GroupRepository* groups, MessageRepository* messages)
-    : users_(users), friends_(friends), groups_(groups), messages_(messages)
+                                 GroupRepository* groups)
+    : users_(users), friends_(friends), groups_(groups)
 {
 }
 
@@ -72,16 +72,6 @@ JoinGroupResult ChatApplication::joinGroup(int64_t groupId, int64_t userId)
 MembersResult ChatApplication::groupMembers(int64_t groupId)
 {
     return groups_->members(groupId);
-}
-
-StoreResult ChatApplication::storeOfflineMessage(int64_t userId, const std::string& payload)
-{
-    return messages_->storeOffline(userId, payload);
-}
-
-std::vector<OfflineMessage> ChatApplication::takeOfflineMessages(int64_t userId)
-{
-    return messages_->takeOffline(userId);
 }
 
 void ChatApplication::handle(const SessionContext&, const Command& cmd, Reply* reply)

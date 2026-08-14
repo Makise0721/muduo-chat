@@ -2,7 +2,6 @@
 #include "app/ChatApplication.hpp"
 #include "app/InMemoryFriendRepository.hpp"
 #include "app/InMemoryGroupRepository.hpp"
-#include "app/InMemoryMessageRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
 #include "EventLoop.h"
 
@@ -96,8 +95,7 @@ TEST(SessionApplicationTest, LoginFlowAuthenticatesAndEstablishesSession)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -128,8 +126,7 @@ TEST(SessionApplicationTest, LoginWrongPasswordRejected)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -157,8 +154,7 @@ TEST(SessionApplicationTest, DuplicateLoginSeesOnlineState)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -188,8 +184,7 @@ TEST(SessionApplicationTest, LogoutMarksUserOffline)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     app.updateUserState(uid, UserState::Online);
     app.beginSessionAttempt(uid);  // 会话建立
@@ -204,8 +199,7 @@ TEST(SessionApplicationTest, DisconnectMarksUserOffline)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     app.updateUserState(uid, UserState::Online);
     app.beginSessionAttempt(uid);
@@ -219,8 +213,7 @@ TEST(SessionApplicationTest, StaleCompletionAfterLogoutIsDiscarded)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -251,8 +244,7 @@ TEST(SessionApplicationTest, FastDisconnectReconnectDiscardsStaleCompletion)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
     BlockingExecutor ex(lt.loop, 1, 8);
 
@@ -296,8 +288,7 @@ TEST(SessionApplicationTest, CloseOfOldGenerationDoesNotInvalidateNewLogin)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
 
     const int64_t oldGeneration = app.beginSessionAttempt(uid);
@@ -314,8 +305,7 @@ TEST(SessionApplicationTest, CloseOfCurrentGenerationInvalidatesBeforeReconnect)
     InMemoryUserRepository users;
     InMemoryFriendRepository friends(users);
     InMemoryGroupRepository groups(users);
-    InMemoryMessageRepository messages;
-    ChatApplication app(&users, &friends, &groups, &messages);
+    ChatApplication app(&users, &friends, &groups);
     int64_t uid = registerUser(users, "alice");
 
     const int64_t oldGeneration = app.beginSessionAttempt(uid);

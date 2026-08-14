@@ -1,7 +1,6 @@
 #include "app/ChatApplication.hpp"
 #include "app/InMemoryFriendRepository.hpp"
 #include "app/InMemoryGroupRepository.hpp"
-#include "app/InMemoryMessageRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
 
 #include <gtest/gtest.h>
@@ -13,12 +12,11 @@ struct AppHarness
     InMemoryUserRepository users;
     InMemoryFriendRepository friends;
     InMemoryGroupRepository groups;
-    InMemoryMessageRepository messages;
     ChatApplication app;
 
     AppHarness()
         : friends(users), groups(users),
-          app(&users, &friends, &groups, &messages)
+          app(&users, &friends, &groups)
     {
     }
 };

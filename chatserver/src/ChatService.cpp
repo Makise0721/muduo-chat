@@ -35,8 +35,7 @@ ChatService::ChatService()
     : _mysqlUsers(ConnectionPool::getInstance()),
       _mysqlFriends(ConnectionPool::getInstance()),
       _mysqlGroups(ConnectionPool::getInstance()),
-      _mysqlMessages(ConnectionPool::getInstance()),
-      _app(&_mysqlUsers, &_mysqlFriends, &_mysqlGroups, &_mysqlMessages) {
+      _app(&_mysqlUsers, &_mysqlFriends, &_mysqlGroups) {
     _msgHandlerMap.insert({LOGIN_MSG, bind(&ChatService::login, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({REG_MSG, bind(&ChatService::reg, this, placeholders::_1, placeholders::_2, placeholders::_3)});
     _msgHandlerMap.insert({LOGINOUT_MSG, bind(&ChatService::loginout, this, placeholders::_1, placeholders::_2, placeholders::_3)});
@@ -87,7 +86,7 @@ void ChatService::handler(const TcpConnectionPtr& conn, string& msg, Timestamp t
 
 namespace {
 
-// P2-05 登录用例的 worker 线程 DB 结果（认证 + 好友 + 离线消息一次取齐）。
+// P2-05 登录用例的 worker 线程 DB 结果（认证 + 好友一次取齐）。
 struct FriendDetail {
     int friendid;
     std::string name;
@@ -98,13 +97,12 @@ struct LoginDbResult {
     AuthResult auth;
     std::vector<std::string> friendNames;
     std::vector<FriendDetail> friendDetails;
-    std::vector<std::string> offlineMessages;
 };
 
-// 在 worker 线程执行：认证通过后查询好友列表与离线消息。
-// 好友列表查询为 P2-06 后遗留的原生 SQL；离线消息经 MessageRepository 读取
-// （补投后队列清空）。
-void loadLoginExtras(ChatApplication* app, LoginDbResult* r)
+// 在 worker 线程执行：认证通过后查询好友列表。
+// 好友列表查询为 P2-06 后遗留的原生 SQL；P3-10 cutover 后登录补投只走
+// P3-07 ledger claim（sessionAvailableDelivery），旧 OfflineMessage 表不再读删。
+void loadLoginExtras(LoginDbResult* r)
 {
     auto& connPool = ConnectionPool::getInstance();
     ConnectionPool::AcquireResult acq = connPool.acquire(5000);
@@ -132,28 +130,6 @@ void loadLoginExtras(ChatApplication* app, LoginDbResult* r)
             r->friendDetails.push_back(d);
         }
     }
-
-    std::vector<OfflineMessage> offline = app->takeOfflineMessages(r->auth.id);
-    for (size_t i = 0; i < offline.size(); ++i) {
-        r->offlineMessages.push_back(offline[i].payload);
-    }
-}
-
-// completion 早退（会话过期/连接断开）时离线消息已被 worker 取出却无法投递：
-// 恢复入队避免永久丢失；executor 已 shutdown（RejectedShutdown）时丢弃可接受。
-void restoreOfflineMessages(BlockingExecutor* executor, ChatApplication* app,
-                            int64_t id, const std::shared_ptr<LoginDbResult>& result)
-{
-    if (result->offlineMessages.empty()) {
-        return;
-    }
-    executor->submit(
-        [app, id, result] {
-            for (size_t i = 0; i < result->offlineMessages.size(); ++i) {
-                app->storeOfflineMessage(id, result->offlineMessages[i]);
-            }
-        },
-        [] {});
 }
 
 } // namespace
@@ -232,13 +208,12 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
             // state 只读不改：单会话以 SessionRegistry（活动连接）为真相，
             // 断开残留的 DB online 由 completion 区分处理。
             if (result->auth.ok && _app.isSessionCurrent(id, gen)) {
-                loadLoginExtras(&_app, result.get());
+                loadLoginExtras(result.get());
             }
         },
         [this, conn, id, gen, result] {
             // stale：会话已被登出/断开/新登录取代，不写状态、不响应。
             if (!_app.isSessionCurrent(id, gen)) {
-                restoreOfflineMessages(_executor.get(), &_app, id, result);
                 return;
             }
             json response;
@@ -254,7 +229,6 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
             // bind 拒绝 ConnectionInactive；bind 先执行时 close 的
             // removeConnection+unbind 后到恰好释放——无窗口）。
             if (!conn->connected()) {
-                restoreOfflineMessages(_executor.get(), &_app, id, result);
                 return;
             }
             {
@@ -265,7 +239,6 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                 SessionRegistry::BindResult br = _sessions.bind(conn, id, gen);
                 if (br == SessionRegistry::BindResult::ConnectionInactive) {
                     // close 先于 bind：连接已死，不建会话、不响应（防断线竞态锁死用户）。
-                    restoreOfflineMessages(_executor.get(), &_app, id, result);
                     return;
                 }
                 if (br == SessionRegistry::BindResult::UserBusy) {
@@ -301,12 +274,6 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
 
             // 先回登录应答，客户端更容易按顺序处理
             conn->send(response.dump() + "\n");
-
-            // 离线消息下发（补投后 OfflineMessage 已在 worker 清空；旧表补投
-            // 保留至 P3-08 由新路径替换）
-            for (size_t i = 0; i < result->offlineMessages.size(); ++i) {
-                conn->send(result->offlineMessages[i] + "\n");
-            }
 
             // P3-07：在 owner EventLoop 上先安装并 fence pressure callback，再
             // 提交新 Session claim；low-water 恢复也复核同一连接与 generation。
@@ -476,7 +443,8 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
     }
 
     // P3-06 durable accept：在线直写与 storeOffline 写路径退役（B-11/B-12/B-17
-    // 让位 ledger + Delivery 状态机；takeOffline 读删流程保留至 P3-08）。
+    // 让位 ledger + Delivery 状态机）；P3-10 cutover 后 takeOffline 读删路径亦
+    // 移除，登录补投只走 P3-07 ledger claim。
     // 预检与 accept 在 ProtocolCodec（worker 线程，ReliableMessaging 单一调用者）。
     auto view = std::make_shared<AcceptResultView>();
     _executor->submit(

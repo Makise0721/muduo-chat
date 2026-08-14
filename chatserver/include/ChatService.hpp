@@ -16,7 +16,6 @@
 #include "app/MySQLUserRepository.hpp"
 #include "app/MySQLFriendRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
-#include "app/MySQLMessageRepository.hpp"
 
 using json = nlohmann::json;
 using namespace std;
@@ -86,7 +85,6 @@ private:
     MySQLUserRepository _mysqlUsers;
     MySQLFriendRepository _mysqlFriends;
     MySQLGroupRepository _mysqlGroups;
-    MySQLMessageRepository _mysqlMessages;
     ChatApplication _app;
     // P3-07：真实投递出口（bindLoop 时 registerDeliverySink；声明顺序在
     // _sessions 之后，&_sessions 有效）。

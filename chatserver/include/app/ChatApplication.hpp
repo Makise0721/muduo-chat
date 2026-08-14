@@ -3,7 +3,6 @@
 #include "app/Command.hpp"
 #include "app/FriendRepository.hpp"
 #include "app/GroupRepository.hpp"
-#include "app/MessageRepository.hpp"
 #include "app/Reply.hpp"
 #include "app/UserRepository.hpp"
 
@@ -17,7 +16,7 @@
 class ChatApplication {
 public:
     ChatApplication(UserRepository* users, FriendRepository* friends,
-                    GroupRepository* groups, MessageRepository* messages);
+                    GroupRepository* groups);
 
     void handle(const SessionContext& ctx, const Command& cmd, Reply* reply);
 
@@ -38,8 +37,6 @@ public:
                                   const std::string& desc);
     JoinGroupResult joinGroup(int64_t groupId, int64_t userId);
     MembersResult groupMembers(int64_t groupId);
-    StoreResult storeOfflineMessage(int64_t userId, const std::string& payload);
-    std::vector<OfflineMessage> takeOfflineMessages(int64_t userId);
 
 private:
     void registerUser(const Command& cmd, Reply* reply);
@@ -47,7 +44,6 @@ private:
     UserRepository* users_;
     FriendRepository* friends_;
     GroupRepository* groups_;
-    MessageRepository* messages_;
     mutable std::mutex sessionMutex_;
     std::map<int64_t, int64_t> generations_;
 };

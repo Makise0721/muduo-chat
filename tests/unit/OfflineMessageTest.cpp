@@ -1,32 +1,14 @@
 #include "MySqlTestFixture.hpp"
 
 #include "app/InMemoryGroupRepository.hpp"
-#include "app/InMemoryMessageRepository.hpp"
 #include "app/InMemoryUserRepository.hpp"
 #include "app/MySQLGroupRepository.hpp"
-#include "app/MySQLMessageRepository.hpp"
 #include "app/MySQLUserRepository.hpp"
 
 #include <gtest/gtest.h>
 
-// 离线消息集成：真实 MySQL 存取 + 群成员查询契约。
-TEST(OfflineMessageTest, MySqlStoreTakeRoundTripPreservesPayload)
-{
-    MySqlTestFixture::resetSchema();
-    MySQLUserRepository users(MySqlTestFixture::pool());
-    CreateUserResult u = users.create("alice", "pw");
-    ASSERT_TRUE(u.ok);
-    MySQLMessageRepository messages(MySqlTestFixture::pool());
-    ASSERT_TRUE(messages.storeOffline(u.id, "{\"msgid\":6,\"msg\":\"hello\"}").ok);
-    ASSERT_TRUE(messages.storeOffline(u.id, "{\"msgid\":10,\"groupid\":1}").ok);
-
-    std::vector<OfflineMessage> taken = messages.takeOffline(u.id);
-    ASSERT_EQ(2u, taken.size());
-    EXPECT_EQ("{\"msgid\":6,\"msg\":\"hello\"}", taken[0].payload);
-    EXPECT_EQ("{\"msgid\":10,\"groupid\":1}", taken[1].payload);
-    EXPECT_TRUE(messages.takeOffline(u.id).empty());
-}
-
+// P3-10 cutover：旧 OfflineMessage 存取路径（storeOffline/takeOffline）已退役，
+// 登录补投只走 P3-07 ledger claim；本文件保留群成员查询契约测试。
 TEST(OfflineMessageTest, GroupMembersContract)
 {
     MySqlTestFixture::resetSchema();

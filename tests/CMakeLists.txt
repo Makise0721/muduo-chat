@@ -132,10 +132,6 @@ add_executable(FriendGroupApplicationTest unit/FriendGroupApplicationTest.cpp)
 target_link_libraries(FriendGroupApplicationTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(FriendGroupApplicationTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
-add_executable(MessageRepositoryContractTest unit/MessageRepositoryContractTest.cpp)
-target_link_libraries(MessageRepositoryContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
-set_target_properties(MessageRepositoryContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
-
 add_executable(OfflineMessageTest unit/OfflineMessageTest.cpp)
 target_link_libraries(OfflineMessageTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(OfflineMessageTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
@@ -214,6 +210,10 @@ add_executable(BackfillReentrancyTest unit/BackfillReentrancyTest.cpp)
 target_link_libraries(BackfillReentrancyTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(BackfillReentrancyTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+add_executable(LegacyCutoverTest unit/LegacyCutoverTest.cpp)
+target_link_libraries(LegacyCutoverTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(LegacyCutoverTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 add_executable(SessionDeliverySinkTest
     unit/SessionDeliverySinkTest.cpp
     ${PROJECT_SOURCE_DIR}/chatserver/src/SessionDeliverySink.cpp)
@@ -286,7 +286,13 @@ add_test(NAME OutboxCrashRecoveryProcess
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(OutboxCrashRecoveryProcess PROPERTIES TIMEOUT 240 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest MessageRepositoryContractTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest SessionDeliverySinkTest)
+add_test(NAME LegacyCutoverRehearsalProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/legacy_cutover_rehearsal_test.sh
+        $<TARGET_FILE:ChatServer>
+        $<TARGET_FILE:backfill>)
+set_tests_properties(LegacyCutoverRehearsalProcess PROPERTIES TIMEOUT 240 RESOURCE_LOCK chat_server_ports)
+
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest LegacyCutoverTest SessionDeliverySinkTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(ReliableMessageSchemaTest)
@@ -317,7 +323,6 @@ discover_gtest(SessionRegistryTest)
 discover_gtest(FriendRepositoryContractTest)
 discover_gtest(GroupRepositoryContractTest)
 discover_gtest(FriendGroupApplicationTest)
-discover_gtest(MessageRepositoryContractTest)
 discover_gtest(OfflineMessageTest)
 discover_gtest(MessageApplicationTest)
 discover_gtest(MessageAcceptanceConcurrencyTest)
@@ -334,4 +339,5 @@ discover_gtest(MessageRetentionTest)
 discover_gtest(MySqlLeaseRoundTripTest)
 discover_gtest(LegacyOfflineMigrationTest)
 discover_gtest(BackfillReentrancyTest)
+discover_gtest(LegacyCutoverTest)
 discover_gtest(SessionDeliverySinkTest)

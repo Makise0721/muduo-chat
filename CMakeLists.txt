@@ -27,13 +27,11 @@ add_library(chatserver_core STATIC
     chatserver/src/app/Config.cpp
     chatserver/src/app/InMemoryFriendRepository.cpp
     chatserver/src/app/InMemoryGroupRepository.cpp
-    chatserver/src/app/InMemoryMessageRepository.cpp
     chatserver/src/app/InMemoryMessageStore.cpp
     chatserver/src/app/InMemoryUserRepository.cpp
     chatserver/src/app/LocalOutboxRelay.cpp
     chatserver/src/app/MySQLFriendRepository.cpp
     chatserver/src/app/MySQLGroupRepository.cpp
-    chatserver/src/app/MySQLMessageRepository.cpp
     chatserver/src/app/MySQLMessageStore.cpp
     chatserver/src/app/MySQLUserRepository.cpp
     chatserver/src/app/ProtocolCodec.cpp
