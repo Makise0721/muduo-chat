@@ -41,6 +41,7 @@ add_library(chatserver_core STATIC
     chatserver/src/app/SessionRegistry.cpp
     chatserver/src/db/ConnectionPool.cpp
     chatserver/src/db/MySQL.cpp
+    chatserver/src/db/OfflineBackfill.cpp
     chatserver/src/db/SchemaMigration.cpp)
 target_include_directories(chatserver_core PUBLIC
     ${PROJECT_SOURCE_DIR}/chatserver/include

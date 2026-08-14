@@ -298,9 +298,15 @@ TEST_F(MySqlLeaseRoundTripDb, ExpiresAtPersistsFromAccept)
     const SessionIdentity bob{kBob, 1};
     AcceptOutcome a = rm1.accept(alice, directTo(kBob, "expires-persist-1"));
     ASSERT_TRUE(a.ok);
-    const int64_t expectedExpiresMs = clock.nowMs() + 7LL * 24 * 3600 * 1000;
 
-    // 新 store 实例读回：expiresAtMs 与 accept 时刻注入值差 <=1000ms（秒精度）。
+    // 基准 = accept 写入后 store1 读回的写入值（消除双时钟读数竞态：测试独立
+    // now()+retention 与 accept 内部 now()+retention 两次真实时钟读数偏差，叠加
+    // DATETIME(0) 秒截断可越过 1000ms 容差——×20 压力第 14 轮 10ms 边界失败）。
+    std::vector<Delivery> writeRows = store1.deliveriesByMessage(a.messageId);
+    ASSERT_EQ(1u, writeRows.size());
+    const int64_t expectedExpiresMs = writeRows[0].expiresAtMs;
+
+    // 新 store 实例读回：expiresAtMs 与写入值差 <=1000ms（秒精度）。
     MySQLMessageStore store2(pool(), kCap);
     std::vector<Delivery> rows = store2.deliveriesByMessage(a.messageId);
     ASSERT_EQ(1u, rows.size());
