@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-12 已 VERIFIED；P3-13 待开卡。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；P4 待启动。
 
 ## 从这里开始
 

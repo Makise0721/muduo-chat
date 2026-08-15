@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P3-12 已 VERIFIED）
+当前活动任务：无（P3-13 已 VERIFIED；M3 VERIFIED）
 
-下一任务：P3-13 M3 独立验收、性能矩阵与对抗审查（待开卡，见 [计划 §5](../plans/post-p2-implementation-plan.md#5-p3-详细任务卡)）
+下一任务：无（M3 已 VERIFIED；P4 待启动，见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
 
 ## 1. 文档与事实优先级
 
