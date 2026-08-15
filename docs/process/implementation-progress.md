@@ -110,4 +110,4 @@
 
 | 任务 | 状态 | 证据（命令/结果） |
 |---|---|---|
-| P4-00 固定集群故障与所有权契约 | IN_PROGRESS | 基线 main @ 6bfbf2e；已产出 [ADR-0002](../adr/0002-cluster-ownership-and-failure-contract.md)（accepted）、[cluster-failure-contract.md](../specs/cluster-failure-contract.md)（6 故障点表）、[cluster-context-map.md](../architecture/cluster-context-map.md)、[gateway-compose-topology.md](../architecture/gateway-compose-topology.md)；RED 基线证据：rg 集群词汇零定义（GatewayId/SessionEpoch/PresenceLease/DeliveryRoute 零命中；ConnectionId 仅 executor 注释）+ 单机假设清单（SessionRegistry 进程内、relay 本地 wakeup、lease owner=boot id）；待两轴/四轴独立对抗审查 H/M=0 后转 VERIFIED |
+| P4-00 固定集群故障与所有权契约 | VERIFIED | 基线 main @ 6bfbf2e；已产出 [ADR-0002](../adr/0002-cluster-ownership-and-failure-contract.md)（accepted）、[cluster-failure-contract.md](../specs/cluster-failure-contract.md)（6 故障点表）、[cluster-context-map.md](../architecture/cluster-context-map.md)、[gateway-compose-topology.md](../architecture/gateway-compose-topology.md)；RED 基线证据：rg 集群词汇零定义（GatewayId/SessionEpoch/PresenceLease/DeliveryRoute 零命中；ConnectionId 仅 executor 注释）+ 单机假设清单（SessionRegistry 进程内、relay 本地 wakeup、lease owner=boot id）；`git diff --stat` 仅 docs/ 且 `git diff --check` exit 0；已提交 d5fa459 |
