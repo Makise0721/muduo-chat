@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：P4-00
+当前活动任务：无（P4-01 已 VERIFIED）
 
-下一任务：[P4-00 固定集群故障与所有权契约](../tasks/P4-00.md)（见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
+下一任务：[P4-02 Redis fencing adapter](../plans/post-p2-implementation-plan.md#p4-02-redis-fencing-adapter)（待开卡；见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
 
 ## 1. 文档与事实优先级
 

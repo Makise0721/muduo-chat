@@ -84,3 +84,28 @@ _Avoid_: Message、日志事件
 Reply 的错误分类：0 成功；1 业务失败（认证失败、名称已存在、存储失败、关系冲突）；
 2 会话冲突（重复登录）。
 _Avoid_: 错误码、error code
+
+P4 集群术语（ADR-0002，cluster-context-map 词汇）：
+
+**GatewayId**:
+一个运行 ChatServer 的进程/容器实例的稳定集群寻址标识；跨节点 RPC 与路由按它寻址。
+_Avoid_: 进程 pid、IP:port（不单独作为标识）
+
+**ConnectionId**:
+一条 TCP 连接在所属 Gateway 内的标识；登录前即存在，只在所属 Gateway 内唯一。
+_Avoid_: 全局连接号
+
+**SessionEpoch**:
+单调递增的会话代数；每次登录（重新绑定 Presence 条目）递增，renew/release/投递都
+携带它做 fencing。
+_Avoid_: generation（进程内语义，P3）
+
+**PresenceLease**:
+Presence 目录中 `user -> {gateway_id, connection_id, session_epoch}` 的可过期条目
+（TTL）；只含路由与 epoch，不携带消息真相。
+_Avoid_: 在线标志、消息真相（持久化影子）
+
+**DeliveryRoute**:
+一条已接受 Message 对某个接收者的目标路由 `(user, gateway_id, connection_id, session_epoch)`，
+由当前 PresenceLease 决定；投递动作归 Gateway，路由裁决归 Presence。
+_Avoid_: 持久存储位置

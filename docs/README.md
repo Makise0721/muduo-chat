@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；当前活动卡 [P4-00 固定集群故障与所有权契约](tasks/P4-00.md)（IN_PROGRESS）。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md) 已 VERIFIED；下一卡 P4-02 Redis fencing adapter 待开卡。
 
 ## 从这里开始
 

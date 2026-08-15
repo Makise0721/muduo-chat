@@ -18,7 +18,7 @@
 | **Session** | 一个已登录 User 的在线会话；跨 Gateway 唯一，同一 User 全集群至多一个活动 Session；由 `(UserId, SessionEpoch)` 界定，并记录在哪个 `(GatewayId, ConnectionId)` 上 | 由持有连接的 Gateway 代表；Presence 只是它的路由投影 | 连接、在线状态 |
 | **SessionEpoch** | 单调递增的会话代数；每次登录（重新绑定）递增；renew/release/投递都携带它做 fencing | 由 claim 生成，Gateways 只读 | generation（进程内语义，P3） |
 | **PresenceLease** | Presence 目录中 `user_id -> {gateway_id, connection_id, session_epoch}` 的可过期条目（TTL）；只含路由与 epoch | 由所属 Gateway claim/renew/release | 消息真相、在线标志（持久化影子） |
-| **DeliveryRoute** | 一条已接受 Message 对某个接收者的目标路由 `(recipient, gateway_id, session_epoch)`，由当前 PresenceLease 决定 | 投递动作归 Gateway；路由裁决归 Presence | 持久存储位置 |
+| **DeliveryRoute** | 一条已接受 Message 对某个接收者的目标路由 `(user, gateway_id, connection_id, session_epoch)`，由当前 PresenceLease 决定 | 投递动作归 Gateway；路由裁决归 Presence | 持久存储位置 |
 
 ## 2. 边界与归属
 
@@ -28,7 +28,7 @@ flowchart LR
     S --> G1["Gateway A"]
     S -->|路由投影| P["Presence 目录<br/>user->{gw,conn,epoch} TTL"]
     M["MySQL (Message 真相源)"] --> D["Delivery 状态机"]
-    P --> R["DeliveryRoute (recipient,gw,epoch)"]
+    P --> R["DeliveryRoute (user,gw,conn,epoch)"]
     R --> G2["Gateway B"]
     G2 -->|epoch 校验| S
 ```
@@ -47,6 +47,7 @@ flowchart LR
 - Presence 条目永不携带消息真相；从 Redis 读到的只有路由，读不到 Message/Delivery 状态。
 - 跨节点投递永远校验目标 GatewayId+SessionEpoch；epoch 不匹配的包丢弃并触发重路由，绝不按旧 epoch 继续投递。
 - claim 总是生成新 epoch 并原子覆盖既有条目，无需旧 lease 已过期。
+- TTL 落地约束（P4-02 Redis adapter 可实现性）：TTL 必须 value 内嵌（`expiresAtMs`），`locate` 读取后由客户端比较判定 expired，不依赖 key 自动过期删除。
 - MySQL 是唯一裁决者：Presence 崩溃/Redis down 只影响路由可用性，不影响已接受消息的持久化与状态推进。
 
 ## 4. 与 P3 单机结构的对应
