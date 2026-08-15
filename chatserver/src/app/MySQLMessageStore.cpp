@@ -1146,7 +1146,78 @@ uint32_t MySQLMessageStore::expireDeliveries(int64_t nowMs, uint64_t limit)
         "UPDATE MessageDelivery SET state=3, lease_owner=NULL, lease_until=NULL, "
         "next_attempt_at=NULL, last_sent_at=NULL "
         "WHERE state IN (0,1) AND expires_at IS NOT NULL AND expires_at < FROM_UNIXTIME(?) "
-        "LIMIT ?",
+        "ORDER BY message_id LIMIT ?",
+        binds, 2));
+}
+
+uint32_t MySQLMessageStore::expireDeliveriesDetailed(int64_t nowMs, uint64_t limit,
+                                                     std::vector<ExpiredDeliveryRecord>* out)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    int64_t nowSecs = nowMs / 1000;
+    uint64_t pLimit = limit;
+    MYSQL_BIND binds[2];
+    bindI64(binds[0], &nowSecs);
+    bindU64(binds[1], &pLimit);
+    // 与 expireDeliveries 同一谓词/有界顺序；先读明细（RM mutex 串行下无并发
+    // claim，SELECT→UPDATE 一致），再执行等价 UPDATE。
+    MYSQL_STMT* stmt = mysql->prepareStatement(
+        "SELECT message_id, recipient_id, state FROM MessageDelivery "
+        "WHERE state IN (0,1) AND expires_at IS NOT NULL AND expires_at < FROM_UNIXTIME(?) "
+        "ORDER BY message_id LIMIT ?");
+    if (!stmt) {
+        throwStoreError(mysql_errno(mysql->getConnection()), "prepare expire detail failed");
+    }
+    {
+        PreparedStatementGuard guard(stmt);
+        if (mysql_stmt_bind_param(stmt, binds) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "bind expire detail params");
+        }
+        if (mysql_stmt_execute(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "execute expire detail");
+        }
+        uint64_t messageId = 0;
+        int32_t recipientId = 0;
+        int32_t state = 0;
+        MYSQL_BIND bindOut[3];
+        memset(bindOut, 0, sizeof(bindOut));
+        bindOut[0].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[0].is_unsigned = 1;
+        bindOut[0].buffer = &messageId;
+        bindOut[1].buffer_type = MYSQL_TYPE_LONG;
+        bindOut[1].buffer = &recipientId;
+        bindOut[2].buffer_type = MYSQL_TYPE_LONG;
+        bindOut[2].buffer = &state;
+        if (mysql_stmt_bind_result(stmt, bindOut) != 0 || mysql_stmt_store_result(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "store expire detail result");
+        }
+        while (true) {
+            int rc = mysql_stmt_fetch(stmt);
+            if (rc == MYSQL_NO_DATA) {
+                break;
+            }
+            if (rc != 0) {
+                throwStoreError(mysql_stmt_errno(stmt), "fetch expire detail result");
+            }
+            if (out != nullptr) {
+                ExpiredDeliveryRecord r;
+                r.messageId = messageId;
+                r.recipient = static_cast<uint64_t>(recipientId);
+                r.fromState = decodeState(state);
+                out->push_back(r);
+            }
+        }
+    }
+    return static_cast<uint32_t>(execAffected(*mysql,
+        "UPDATE MessageDelivery SET state=3, lease_owner=NULL, lease_until=NULL, "
+        "next_attempt_at=NULL, last_sent_at=NULL "
+        "WHERE state IN (0,1) AND expires_at IS NOT NULL AND expires_at < FROM_UNIXTIME(?) "
+        "ORDER BY message_id LIMIT ?",
         binds, 2));
 }
 
@@ -1393,4 +1464,17 @@ std::vector<OutboxEvent> MySQLMessageStore::poisonedOutboxEvents(uint64_t limit)
         throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
     }
     return queryOutboxEvents(*acq.lease.get(), "processed_at IS NULL", nullptr, 0, limit);
+}
+
+uint64_t MySQLMessageStore::countUnprocessedOutboxEvents()
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    uint64_t n = 0;
+    (void)queryU64(*acq.lease.get(), "SELECT COUNT(*) FROM OutboxEvent WHERE processed_at IS NULL",
+                   nullptr, 0, n);
+    return n;
 }

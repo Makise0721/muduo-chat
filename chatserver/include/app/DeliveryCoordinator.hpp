@@ -3,6 +3,7 @@
 #include "app/Clock.hpp"
 #include "app/DeliverySink.hpp"
 #include "app/MessageStore.hpp"
+#include "app/ReliableMessageMetrics.hpp"  // P3-12 指标挂点（只计数，BestEffort 不抛）
 
 #include <map>
 #include <memory>
@@ -80,11 +81,31 @@ public:
             outcome.result = AckResult::Idempotent;
             return outcome;
         }
+        const DeliveryState ackedFrom = mine->state;
         mine->state = DeliveryState::Acknowledged;
         mine->acknowledgedAtMs = clock_.nowMs();
         store_.updateDelivery(*mine);
         claimFor(acker);  // ACK 放行同 Conversation 的下一 sequence（暂停中短路）
         outcome.result = AckResult::Acknowledged;
+        // P3-12：Acknowledged 转移 + ACK latency 样本（重复 ACK 已短路不新增）。
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordDeliveryTransition(
+                ReliableMessageMetrics::deliveryMetricId(mine->messageId.value,
+                                                         mine->recipient.value),
+                ReliableMessageMetrics::fromDomainState(ackedFrom),
+                ReliableMessageMetrics::DeliveryState::Acknowledged);
+        });
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordAck(mine->messageId.value);
+        });
+        // P3-12 H2：ACK 终结后驱逐 Recorder 内 delivery 记录（有界内存；计数器
+        // 保留——acked 仍可观测，ack 起点已被 recordAck 消费）。
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordEviction(
+                ReliableMessageMetrics::deliveryMetricId(mine->messageId.value,
+                                                         mine->recipient.value),
+                mine->messageId.value);
+        });
         return outcome;
     }
 
@@ -117,6 +138,14 @@ public:
                 d.leaseBootId = 0;
                 d.leaseUntilMs = 0;
                 store_.updateDelivery(d);
+                // P3-12：旧 generation InFlight → Pending（fencing）。
+                ReliableMessageMetrics::recordBestEffort([&] {
+                    ReliableMessageMetrics::instance().recordDeliveryTransition(
+                        ReliableMessageMetrics::deliveryMetricId(d.messageId.value,
+                                                                 d.recipient.value),
+                        ReliableMessageMetrics::DeliveryState::InFlight,
+                        ReliableMessageMetrics::DeliveryState::Pending);
+                });
             }
         }
         activeByUser_[session.userId] = session;
@@ -144,6 +173,14 @@ public:
                 d.leaseBootId = 0;
                 d.leaseUntilMs = 0;
                 store_.updateDelivery(d);
+                // P3-12：下线 lease 释放 InFlight → Pending。
+                ReliableMessageMetrics::recordBestEffort([&] {
+                    ReliableMessageMetrics::instance().recordDeliveryTransition(
+                        ReliableMessageMetrics::deliveryMetricId(d.messageId.value,
+                                                                 d.recipient.value),
+                        ReliableMessageMetrics::DeliveryState::InFlight,
+                        ReliableMessageMetrics::DeliveryState::Pending);
+                });
             }
         }
         if (cur != activeByUser_.end()) {
@@ -220,6 +257,14 @@ public:
             copy.leaseBootId = 0;
             copy.leaseUntilMs = 0;
             store_.updateDelivery(copy);
+            // P3-12：ACK 超时 InFlight → Pending（随后 claimFor 重投计新 attempt）。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordDeliveryTransition(
+                    ReliableMessageMetrics::deliveryMetricId(d.messageId.value,
+                                                             d.recipient.value),
+                    ReliableMessageMetrics::DeliveryState::InFlight,
+                    ReliableMessageMetrics::DeliveryState::Pending);
+            });
             toClaim.insert(active->second);
         }
         // 立即重投到期头；同 conversation 前序未确认不越序（HOL 由 claimFor 保持）。
@@ -341,6 +386,9 @@ private:
                 const DeliverDisposition disposition = sink_.deliver(attempt);
                 if (disposition == DeliverDisposition::Accepted) {
                     // 准入成功才落状态（claim token = lease_owner/lease_until）。
+                    const DeliveryState claimedFrom = head->state;
+                    const bool isLegacy =
+                        isLegacyClientMessageId(headMessage->command.clientMessageId.value());
                     head->state = DeliveryState::InFlight;
                     head->leaseOwner = session;
                     head->leaseBootId = bootId_;
@@ -350,7 +398,7 @@ private:
                     // 本次投递 + max(ack_timeout, backoff(attemptCount))。
                     head->lastSentAtMs = now;
                     head->nextAttemptAtMs = now + retryDelayMs(head->attemptCount);
-                    if (isLegacyClientMessageId(headMessage->command.clientMessageId.value())) {
+                    if (isLegacy) {
                         // legacy implicit-ack（spec §5.1，P3-07 冻结决策 2）：
                         // socket 准入后即视为已确认，不进入 ACK timeout/重投循环；
                         // 同 conversation 链式放行下一 sequence。
@@ -362,6 +410,37 @@ private:
                         tickNextAttemptsMs_.push_back(head->nextAttemptAtMs);
                     }
                     store_.updateDelivery(*head);
+                    // P3-12 H1：指标在 updateDelivery 成功后才记录——瞬时 DB 故障时
+                    // 不得先走计数（否则同 key 重试再次 Pending→InFlight 迁移使
+                    // pending 下溢、attempt 双计，破守恒）；attempt/retry 语义与
+                    // DB attempt_count 一致（失败不记，重试成功按真实 attemptCount 记）。
+                    ReliableMessageMetrics::recordBestEffort([&] {
+                        ReliableMessageMetrics::instance().recordAttempt(head->attemptCount > 1);
+                    });
+                    ReliableMessageMetrics::recordBestEffort([&] {
+                        ReliableMessageMetrics::instance().recordDeliveryTransition(
+                            ReliableMessageMetrics::deliveryMetricId(head->messageId.value,
+                                                                     head->recipient.value),
+                            ReliableMessageMetrics::fromDomainState(claimedFrom),
+                            ReliableMessageMetrics::DeliveryState::InFlight);
+                    });
+                    if (isLegacy) {
+                        ReliableMessageMetrics::recordBestEffort([&] {
+                            ReliableMessageMetrics::instance().recordDeliveryTransition(
+                                ReliableMessageMetrics::deliveryMetricId(head->messageId.value,
+                                                                         head->recipient.value),
+                                ReliableMessageMetrics::DeliveryState::InFlight,
+                                ReliableMessageMetrics::DeliveryState::Acknowledged);
+                        });
+                        // P3-12 H2：legacy 投递即终结（Acknowledged），驱逐 Recorder
+                        // 内记录与未 ACK 起点（有界内存；计数器保留——acked 仍可观测）。
+                        ReliableMessageMetrics::recordBestEffort([&] {
+                            ReliableMessageMetrics::instance().recordEviction(
+                                ReliableMessageMetrics::deliveryMetricId(head->messageId.value,
+                                                                         head->recipient.value),
+                                head->messageId.value);
+                        });
+                    }
                     continue;
                 }
                 if (disposition == DeliverDisposition::Paused) {

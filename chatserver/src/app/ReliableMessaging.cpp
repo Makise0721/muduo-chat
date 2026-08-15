@@ -3,6 +3,8 @@
 #include "app/DeliveryCoordinator.hpp"
 #include "app/DeliverySink.hpp"
 #include "app/MessageStore.hpp"
+#include "app/MySQLMessageStore.hpp"  // MessageStoreError/StoreErrorKind（accept 异常面指标）
+#include "app/ReliableMessageMetrics.hpp"  // P3-12 指标挂点（只计数，BestEffort 不抛）
 
 #include <atomic>
 #include <chrono>
@@ -92,42 +94,94 @@ AcceptOutcome ReliableMessaging::accept(const SessionIdentity& sender, const Sen
             outcome.messageId = existing->id;
             outcome.conversationId = existing->conversationId;
             outcome.sequence = existing->sequence;
+            // P3-12：同 key 幂等重试 → duplicate 计数。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordAccept(
+                    ReliableMessageMetrics::AcceptOutcome::Duplicate);
+            });
             // A prior post-commit delivery update may have failed after the
             // durable accept.  Re-run the online claim on a same-key retry;
             // claimFor fences already InFlight/Acknowledged rows.
             notifyAcceptedBestEffort(*coordinator_, recipientsFor(existing->command));
         } else {
             outcome.error = AcceptError::IdempotencyConflict;
+            // P3-12：不同 payload 复用 key → conflict 计数。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordAccept(
+                    ReliableMessageMetrics::AcceptOutcome::Conflict);
+            });
         }
         return outcome;
     }
 
-    Message draft;
-    draft.senderId = sender.userId;
-    draft.command = cmd;
-    draft.conversationId = store_.getOrCreateConversation(sender, cmd);
-    draft.acceptedAtMs = clock_.nowMs();  // P3-09：outbox available_at（InMemory 对称 MySQL CURRENT_TIMESTAMP）
-    const Message accepted = store_.insertMessage(draft);
+    try {
+        Message draft;
+        draft.senderId = sender.userId;
+        draft.command = cmd;
+        draft.conversationId = store_.getOrCreateConversation(sender, cmd);
+        draft.acceptedAtMs = clock_.nowMs();  // P3-09：outbox available_at（InMemory 对称 MySQL CURRENT_TIMESTAMP）
+        const Message accepted = store_.insertMessage(draft);
 
-    const std::vector<UserId> recipients = recipientsFor(cmd);
-    const int64_t expiresAtMs = clock_.nowMs() + config_.messageRetentionMs;
-    for (size_t i = 0; i < recipients.size(); ++i) {
-        Delivery delivery;
-        delivery.messageId = accepted.id;
-        delivery.conversationId = accepted.conversationId;
-        delivery.recipient = recipients[i];
-        delivery.expiresAtMs = expiresAtMs;  // P3-08：retention deadline（spec §4 过期行）
-        store_.insertDelivery(delivery);
+        const std::vector<UserId> recipients = recipientsFor(cmd);
+        const int64_t expiresAtMs = clock_.nowMs() + config_.messageRetentionMs;
+        for (size_t i = 0; i < recipients.size(); ++i) {
+            Delivery delivery;
+            delivery.messageId = accepted.id;
+            delivery.conversationId = accepted.conversationId;
+            delivery.recipient = recipients[i];
+            delivery.expiresAtMs = expiresAtMs;  // P3-08：retention deadline（spec §4 过期行）
+            store_.insertDelivery(delivery);
+        }
+
+        // P3-12：accept 结果分类 + ACK 起点 + legacy-mode + 逐投递创建（全部
+        // store 写成功后才记录；异常面在下方 catch 计数）。
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordAccept(
+                ReliableMessageMetrics::AcceptOutcome::Accepted);
+        });
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordAcceptedTimestamp(
+                accepted.id.value, draft.acceptedAtMs);
+        });
+        if (isLegacyClientMessageId(cmd.clientMessageId.value())) {
+            // spec §5.1：缺 client_message_id 走 implicit-ack 的 Delivery 单独计数。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordLegacyMode();
+            });
+        }
+        for (size_t i = 0; i < recipients.size(); ++i) {
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordDeliveryCreated(
+                    ReliableMessageMetrics::deliveryMetricId(accepted.id.value,
+                                                             recipients[i].value),
+                    draft.acceptedAtMs);
+            });
+        }
+
+        // P3-07：对在线接收者立即 claim（在线投递；离线保持 Pending 待登录 claim）。
+        notifyAcceptedBestEffort(*coordinator_, recipients);
+
+        outcome.ok = true;
+        outcome.messageId = accepted.id;
+        outcome.conversationId = accepted.conversationId;
+        outcome.sequence = accepted.sequence;
+        return outcome;
+    } catch (const MessageStoreError& e) {
+        // P3-12：too-many-recipients 与并发冲突经异常面计数（其余错误 best-effort
+        // 不假装成功，不计入 accept 结果分类）。
+        if (e.kind() == StoreErrorKind::TooManyRecipients) {
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordAccept(
+                    ReliableMessageMetrics::AcceptOutcome::TooManyRecipients);
+            });
+        } else if (e.kind() == StoreErrorKind::IdempotencyConflict) {
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordAccept(
+                    ReliableMessageMetrics::AcceptOutcome::Conflict);
+            });
+        }
+        throw;
     }
-
-    // P3-07：对在线接收者立即 claim（在线投递；离线保持 Pending 待登录 claim）。
-    notifyAcceptedBestEffort(*coordinator_, recipients);
-
-    outcome.ok = true;
-    outcome.messageId = accepted.id;
-    outcome.conversationId = accepted.conversationId;
-    outcome.sequence = accepted.sequence;
-    return outcome;
 }
 
 AckOutcome ReliableMessaging::acknowledge(const SessionIdentity& acker, MessageId messageId)
@@ -172,7 +226,25 @@ int64_t ReliableMessaging::runTick()
 {
     const int64_t now = clock_.nowMs();
     // 1) retention deadline：Pending/InFlight → Expired（可查询，不删除）。
-    store_.expireDeliveries(now, config_.retryBatchLimit);
+    // P3-12：明细版同语义执行，并逐行记录 Expired 状态转移（复用状态转移）。
+    std::vector<ExpiredDeliveryRecord> expired;
+    store_.expireDeliveriesDetailed(now, config_.retryBatchLimit, &expired);
+    for (size_t i = 0; i < expired.size(); ++i) {
+        const ExpiredDeliveryRecord& r = expired[i];
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordDeliveryTransition(
+                ReliableMessageMetrics::deliveryMetricId(r.messageId, r.recipient),
+                ReliableMessageMetrics::fromDomainState(r.fromState),
+                ReliableMessageMetrics::DeliveryState::Expired);
+        });
+        // P3-12 H2：过期即终结，驱逐 Recorder 内 delivery 记录与未 ACK 起点
+        // （有界内存；计数器保留——Expired 状态仍可观测、守恒不破）。
+        ReliableMessageMetrics::recordBestEffort([&] {
+            ReliableMessageMetrics::instance().recordEviction(
+                ReliableMessageMetrics::deliveryMetricId(r.messageId, r.recipient),
+                r.messageId);
+        });
+    }
     // 2) acked/expired 独立 retention cleanup（周期执行、batch 有界、幂等）。
     if (now - lastCleanupMs_ >= config_.cleanupCycleMs) {
         lastCleanupMs_ = now;

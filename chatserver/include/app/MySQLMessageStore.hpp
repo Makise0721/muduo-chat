@@ -89,6 +89,8 @@ public:
     std::vector<Delivery> deliveriesDueForRetry(int64_t nowMs, uint64_t limit) override;
     uint32_t timeGranularityMs() override;
     uint32_t expireDeliveries(int64_t nowMs, uint64_t limit) override;
+    uint32_t expireDeliveriesDetailed(int64_t nowMs, uint64_t limit,
+                                      std::vector<ExpiredDeliveryRecord>* out) override;
     uint32_t cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
                                uint64_t limit) override;
     std::vector<OutboxEvent> claimOutboxEvents(int64_t nowMs, const std::string& leaseOwner,
@@ -97,6 +99,7 @@ public:
     void markOutboxPoisoned(uint64_t eventId, int64_t nowMs) override;
     std::shared_ptr<const OutboxEvent> findOutboxEvent(uint64_t eventId) override;
     std::vector<OutboxEvent> poisonedOutboxEvents(uint64_t limit) override;
+    uint64_t countUnprocessedOutboxEvents() override;
 
 private:
     void fire(Step step);

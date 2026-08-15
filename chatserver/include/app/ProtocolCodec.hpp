@@ -95,6 +95,11 @@ nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errm
 // legacy-mode 计数（spec §5.1 能力差异可观测；正式指标 P3-12 暴露）。
 uint64_t legacyModeCount();
 
+// P3-12：SIGUSR1 METRICS 行追加的 reliable_* 字段（key=value 空格分隔，无前导
+// 空格）。实现于 ProtocolCodec.cpp（领域 TU，可引 ReliableMessageMetrics.hpp）；
+// mymuduo TU（main.cpp）经此入口取快照，避免引入领域 class Clock 同名冲突。
+std::string reliableMetricsLine();
+
 // ---- P3-07 投递与 ACK（executor worker 线程调用；ReliableMessaging 单一调用者
 // 串行驱动）。DeliverySink 仅前向声明：完整定义在 ChatService 侧 mymuduo TU
 // （SessionDeliverySink.cpp），本头保持 mymuduo 无关。----

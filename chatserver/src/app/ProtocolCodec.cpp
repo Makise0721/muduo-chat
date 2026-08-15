@@ -5,11 +5,13 @@
 #include "app/DeliverySink.hpp"  // DeliverySink 完整定义（ReliableMessaging.hpp 仅前向声明）
 #include "app/LocalOutboxRelay.hpp"
 #include "app/MySQLMessageStore.hpp"
+#include "app/ReliableMessageMetrics.hpp"  // P3-12 快照（reliable_* METRICS 行）
 #include "app/ReliableMessaging.hpp"
 #include "db/MySQLGuards.hpp"
 
 #include <atomic>
 #include <cstring>
+#include <sstream>
 
 namespace {
 
@@ -326,6 +328,33 @@ nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errm
 uint64_t legacyModeCount()
 {
     return legacyCounter().load();
+}
+
+std::string reliableMetricsLine()
+{
+    // P3-12：可靠消息指标快照 → METRICS 行 reliable_* 字段（字段名冻结于
+    // ReliableMessageFaultProcess 的 RELIABLE_FIELDS）。整行由 main.cpp SIGUSR1
+    // 处理器单次输出，此处只返回 key=value 片段。
+    const ReliableMessageMetrics::Snapshot s = ReliableMessageMetrics::instanceSnapshot();
+    std::ostringstream os;
+    os << "reliable_accepts=" << s.accepts
+       << " reliable_duplicates=" << s.duplicates
+       << " reliable_conflicts=" << s.conflicts
+       << " reliable_rejected_too_many_recipients=" << s.rejectedTooManyRecipients
+       << " reliable_pending=" << s.pending
+       << " reliable_inflight=" << s.inflight
+       << " reliable_acked=" << s.acked
+       << " reliable_expired=" << s.expired
+       << " reliable_attempts=" << s.attempts
+       << " reliable_retries=" << s.retries
+       << " reliable_legacy_mode=" << s.legacyModeCount
+       << " reliable_outbox_lag=" << s.outboxLag
+       << " reliable_outbox_poison=" << s.outboxPoison
+       << " reliable_ack_latency_p50_ms=" << s.ackLatencyP50Ms
+       << " reliable_ack_latency_p95_ms=" << s.ackLatencyP95Ms
+       << " reliable_ack_latency_p99_ms=" << s.ackLatencyP99Ms
+       << " reliable_oldest_pending_age_ms=" << s.oldestPendingAgeMs;
+    return os.str();
 }
 
 // ---- P3-07 投递与 ACK（executor worker 线程；wiring().messaging 单一调用者）----

@@ -7,6 +7,15 @@
 
 // 内部 seam（计划 §3）：InMemory/MySQL 两个 adapter；本体只经此访问持久状态，
 // 领域状态机逻辑（幂等判定、claim、lease、顺序）不放 adapter。
+
+// P3-12（metrics 最小扩展）：expire 明细行——逐行 (messageId, recipient,
+// fromState) 供 ReliableMessageMetrics 记录 Pending/InFlight → Expired 转移。
+struct ExpiredDeliveryRecord {
+    uint64_t messageId = 0;
+    uint64_t recipient = 0;
+    DeliveryState fromState = DeliveryState::Pending;
+};
+
 class MessageStore {
 public:
     virtual ~MessageStore() = default;
@@ -61,6 +70,19 @@ public:
         (void)nowMs;
         (void)limit;
         return 0;
+    }
+
+    // P3-12（metrics 最小扩展，docs/tasks/P3-12.md 登记）：expire 转移的按行
+    // 明细。与 expireDeliveries 等价地把到期 Pending/InFlight → Expired，并把每行
+    // (messageId, recipient, fromState) 追加到 out（有界 limit 行），供
+    // ReliableMessageMetrics 逐行记录状态转移。默认实现回退到 expireDeliveries
+    // （out 不填）：既有测试替身只 override expireDeliveries 时行为不变；
+    // InMemory/MySQL override 同时报告明细。
+    virtual uint32_t expireDeliveriesDetailed(int64_t nowMs, uint64_t limit,
+                                              std::vector<ExpiredDeliveryRecord>* out)
+    {
+        (void)out;
+        return expireDeliveries(nowMs, limit);
     }
 
     // acked/expired 独立 retention 清理（spec §3 Acknowledged/Expired --> [*]）：
@@ -124,5 +146,13 @@ public:
     {
         (void)limit;
         return std::vector<OutboxEvent>();
+    }
+
+    // P3-12（metrics 最小扩展，docs/tasks/P3-12.md 登记）：outbox lag gauge 的
+    // 有界公开查询——未 processed（processed_at IS NULL）事件总数。默认 0（同
+    // outbox port 默认空实现模式）；InMemory/MySQL override。
+    virtual uint64_t countUnprocessedOutboxEvents()
+    {
+        return 0;
     }
 };

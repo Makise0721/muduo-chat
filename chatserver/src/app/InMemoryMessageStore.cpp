@@ -179,6 +179,32 @@ uint32_t InMemoryMessageStore::expireDeliveries(int64_t nowMs, uint64_t limit)
     return moved;
 }
 
+uint32_t InMemoryMessageStore::expireDeliveriesDetailed(int64_t nowMs, uint64_t limit,
+                                                        std::vector<ExpiredDeliveryRecord>* out)
+{
+    // 与 expireDeliveries 同一谓词/有界顺序；额外逐行报告 (messageId, recipient,
+    // fromState) 供 metrics 记录 Expired 转移（默认实现回退 expireDeliveries，
+    // 双 adapter override 报明细）。
+    uint32_t moved = 0;
+    for (std::map<DeliveryKey, Delivery>::iterator it = deliveries_.begin();
+         it != deliveries_.end() && moved < limit; ++it) {
+        Delivery& d = it->second;
+        if (d.state != DeliveryState::Acknowledged && d.state != DeliveryState::Expired &&
+            d.expiresAtMs > 0 && nowMs > d.expiresAtMs) {
+            if (out != nullptr) {
+                ExpiredDeliveryRecord r;
+                r.messageId = d.messageId.value;
+                r.recipient = d.recipient.value;
+                r.fromState = d.state;
+                out->push_back(r);
+            }
+            d.state = DeliveryState::Expired;
+            ++moved;
+        }
+    }
+    return moved;
+}
+
 uint32_t InMemoryMessageStore::cleanupDeliveries(int64_t ackedBeforeMs, int64_t expiredBeforeMs,
                                                  uint64_t limit)
 {
@@ -264,4 +290,16 @@ std::vector<OutboxEvent> InMemoryMessageStore::poisonedOutboxEvents(uint64_t lim
         }
     }
     return out;
+}
+
+uint64_t InMemoryMessageStore::countUnprocessedOutboxEvents()
+{
+    uint64_t n = 0;
+    for (std::map<uint64_t, OutboxEvent>::const_iterator it = outboxEvents_.begin();
+         it != outboxEvents_.end(); ++it) {
+        if (it->second.processedAtMs == 0) {
+            ++n;
+        }
+    }
+    return n;
 }

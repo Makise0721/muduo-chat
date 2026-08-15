@@ -11,6 +11,7 @@
 #include "app/Clock.hpp"
 #include "app/InMemoryMessageStore.hpp"
 #include "app/MessageStore.hpp"
+#include "app/ReliableMessageMetrics.hpp"  // P3-12 H1 RED：快照守恒断言
 #include "app/ReliableMessaging.hpp"
 
 #include "FakeClock.hpp"
@@ -18,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -294,6 +296,116 @@ TEST(DeliveryRetryTest, SchedulerWakeAlignsToStoreTimeGranularity)
     // （= now 1020001 + 20999），而非封顶错位点 20000（scheduler 醒于 1040001，
     // 该行在 MySQL 上 1041000 才到期，扫描空 → 回退整轮 ack_timeout）。
     EXPECT_EQ(20999, wake);
+    rm.stop(clock.nowMs() + 1000);
+}
+
+// P3-12 H1 RED：claimFor 的指标记录先于 store_.updateDelivery —— 瞬时 DB 故障时
+// 指标已先走（attempt/转移已记、DB 未写），同 key 重试再次 Pending→InFlight
+// 迁移使 pending 计数下溢（uint64 回绕巨大）、attempts 双计，破守恒。用公开
+// MessageStore 装饰器（ReliableMessagingContractTest::ThrowOnceOnUpdateStore 同
+// 模式）注入一次 updateDelivery 失败，断言快照守恒、pending 无下溢、attempt 只
+// 计成功投递（与 DB attempt_count 一致）。
+class ThrowOnceOnUpdateStore : public MessageStore {
+public:
+    std::shared_ptr<const Message> findAccepted(const ClientMessageId& id, UserId sender) override
+    {
+        return delegate_.findAccepted(id, sender);
+    }
+
+    ConversationId getOrCreateConversation(const SessionIdentity& sender,
+                                           const SendMessageCommand& cmd) override
+    {
+        return delegate_.getOrCreateConversation(sender, cmd);
+    }
+
+    Message insertMessage(const Message& draft) override { return delegate_.insertMessage(draft); }
+
+    void insertDelivery(const Delivery& delivery) override { delegate_.insertDelivery(delivery); }
+
+    void updateDelivery(const Delivery& delivery) override
+    {
+        ++updateCalls_;
+        if (failNextUpdate_) {
+            failNextUpdate_ = false;
+            throw std::runtime_error("injected updateDelivery failure");
+        }
+        delegate_.updateDelivery(delivery);
+    }
+
+    std::vector<Delivery> deliveriesByRecipient(UserId recipient) override
+    {
+        return delegate_.deliveriesByRecipient(recipient);
+    }
+
+    std::vector<Delivery> deliveriesByMessage(MessageId messageId) override
+    {
+        return delegate_.deliveriesByMessage(messageId);
+    }
+
+    std::shared_ptr<const Message> findMessage(MessageId messageId) override
+    {
+        return delegate_.findMessage(messageId);
+    }
+
+    size_t updateCalls() const { return updateCalls_; }
+
+private:
+    InMemoryMessageStore delegate_;
+    bool failNextUpdate_ = true;
+    size_t updateCalls_ = 0;
+};
+
+TEST(DeliveryRetryTest, MetricsConserveWhenClaimUpdateFails)
+{
+    // 进程单例 Recorder 无 reset，跨用例/--gtest_repeat 轮次累积（卡登记语义）。
+    // recordDeliveryCreated 对同 identity 幂等、且陈旧状态上的 Pending→InFlight
+    // 转移会使 pending 下溢——复用 (messageId, recipient) 时第 2 轮起 created
+    // delta=0、pending 巨大，绝对与相对计数断言都会失真。每轮用唯一 recipient
+    // 使本用例 identity 不与既有投递碰撞，再对基线快照取 delta 断言。
+    static uint64_t s_run = 0;
+    const UserId bob(10000 + (s_run++ * 10000));
+    const ReliableMessageMetrics::Snapshot sBase = ReliableMessageMetrics::instance().snapshot();
+    ASSERT_TRUE(ReliableMessageMetrics::instance().isConserving());
+
+    FakeClock clock;
+    clock.set(kNow);
+    ThrowOnceOnUpdateStore store;
+    TimestampedDeliverySink sink(clock);
+    ReliableMessaging rm(store, sink, clock, kLeaseMs, testRetryConfig());
+
+    // 在线接收者：accept 的 post-commit claim 命中首次 updateDelivery 失败。
+    rm.sessionAvailable(SessionIdentity{bob, 1});
+    AcceptOutcome a = rm.accept(SessionIdentity{kAlice, 1}, directTo(bob, "m1", "hello"));
+    ASSERT_TRUE(a.ok);
+    ASSERT_EQ(1u, store.updateCalls());
+    ASSERT_EQ(1u, sink.attempts().size());  // sink 准入已发生，DB 写失败
+    // DB 侧：行保持 Pending、attempt_count=0（失败未落库）。
+    std::vector<Delivery> rows = store.deliveriesByMessage(a.messageId);
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(DeliveryState::Pending, rows[0].state);
+    EXPECT_EQ(0u, rows[0].attemptCount);
+
+    // 同 key 重试：幂等身份不变，重新 claim 成功（第二次 updateDelivery 通过）。
+    AcceptOutcome retry = rm.accept(SessionIdentity{kAlice, 1}, directTo(bob, "m1", "hello"));
+    ASSERT_TRUE(retry.ok);
+    ASSERT_TRUE(retry.duplicate);
+    ASSERT_EQ(a.messageId.value, retry.messageId.value);
+    ASSERT_EQ(2u, store.updateCalls());
+    ASSERT_EQ(2u, sink.attempts().size());
+
+    const ReliableMessageMetrics::Snapshot s1 = ReliableMessageMetrics::instance().snapshot();
+    // 守恒：四态和 == created（快照级，不破）。
+    EXPECT_TRUE(ReliableMessageMetrics::instance().isConserving());
+    EXPECT_EQ(s1.createdDeliveries, s1.pending + s1.inflight + s1.acked + s1.expired);
+    // 本测试每轮只新建立 1 条 Delivery（唯一 identity），最终 InFlight（重试
+    // claim 成功）。
+    EXPECT_EQ(sBase.createdDeliveries + 1, s1.createdDeliveries);
+    // pending 无下溢：created 后即被 claim，delta 为 0（下溢会使其巨大）。
+    EXPECT_EQ(sBase.pending, s1.pending);
+    EXPECT_EQ(sBase.inflight + 1, s1.inflight);
+    // attempt 只计成功投递（与 DB attempt_count=1 一致）：delta == 1。
+    EXPECT_EQ(sBase.attempts + 1, s1.attempts);
+
     rm.stop(clock.nowMs() + 1000);
 }
 

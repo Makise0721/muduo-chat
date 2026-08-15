@@ -1,5 +1,7 @@
 #include "app/LocalOutboxRelay.hpp"
 
+#include "app/ReliableMessageMetrics.hpp"  // P3-12 指标挂点（只计数，BestEffort 不抛）
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -104,10 +106,20 @@ int LocalOutboxRelay::scanLocked()
             // processed、可查询（poison 谓词 = processed_at IS NULL），lease 保留
             // 由到期驱动重领重试；不阻断同批后续事件。relay 不判 poison（异常类型
             // 无法区分坏 payload 与瞬时存储故障；见 P3-09 M 的 L 登记）——统一仅不
-            // 标 processed，瞬时故障靠 lease 到期自愈、真 poison 持续可查询（P3-12
-            // 再接管精确指标）。
+            // 标 processed，瞬时故障靠 lease 到期自愈、真 poison 持续可查询。
+            // P3-12：处理失败事件逐条计 poison（含瞬时故障——best-effort 可观测，
+            // 精确区分属后续故障矩阵迭代）。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordOutboxPoison();
+            });
         }
     }
+    // P3-12：outbox lag gauge = 未 processed 事件数（有界公开查询；查询失败不
+    // 阻断 relay 消费——best-effort）。
+    ReliableMessageMetrics::recordBestEffort([&] {
+        const uint64_t lag = store_.countUnprocessedOutboxEvents();
+        ReliableMessageMetrics::instance().updateOutboxLag(lag);
+    });
     return claimedCount;
 }
 

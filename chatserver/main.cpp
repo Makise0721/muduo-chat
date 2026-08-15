@@ -207,6 +207,8 @@ int main(int argc, char** argv) {
                        << " executor_queue=" << ChatService::instance()->executorQueueDepth()
                        << " executor_drop_full=" << ChatService::instance()->executorDroppedFull()
                        << " executor_drop_shutdown=" << ChatService::instance()->executorDroppedShutdown();
+                    // P3-12：同 METRICS 行追加可靠消息字段（整行单次输出保持）。
+                    os << " " << reliableMetricsLine();
                     std::cout << os.str() << std::endl;
                 } else {
                     beginShutdown(&loop, &server, &v2Server, shutdownTimeoutMs, &flow);
