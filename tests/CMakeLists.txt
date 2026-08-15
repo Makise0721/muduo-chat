@@ -304,6 +304,14 @@ add_test(NAME LegacyCutoverRehearsalProcess
         $<TARGET_FILE:backfill>)
 set_tests_properties(LegacyCutoverRehearsalProcess PROPERTIES TIMEOUT 240 RESOURCE_LOCK chat_server_ports)
 
+# P3-12 RED：10 kill 点 × 三层断言（客户端可见结果 + DB 状态 + reliable_* 指标
+# 可定位）。reliable_* 尚不存在 → RED 运行失败即合法 RED；TIMEOUT 900 覆盖
+# 10 个场景（每场景真实 spawn/kill/重启 + MySQL 断言）。
+add_test(NAME ReliableMessageFaultProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/reliable_message_fault_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(ReliableMessageFaultProcess PROPERTIES TIMEOUT 900 RESOURCE_LOCK chat_server_ports)
+
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest ReliableMessageMetricsTest SessionSerialExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest LegacyCutoverTest SessionDeliverySinkTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
