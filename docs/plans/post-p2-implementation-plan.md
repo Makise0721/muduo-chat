@@ -4,7 +4,7 @@
 
 计划基线：`main` @ `2e2a7f9`
 
-状态：`M3_VERIFIED`（P3-00..P3-13 全部 VERIFIED；P4 待启动）
+状态：`IN_PROGRESS_P4-00`（M3 已 VERIFIED；当前活动卡 [P4-00](../tasks/P4-00.md)）
 
 关键输入：
 

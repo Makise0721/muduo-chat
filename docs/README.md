@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；P4 待启动。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；当前活动卡 [P4-00 固定集群故障与所有权契约](tasks/P4-00.md)（IN_PROGRESS）。
 
 ## 从这里开始
 
