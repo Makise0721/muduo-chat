@@ -4,30 +4,30 @@
 #include "app/DomainTypes.hpp"
 
 #include <cstdint>
-#include <map>
-#include <mutex>
 
-// P4-01 Presence 目录 port（docs/tasks/P4-01.md、ADR-0002、
-// docs/architecture/cluster-context-map.md §1/§3）。当前唯一 adapter 是
-// in-memory（本深模块即具体实现，注入 Clock 判 TTL）；Redis adapter 与
-// 生产 wiring 分别属 P4-02/P4-05，不在此卡实现。
+// P4-01/P4-02 Presence 目录 port（docs/tasks/P4-01.md、docs/tasks/P4-02.md、
+// ADR-0002、docs/architecture/cluster-context-map.md §1/§3）。P4-01 为具体
+// in-memory 深模块；P4-02 引入 Redis adapter 后抽象为 port，两个 adapter 共用
+// 同一领域 interface（重构理由见 P4-02.md"Port 重构理由"节）。
 //
-// 语义（卡 Interface/完成定义，PresenceContractTest 逐条断言）：
-// - 状态转换原子：单次调用二值结果，无部分状态；全部公开方法单锁互斥，
-//   并发 claim 同一 user 恰一赢（最后一次写入者持最大 epoch）。
-// - claim 不带 epoch：总是生成新 SessionEpoch 并原子覆盖既有条目，无需旧
-//   lease 已过期（cluster-context-map §3 关键不变式）；epoch 由全局单调计数器
-//   生成，绝不回退。
+// 语义（卡 Interface/完成定义，PresenceContractTest/RedisPresenceContractTest
+// 逐条断言）：
+// - 状态转换原子：单次调用二值结果，无部分状态。
+// - claim 不带 epoch：总是生成新 SessionEpoch 并原子覆盖既有条目，无需旧 lease
+//   已过期（cluster-context-map §3 关键不变式）。
 // - renew/release 为 compare-and-delete：携带的 epoch 与当前条目一致才生效；
 //   epoch 不匹配返回 NotEpoch 且条目不变；条目不存在 / TTL 到期返回 NotFound。
 // - locate 返回当前路由 (gateway_id, connection_id, session_epoch)；TTL 到期
 //   视为不存在（expired=true），与"从未 claim / release 后"（expired=false）
 //   可区分。
-// - injectFailure 是 per-op 故障注入 seam（模拟依赖不可用）：注入时不改变
-//   任何状态，关闭后恢复。
+// - dependency unavailable（Redis 不可用 / adapter 注入故障）返回
+//   DependencyUnavailable，与各业务错误可区分。
 //
-// 线程安全：全部公开方法单 mutex 互斥；Clock::nowMs 由调用方保证线程安全
-// （FakeClock 内部互斥，UnixEpochClock 无共享状态）。
+// adapter 与线程语义：
+// - InMemoryPresenceDirectory：单 mutex 互斥（P4-01 实现语义原样保留），
+//   injectFailure 为其具体故障注入 seam（不进入 port）。
+// - RedisPresenceDirectory：单 RedisConn 同步请求/响应，非线程共享；并发 claim
+//   经每线程/每进程独立实例（独立连接）触发 Redis Lua 原子性（多 Gateway 现实）。
 
 struct GatewayId {
     explicit GatewayId() = default;
@@ -68,7 +68,7 @@ struct DeliveryRoute {
 enum class PresenceError {
     NotEpoch,               // renew/release 携带旧 epoch（compare-and-delete 被拒）
     NotFound,               // 条目不存在（TTL 到期 / 从未 claim / release 后）
-    DependencyUnavailable,  // 依赖不可用（injectFailure 注入）
+    DependencyUnavailable,  // 依赖不可用（Redis 故障 / adapter 注入失败）
 };
 
 struct ClaimResult {
@@ -97,33 +97,12 @@ struct LocateResult {
 
 class PresenceDirectory {
 public:
-    PresenceDirectory(Clock& clock, int64_t ttlMs);
+    virtual ~PresenceDirectory() = default;
 
-    ClaimResult claim(UserId user, GatewayId gateway, ConnectionId conn);
-    RenewResult renew(UserId user, GatewayId gateway, ConnectionId conn, SessionEpoch epoch);
-    ReleaseResult release(UserId user, GatewayId gateway, ConnectionId conn, SessionEpoch epoch);
-    LocateResult locate(UserId user);
-
-    // 依赖不可用注入 seam（模拟 adapter 故障；per-op，不销毁既有条目）。
-    void injectFailure(bool fail);
-
-private:
-    struct Entry {
-        Entry() = default;
-        Entry(GatewayId gw, ConnectionId conn, SessionEpoch ep, int64_t exp)
-            : gatewayId(gw), connectionId(conn), sessionEpoch(ep), expiresAtMs(exp)
-        {
-        }
-        GatewayId gatewayId;
-        ConnectionId connectionId;
-        SessionEpoch sessionEpoch;
-        int64_t expiresAtMs = 0;
-    };
-
-    Clock& clock_;
-    int64_t ttlMs_;
-    uint64_t nextEpoch_ = 1;  // 全局单调 epoch 计数器（claim 每次 +1，绝不回退）
-    bool failure_ = false;
-    std::mutex mutex_;
-    std::map<UserId, Entry> entries_;
+    virtual ClaimResult claim(UserId user, GatewayId gateway, ConnectionId conn) = 0;
+    virtual RenewResult renew(UserId user, GatewayId gateway, ConnectionId conn,
+                              SessionEpoch epoch) = 0;
+    virtual ReleaseResult release(UserId user, GatewayId gateway, ConnectionId conn,
+                                  SessionEpoch epoch) = 0;
+    virtual LocateResult locate(UserId user) = 0;
 };

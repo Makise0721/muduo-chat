@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P4-01 已 VERIFIED）
+当前活动任务：无（P4-02 已 VERIFIED）
 
-下一任务：[P4-02 Redis fencing adapter](../plans/post-p2-implementation-plan.md#p4-02-redis-fencing-adapter)（待开卡；见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
+下一任务：docs/tasks/P4-03.md（OutboxPublisher port 与 Kafka adapter，待开卡）
 
 ## 1. 文档与事实优先级
 

@@ -1,13 +1,13 @@
-#include "app/PresenceDirectory.hpp"
+#include "app/InMemoryPresenceDirectory.hpp"
 
 #include <utility>
 
-PresenceDirectory::PresenceDirectory(Clock& clock, int64_t ttlMs)
+InMemoryPresenceDirectory::InMemoryPresenceDirectory(Clock& clock, int64_t ttlMs)
     : clock_(clock), ttlMs_(ttlMs), nextEpoch_(1)
 {
 }
 
-ClaimResult PresenceDirectory::claim(UserId user, GatewayId gateway, ConnectionId conn)
+ClaimResult InMemoryPresenceDirectory::claim(UserId user, GatewayId gateway, ConnectionId conn)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     ClaimResult result;
@@ -24,8 +24,8 @@ ClaimResult PresenceDirectory::claim(UserId user, GatewayId gateway, ConnectionI
     return result;
 }
 
-RenewResult PresenceDirectory::renew(UserId user, GatewayId gateway, ConnectionId conn,
-                                     SessionEpoch epoch)
+RenewResult InMemoryPresenceDirectory::renew(UserId user, GatewayId gateway, ConnectionId conn,
+                                             SessionEpoch epoch)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     RenewResult result;
@@ -52,8 +52,8 @@ RenewResult PresenceDirectory::renew(UserId user, GatewayId gateway, ConnectionI
     return result;
 }
 
-ReleaseResult PresenceDirectory::release(UserId user, GatewayId gateway, ConnectionId conn,
-                                         SessionEpoch epoch)
+ReleaseResult InMemoryPresenceDirectory::release(UserId user, GatewayId gateway,
+                                                 ConnectionId conn, SessionEpoch epoch)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     ReleaseResult result;
@@ -79,7 +79,7 @@ ReleaseResult PresenceDirectory::release(UserId user, GatewayId gateway, Connect
     return result;
 }
 
-LocateResult PresenceDirectory::locate(UserId user)
+LocateResult InMemoryPresenceDirectory::locate(UserId user)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     LocateResult result;
@@ -105,7 +105,7 @@ LocateResult PresenceDirectory::locate(UserId user)
     return result;
 }
 
-void PresenceDirectory::injectFailure(bool fail)
+void InMemoryPresenceDirectory::injectFailure(bool fail)
 {
     std::lock_guard<std::mutex> lk(mutex_);
     failure_ = fail;

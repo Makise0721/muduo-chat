@@ -2,47 +2,12 @@
 // （docs/tasks/P4-01.md、docs/adr/0002-cluster-ownership-and-failure-contract.md、
 // docs/architecture/cluster-context-map.md §1/§3）。
 //
-// 本文件 RED 引用尚不存在的 app/PresenceDirectory.hpp → 编译失败（missing header）
-// 即合法 RED；GREEN 时按本文件用法精确实现该接口（命名/语义冻结，不随实现调整，
-// 参照 P3-02/P4-00 先例）。
+// P4-02 起 PresenceDirectory 抽象为 port（docs/tasks/P4-02.md"Port 重构理由"节），
+// 原 in-memory 具体实现迁为 InMemoryPresenceDirectory（语义零改动，injectFailure
+// 保留为具体 adapter seam）。本文件 11 处实例化改 InMemoryPresenceDirectory。
 //
 // 全部断言穿过公开 interface（claim/renew/locate/release + 注入 seam），不读模块
 // 私有容器；TTL 由可控 FakeClock 驱动，无固定 sleep。
-//
-// 预期接口（GREEN 目标，本文件按此用法驱动；值类型风格同 app/DomainTypes.hpp）：
-//   struct GatewayId  { uint64_t value; };   // 稳定集群寻址标识
-//   struct ConnectionId { uint64_t value; }; // 所属 Gateway 内唯一
-//   struct SessionEpoch { uint64_t value; }; // claim 生成、全目录单调递增
-//   三值类型均提供 ==、!=、<。
-//   struct DeliveryRoute {
-//       UserId user;
-//       GatewayId gatewayId;
-//       ConnectionId connectionId;
-//       SessionEpoch sessionEpoch;
-//   };
-//   enum class PresenceError {
-//       NotEpoch,               // renew/release 携带旧 epoch（compare-and-delete 被拒）
-//       NotFound,               // 条目不存在（TTL 到期 / 从未 claim / release 后）
-//       DependencyUnavailable,  // adapter 注入失败（模拟依赖不可用）
-//   };
-//   struct ClaimResult { bool ok = false; SessionEpoch epoch; PresenceError error; };
-//   struct RenewResult { bool ok = false; int64_t expiresAtMs = 0; PresenceError error; };
-//   struct ReleaseResult { bool ok = false; PresenceError error; };
-//   struct LocateResult {
-//       bool ok = false;
-//       bool expired = false;   // ok=false 时：true = TTL 到期；false = 从未 claim/release 后
-//       DeliveryRoute route;
-//       PresenceError error;
-//   };
-//   class PresenceDirectory {   // 具体深模块：in-memory adapter + 注入 Clock
-//   public:
-//       PresenceDirectory(Clock& clock, int64_t ttlMs);
-//       ClaimResult claim(UserId user, GatewayId gateway, ConnectionId conn);
-//       RenewResult renew(UserId user, GatewayId gateway, ConnectionId conn, SessionEpoch epoch);
-//       ReleaseResult release(UserId user, GatewayId gateway, ConnectionId conn, SessionEpoch epoch);
-//       LocateResult locate(UserId user);
-//       void injectFailure(bool fail);   // 依赖不可用注入 seam（RED 用）
-//   };
 //
 // 语义约束（卡 Interface/完成定义，本文件逐测试断言）：
 //   - claim 不带 epoch 参数：epoch 由 claim 生成（cluster-context-map §1 "SessionEpoch
@@ -52,7 +17,7 @@
 //   - 状态转换原子：单次调用二值结果，无部分状态；并发 claim 终态单一、无双路由残留。
 //   - 无 epoch 回退：clock 前跳/回退不使可观测 epoch 低于当前 claim 的 epoch。
 
-#include "app/PresenceDirectory.hpp"  // RED：尚不存在 → 编译失败即合法 RED
+#include "app/InMemoryPresenceDirectory.hpp"
 #include "FakeClock.hpp"
 
 #include <gtest/gtest.h>
@@ -80,7 +45,7 @@ TEST(PresenceContractTest, ClaimReturnsMonotonicEpoch)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -109,7 +74,7 @@ TEST(PresenceContractTest, ClaimAlwaysGeneratesNewEpochAndOverwrites)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -138,7 +103,7 @@ TEST(PresenceContractTest, RenewWithCurrentEpochSucceeds)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -161,7 +126,7 @@ TEST(PresenceContractTest, RenewWithStaleEpochRejected)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -188,7 +153,7 @@ TEST(PresenceContractTest, ReleaseIsCompareAndDelete)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -219,7 +184,7 @@ TEST(PresenceContractTest, ReleaseWithStaleEpochRejected)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -249,7 +214,7 @@ TEST(PresenceContractTest, LocateReturnsRouteForLiveEntry)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     // 从未 claim → 不存在（expired=false 区分"从未 claim"与"TTL 到期"）。
     LocateResult absent = dir.locate(kBob);
@@ -276,7 +241,7 @@ TEST(PresenceContractTest, TtlExpiryMakesEntryAbsent)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -316,7 +281,7 @@ TEST(PresenceContractTest, ConcurrentClaimsOneWins)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     struct ClaimAttempt {
         ClaimResult result;
@@ -376,7 +341,7 @@ TEST(PresenceContractTest, DependencyUnavailableIsDistinctError)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
@@ -419,7 +384,7 @@ TEST(PresenceContractTest, ClockJumpBehaviorIsDefined)
 {
     FakeClock clock;
     clock.set(kT0);
-    PresenceDirectory dir(clock, kTtlMs);
+    InMemoryPresenceDirectory dir(clock, kTtlMs);
 
     ClaimResult c1 = dir.claim(kAlice, kGwA, kConn1);
     ASSERT_TRUE(c1.ok);
