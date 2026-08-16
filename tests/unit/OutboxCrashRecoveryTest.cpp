@@ -1,15 +1,21 @@
 // P3-09 OutboxCrashRecovery RED→GREEN：进程 kill 语义（commit 后 relay 前 kill、
 // 处理后 processed 标记前 kill、重放幂等）。穿过 LocalOutboxRelay 公开 interface +
-// MessageStore outbox port + FakeClock + RecordingOutboxConsumer/WakeupConsumer +
+// MessageStore outbox port + FakeClock + RecordingWakeupPublisher/LocalWakeupPublisher +
 // InMemoryMessageStore + DeliveryCoordinator，无固定 sleep、不读私有容器。
 //
 // RED 依据（现状）：与 OutboxRelayTest 相同——LocalOutboxRelay/OutboxEvent/
 // MessageStore outbox port 尚不存在，本文件引用即编译失败（合法 RED）。
 //
+// P4-03 伴改：relay 出口从 MessageAcceptedConsumer 替换为 OutboxPublisher port；
+// RecordingOutboxConsumer/WakeupConsumer/RMWakeupConsumer 伴改为本文件内的
+// RecordingWakeupPublisher（记录 publish 请求 + 派生接收者 + 可选 wakeup 转发，
+// 与 LocalWakeupPublisher 语义同构）与生产 LocalWakeupPublisher（RED-M 直接覆盖
+// 生产 adapter）。
+//
 // 实现契约与 OutboxRelayTest.cpp 顶部一致（OutboxEvent 值类型、MessageStore
 // claimOutboxEvents/markOutboxProcessed/markOutboxPoisoned/findOutboxEvent/
-// poisonedOutboxEvents、LocalOutboxRelay(store, consumer, clock, config)/
-// MessageAcceptedConsumer::onAccepted(event, recipients)）。
+// poisonedOutboxEvents、LocalOutboxRelay(store, publisher, clock, config)/
+// OutboxPublisher::publish(batch, deadline) → 逐事件结果）。
 //
 // 事件种子经 ReliableMessaging::accept（GREEN 使 InMemory 双 adapter 在
 // insertMessage 同点写 OutboxEvent，与 MySQLMessageStore 对称）。
@@ -20,7 +26,9 @@
 #include "app/DomainTypes.hpp"
 #include "app/InMemoryMessageStore.hpp"
 #include "app/LocalOutboxRelay.hpp"
+#include "app/LocalWakeupPublisher.hpp"
 #include "app/MessageStore.hpp"
+#include "app/OutboxPublisher.hpp"
 #include "app/ReliableMessaging.hpp"
 
 #include "FakeClock.hpp"
@@ -29,6 +37,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -81,75 +90,66 @@ SendMessageCommand directTo(UserId recipient, const std::string& cmid, const std
     return cmd;
 }
 
-// Recording 消费 adapter：记录每次 wakeup。
-class RecordingOutboxConsumer : public MessageAcceptedConsumer {
+// P4-03：relay 出口为 OutboxPublisher port。测试 publisher adapter（生产
+// LocalWakeupPublisher 语义 + 记录）：从 Message 命令派生接收者（outboxRecipientsFor，
+// 与生产同构）并记录每次 publish 请求与派生接收者；可选转发 wakeup（coordinator/
+// ReliableMessaging），转发抛异常 → 该事件返回失败（不抛、逐事件）。
+class RecordingWakeupPublisher : public OutboxPublisher {
 public:
-    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override
+    explicit RecordingWakeupPublisher(MessageStore& store) : store_(store) {}
+
+    void setForward(std::function<void(const std::vector<UserId>&)> f) { forward_ = std::move(f); }
+
+    std::vector<OutboxPublishOutcome> publish(
+        const std::vector<OutboxPublishRequest>& batch, int64_t deadlineMs) override
     {
-        events_.push_back(event);
-        recipients_.push_back(recipients);
+        (void)deadlineMs;
+        std::vector<OutboxPublishOutcome> out;
+        out.reserve(batch.size());
+        for (size_t i = 0; i < batch.size(); ++i) {
+            const OutboxPublishRequest& req = batch[i];
+            requests_.push_back(req);
+            OutboxPublishOutcome oc;
+            const std::shared_ptr<const Message> msg =
+                store_.findMessage(req.event.aggregateMessageId);
+            if (!msg) {
+                oc.failure = PublishFailure::Other;
+                oc.error = "outbox event without message";
+            } else {
+                const std::vector<UserId> recipients = outboxRecipientsFor(msg->command);
+                recipients_.push_back(recipients);
+                ++wakeups_;
+                oc.ok = true;
+                oc.failure = PublishFailure::None;
+                if (forward_) {
+                    try {
+                        forward_(recipients);
+                    } catch (const std::exception& e) {
+                        oc.ok = false;
+                        oc.failure = PublishFailure::Other;
+                        oc.error = e.what();
+                    }
+                }
+            }
+            out.push_back(oc);
+        }
+        return out;
     }
 
-    size_t wakeups() const { return events_.size(); }
-    const std::vector<OutboxEvent>& events() const { return events_; }
-    const OutboxEvent& lastEvent() const { return events_[events_.size() - 1]; }
+    size_t wakeups() const { return wakeups_; }
+    const std::vector<OutboxPublishRequest>& requests() const { return requests_; }
+    const OutboxEvent& lastEvent() const { return requests_[requests_.size() - 1].event; }
     const std::vector<UserId>& lastRecipients() const
     {
         return recipients_[recipients_.size() - 1];
     }
 
 private:
-    std::vector<OutboxEvent> events_;
+    MessageStore& store_;
+    std::function<void(const std::vector<UserId>&)> forward_;
+    std::vector<OutboxPublishRequest> requests_;
     std::vector<std::vector<UserId> > recipients_;
-};
-
-// Wakeup 消费 adapter：把 relay 派生的接收者转发给 DeliveryCoordinator（生产接线
-// ChatService 同构），记录 wakeup 次数供幂等断言。
-class WakeupConsumer : public MessageAcceptedConsumer {
-public:
-    explicit WakeupConsumer(DeliveryCoordinator& coordinator) : coordinator_(coordinator) {}
-
-    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override
-    {
-        (void)event;
-        ++wakeups_;
-        coordinator_.onAccepted(recipients);
-    }
-
-    size_t wakeups() const { return wakeups_; }
-
-private:
-    DeliveryCoordinator& coordinator_;
     size_t wakeups_ = 0;
-};
-
-// Wakeup 消费 adapter（生产 OutboxWakeupConsumer 同构）：把 relay 派生的接收者
-// 转发给 ReliableMessaging::wakeupAccepted——存储异常从此入口传播回 relay。
-class RMWakeupConsumer : public MessageAcceptedConsumer {
-public:
-    explicit RMWakeupConsumer(ReliableMessaging& rm) : rm_(rm) {}
-
-    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override
-    {
-        events_.push_back(event);
-        recipients_.push_back(recipients);
-        ++wakeups_;
-        rm_.wakeupAccepted(recipients);
-    }
-
-    size_t wakeups() const { return wakeups_; }
-    const std::vector<OutboxEvent>& events() const { return events_; }
-    const OutboxEvent& lastEvent() const { return events_[events_.size() - 1]; }
-    const std::vector<UserId>& lastRecipients() const
-    {
-        return recipients_[recipients_.size() - 1];
-    }
-
-private:
-    ReliableMessaging& rm_;
-    size_t wakeups_ = 0;
-    std::vector<OutboxEvent> events_;
-    std::vector<std::vector<UserId> > recipients_;
 };
 
 // 公开 MessageStore 装饰器（ReliableMessagingContractTest::ThrowOnceOnUpdateStore
@@ -248,7 +248,7 @@ TEST(OutboxCrashRecoveryTest, KillAfterCommitBeforeRelayKeepsEvent)
     h.clock.set(kNow);
 
     // 重启：新 relay 周期扫描 claim 该事件并唤醒（derived recipient = bob）。
-    RecordingOutboxConsumer c;
+    RecordingWakeupPublisher c(h.store);
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);
     ASSERT_EQ(1, relay.runScan());
     ASSERT_EQ(1u, c.wakeups());
@@ -287,14 +287,14 @@ TEST(OutboxCrashRecoveryTest, KillAfterProcessBeforeMarkedProcessedReplays)
     EXPECT_EQ(1u, claimed[0].attemptCount);
 
     // 重启：新 relay B 在 lease 有效期内无法重领；lease 到期后重领同一事件。
-    RecordingOutboxConsumer cB;
+    RecordingWakeupPublisher cB(h.store);
     LocalOutboxRelay relayB(h.store, cB, h.clock, h.outbox);
     ASSERT_EQ(0, relayB.runScan());
     h.clock.advance(h.outbox.claimLeaseMs + 1);
     ASSERT_EQ(1, relayB.runScan());
     ASSERT_EQ(1u, cB.wakeups());
-    ASSERT_EQ(1u, cB.events().size());
-    EXPECT_EQ(a.messageId.value, cB.events()[0].aggregateMessageId.value);
+    ASSERT_EQ(1u, cB.requests().size());
+    EXPECT_EQ(a.messageId.value, cB.requests()[0].event.aggregateMessageId.value);
 
     // 同一事件被重放：attempt_count 递增、owner 更换、最终 processed。
     std::shared_ptr<const OutboxEvent> after = h.store.findOutboxEvent(claimed[0].id);
@@ -320,23 +320,35 @@ TEST(OutboxCrashRecoveryTest, ReplayedMessageAcceptedProducesIdempotentWakeup)
     DeliveryCoordinator coordinator(store, sink, clock, kLeaseMs, rcfg, 0x1001);
     coordinator.sessionAvailable(SessionIdentity{kBob, 1});
 
-    WakeupConsumer consumer(coordinator);
+    // P4-03：relay 出口为 OutboxPublisher port；publisher 派生接收者并转发 wakeup
+    // 到 coordinator（生产 LocalWakeupPublisher 语义同构）。
     OutboxConfig ocfg = testOutboxConfig();
-    LocalOutboxRelay relay(store, consumer, clock, ocfg);
+    RecordingWakeupPublisher pub(store);
+    pub.setForward([&coordinator](const std::vector<UserId>& r) { coordinator.onAccepted(r); });
+    LocalOutboxRelay relay(store, pub, clock, ocfg);
 
     ReliableMessaging rm(store, sink, clock, kLeaseMs, rcfg);
     AcceptOutcome a = rm.accept(SessionIdentity{kAlice, 1}, directTo(kBob, "idem", "hello"));
     ASSERT_TRUE(a.ok);
 
-    // relay A：claim + 处理（wakeup 驱动 coordinator 投递 bob），随后未标 processed
+    // relay A：claim + publish（wakeup 驱动 coordinator 投递 bob），随后未标 processed
     // 前 kill。手动注入"消费成功但未标 processed"的崩溃窗口。
     std::vector<OutboxEvent> claimed =
         store.claimOutboxEvents(kNow, "relay-A", kNow + ocfg.claimLeaseMs, 10);
     ASSERT_EQ(1u, claimed.size());
-    std::vector<UserId> recipients;
-    recipients.push_back(kBob);
-    consumer.onAccepted(claimed[0], recipients);
-    ASSERT_EQ(1u, consumer.wakeups());
+    std::shared_ptr<const Message> m = store.findMessage(claimed[0].aggregateMessageId);
+    ASSERT_TRUE(m);
+    OutboxPublishRequest req;
+    req.event = claimed[0];
+    req.conversationId = m->conversationId;
+    req.sequence = m->sequence.value;
+    req.topic = "muduo-outbox";
+    std::vector<OutboxPublishRequest> one;
+    one.push_back(req);
+    std::vector<OutboxPublishOutcome> outcomes = pub.publish(one, 5000);
+    ASSERT_EQ(1u, outcomes.size());
+    EXPECT_TRUE(outcomes[0].ok);
+    ASSERT_EQ(1u, pub.wakeups());
     ASSERT_EQ(1u, sink.attempts().size());
     EXPECT_EQ(a.messageId.value, sink.attempts()[0].messageId.value);
 
@@ -344,7 +356,7 @@ TEST(OutboxCrashRecoveryTest, ReplayedMessageAcceptedProducesIdempotentWakeup)
     // DeliveryAttempt、不新建 Message/Delivery。
     clock.advance(ocfg.claimLeaseMs + 1);
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(2u, consumer.wakeups());
+    ASSERT_EQ(2u, pub.wakeups());
     ASSERT_EQ(1u, sink.attempts().size());
 
     EXPECT_EQ(1u, store.deliveriesByMessage(a.messageId).size());
@@ -386,9 +398,9 @@ TEST(OutboxCrashRecoveryTest, WakeupAcceptedIsIdempotent)
 
 // RED（M）：wakeup 路径的瞬时存储故障不得使事件被消费——relay 消费时
 // coordinator_.onAccepted（claimFor → updateDelivery）抛一次存储异常，事件必须
-// 保持未 processed（lease 到期可重试）。现状：wakeupAccepted 经
-// notifyAcceptedBestEffort 吞全部异常 → relay 判处理成功、标 processed → 事件被
-// 消费，周期扫描不再恢复（"处理成功才标 processed"与 lost wakeup 恢复失效）。
+// 保持未 processed（lease 到期可重试）。P4-03：生产 LocalWakeupPublisher 把
+// wakeupAccepted 的存储异常转为该事件失败（not-ok，不抛）→ relay 不标 processed
+// （语义与 P3-09 完全一致）。
 // accept 路径不触发装饰器（recipient 离线、装饰器在 accept 后武装）——P3-07
 // "异常不反转已提交结果"冻结语义保持。
 TEST(OutboxCrashRecoveryTest, WakeupStoreFailureKeepsEventUnprocessed)
@@ -416,26 +428,24 @@ TEST(OutboxCrashRecoveryTest, WakeupStoreFailureKeepsEventUnprocessed)
     store.armUpdateDeliveryFailure();
     clock.advance(static_cast<int64_t>(kLeaseMs) + 1);
 
-    // relay 消费：wakeup 的存储异常传播 → 事件不被标 processed。
+    // relay 消费：生产 LocalWakeupPublisher 的 wakeup 存储异常 → 该事件失败
+    // （not-ok）→ 事件不被标 processed。
     OutboxConfig ocfg = testOutboxConfig();
-    RMWakeupConsumer consumer(rm);
-    LocalOutboxRelay relay(store, consumer, clock, ocfg);
+    LocalWakeupPublisher pub(store, rm);
+    LocalOutboxRelay relay(store, pub, clock, ocfg);
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(1u, consumer.wakeups());
-    ASSERT_EQ(1u, consumer.events().size());
 
     // 事件保持未 processed：lease 保留，到期可重试（未被静默消费）。
-    std::shared_ptr<const OutboxEvent> pending = store.findOutboxEvent(consumer.events()[0].id);
-    ASSERT_TRUE(pending);
-    EXPECT_EQ(0, pending->processedAtMs);
-    EXPECT_EQ(1u, pending->attemptCount);
-    EXPECT_FALSE(pending->leaseOwner.empty());
+    std::vector<OutboxEvent> pending = store.poisonedOutboxEvents(10);
+    ASSERT_EQ(1u, pending.size());
+    EXPECT_EQ(0, pending[0].processedAtMs);
+    EXPECT_EQ(1u, pending[0].attemptCount);
+    EXPECT_FALSE(pending[0].leaseOwner.empty());
 
     // lease 到期后重试成功（故障已解除）：事件最终 processed（attempt_count 递增）。
     clock.advance(ocfg.claimLeaseMs + 1);
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(2u, consumer.wakeups());
-    std::shared_ptr<const OutboxEvent> done = store.findOutboxEvent(consumer.events()[0].id);
+    std::shared_ptr<const OutboxEvent> done = store.findOutboxEvent(pending[0].id);
     ASSERT_TRUE(done);
     EXPECT_EQ(2u, done->attemptCount);
     EXPECT_NE(0, done->processedAtMs);

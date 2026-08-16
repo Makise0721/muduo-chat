@@ -3,6 +3,7 @@
 #include "app/Clock.hpp"
 #include "app/Config.hpp"  // OutboxConfig（P3-09 冻结参数，生产默认=卡冻结值）
 #include "app/MessageStore.hpp"
+#include "app/OutboxPublisher.hpp"
 
 #include <condition_variable>
 #include <cstdint>
@@ -12,32 +13,24 @@
 #include <vector>
 
 // P3-09 本地 outbox relay：单 worker 线程 + 周期扫描（scanIntervalMs），有界
-// 批量 claim 未处理 OutboxEvent（claimBatchSize/claimLeaseMs），对 payload 派生
-// 接收者触发幂等 wakeup（生产接 ReliableMessaging::wakeupAccepted），处理成功才
-// 标 processed，失败/崩溃由 lease 到期重领。周期扫描保证 accept 提交后 wakeup
-// 丢失（进程重启 / best-effort 通知丢失）仍推进。
+// 批量 claim 未处理 OutboxEvent（claimBatchSize/claimLeaseMs），经 OutboxPublisher
+// port 发布 MessageAccepted 事件（P4-03 起出口从"消费即本地 wakeup"替换为 port，
+// 本地 wakeup 语义由 LocalWakeupPublisher adapter 承接，P3-09 语义原样），逐事件
+// 结果 ok 才标 processed，失败/崩溃由 lease 到期重领。周期扫描保证 accept 提交后
+// wakeup 丢失（进程重启 / best-effort 通知丢失）仍推进。
 //
 // 线程约束：与 ReliableMessaging 同构——内部 mutex_ 串行化接口调用与 worker tick
 // （claim 的原子性由 store 保证：MySQL 单条 UPDATE…LIMIT；InMemory 锁内完成）。
 // stop 有界 drain/cancel（单轮批次有界 → join 有界），幂等。
 
-// MessageAccepted 事件的消费出口 port：relay 只负责重放；同一事件重放必须幂等
-// （消费方对已 InFlight/Acknowledged Delivery fencing）。
-class MessageAcceptedConsumer {
-public:
-    virtual ~MessageAcceptedConsumer() = default;
-
-    // event 为已 claim 的事件；recipients 为该事件 payload 派生出的接收者
-    // （direct → {directRecipient}，group → 成员快照）。throw = 该事件处理失败
-    // （含 wakeup 传播的瞬时存储故障）：保持未 processed、可查询、lease 到期重试
-    // （不静默丢弃），且不阻断同批后续事件（relay 不判 poison，见 P3-09 M）。
-    virtual void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) = 0;
-};
-
 class LocalOutboxRelay {
 public:
-    LocalOutboxRelay(MessageStore& store, MessageAcceptedConsumer& consumer, Clock& clock,
-                     const OutboxConfig& config);
+    // topic：publish 请求携带的目标 topic（生产默认 muduo-outbox，P4-03 冻结命名；
+    // LocalWakeupPublisher 忽略之）。publishDeadlineMs：publisher.publish 的整体
+    // 软期限（P4-03 冻结 broker timeout 5000ms）。
+    LocalOutboxRelay(MessageStore& store, OutboxPublisher& publisher, Clock& clock,
+                     const OutboxConfig& config, const std::string& topic = "muduo-outbox",
+                     int64_t publishDeadlineMs = 5000);
     LocalOutboxRelay(const LocalOutboxRelay&) = delete;
     LocalOutboxRelay& operator=(const LocalOutboxRelay&) = delete;
     ~LocalOutboxRelay();
@@ -50,7 +43,7 @@ public:
     // 直接返回；stop 后公开 seam runScan 仍可用。
     void stop(int64_t deadlineMs);
 
-    // 单轮扫描：claim 一批未处理/到期事件并逐个消费；返回本轮 claim 的事件数
+    // 单轮扫描：claim 一批未处理/到期事件并逐个发布；返回本轮 claim 的事件数
     // （= claim 数，含判 poison 的事件，batch 封顶）。线程安全（内部锁）。
     int runScan();
 
@@ -59,9 +52,11 @@ private:
     void workerLoop();
 
     MessageStore& store_;
-    MessageAcceptedConsumer& consumer_;
+    OutboxPublisher& publisher_;
     Clock& clock_;
     OutboxConfig config_;
+    std::string topic_;
+    int64_t publishDeadlineMs_;
     std::string leaseOwner_;  // 本实例唯一 lease owner（并发 relay 竞争标识）
     std::mutex mutex_;
     std::condition_variable cv_;

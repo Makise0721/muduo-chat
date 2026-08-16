@@ -5,8 +5,8 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <stdexcept>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -22,21 +22,18 @@ std::string nextLeaseOwner()
     return "relay:" + std::to_string(boot) + ":" + std::to_string(c);
 }
 
-// 从命令快照派生接收者（与 ReliableMessaging::accept 的 recipientsFor 同构）：
-// direct → 目标用户；group → 成员快照（保序）。
-std::vector<UserId> recipientsFor(const SendMessageCommand& cmd)
-{
-    if (cmd.kind == SendMessageCommand::Kind::Direct) {
-        return std::vector<UserId>(1, cmd.directRecipient);
-    }
-    return cmd.members;
-}
-
 } // namespace
 
-LocalOutboxRelay::LocalOutboxRelay(MessageStore& store, MessageAcceptedConsumer& consumer,
-                                   Clock& clock, const OutboxConfig& config)
-    : store_(store), consumer_(consumer), clock_(clock), config_(config), leaseOwner_(nextLeaseOwner())
+LocalOutboxRelay::LocalOutboxRelay(MessageStore& store, OutboxPublisher& publisher, Clock& clock,
+                                   const OutboxConfig& config, const std::string& topic,
+                                   int64_t publishDeadlineMs)
+    : store_(store),
+      publisher_(publisher),
+      clock_(clock),
+      config_(config),
+      topic_(topic),
+      publishDeadlineMs_(publishDeadlineMs),
+      leaseOwner_(nextLeaseOwner())
 {
 }
 
@@ -90,30 +87,80 @@ int LocalOutboxRelay::scanLocked()
     std::vector<OutboxEvent> claimed = store_.claimOutboxEvents(
         now, leaseOwner_, now + config_.claimLeaseMs, config_.claimBatchSize);
     const int claimedCount = static_cast<int>(claimed.size());
+
+    // P4-03：构建 publish 批——每事件 load Message（取 conversationId/sequence，
+    // 缺 Message 或载荷损坏（findMessage 抛，如 outbox payload 被外部破坏）判
+    // poison，不可 publish）；poison 事件不入批、保持未 processed，且不阻断同批
+    // 后续事件（P3-09 逐事件 try/catch 语义原样）。
+    std::vector<OutboxPublishRequest> requests;
+    requests.reserve(claimed.size());
     for (size_t i = 0; i < claimed.size(); ++i) {
         const OutboxEvent& e = claimed[i];
+        std::shared_ptr<const Message> msg;
         try {
-            const std::shared_ptr<const Message> msg = store_.findMessage(e.aggregateMessageId);
-            if (!msg) {
-                // 存储一致性防御：缺 Message 的事件不可重放 → 判 poison（可查询）。
-                throw std::runtime_error("outbox event without message");
-            }
-            consumer_.onAccepted(e, recipientsFor(msg->command));
-            // 处理成功（wakeup 完成、无异常）后才标 processed。
-            store_.markOutboxProcessed(e.id, clock_.nowMs());
-        } catch (...) {
-            // 处理失败（含 wakeup 传播的瞬时存储故障）不静默丢弃：事件保持未
-            // processed、可查询（poison 谓词 = processed_at IS NULL），lease 保留
-            // 由到期驱动重领重试；不阻断同批后续事件。relay 不判 poison（异常类型
-            // 无法区分坏 payload 与瞬时存储故障；见 P3-09 M 的 L 登记）——统一仅不
-            // 标 processed，瞬时故障靠 lease 到期自愈、真 poison 持续可查询。
-            // P3-12：处理失败事件逐条计 poison（含瞬时故障——best-effort 可观测，
-            // 精确区分属后续故障矩阵迭代）。
+            msg = store_.findMessage(e.aggregateMessageId);
+        } catch (const std::exception&) {
+            // 载荷损坏/瞬时存储故障：统一按 poison 处理（relay 不判 poison 类型，
+            // 仅保持未 processed、lease 到期重试，见 P3-09 M）。
+            msg.reset();
+        }
+        if (!msg) {
+            // 存储一致性防御：缺 Message / 不可重放的事件 → 判 poison（可查询）。
             ReliableMessageMetrics::recordBestEffort([&] {
                 ReliableMessageMetrics::instance().recordOutboxPoison();
             });
+            continue;
+        }
+        OutboxPublishRequest req;
+        req.event = e;
+        req.conversationId = msg->conversationId;
+        req.sequence = msg->sequence.value;
+        req.topic = topic_;
+        requests.push_back(req);
+    }
+
+    if (!requests.empty()) {
+        // publisher 契约"不抛"；防御性 catch（如 adapter 违反契约）→ 整批保持未
+        // processed，lease 到期重领重试（绝不崩溃、不静默丢弃）。
+        std::vector<OutboxPublishOutcome> outcomes;
+        try {
+            outcomes = publisher_.publish(requests, publishDeadlineMs_);
+        } catch (const std::exception& e) {
+            ReliableMessageMetrics::recordBestEffort([&] {
+                for (size_t i = 0; i < requests.size(); ++i) {
+                    ReliableMessageMetrics::instance().recordOutboxPoison();
+                }
+            });
+            outcomes.clear();
+            (void)e;
+        }
+        if (outcomes.size() == requests.size()) {
+            for (size_t i = 0; i < requests.size(); ++i) {
+                if (outcomes[i].ok) {
+                    // 处理成功（publish 成功、无异常）后才标 processed；标 processed
+                    // 的瞬时存储故障逐事件 catch（P3-09 语义：不阻断同批后续事件，
+                    // 事件保持未 processed、lease 到期重试）。
+                    try {
+                        store_.markOutboxProcessed(requests[i].event.id, clock_.nowMs());
+                    } catch (const std::exception&) {
+                        ReliableMessageMetrics::recordBestEffort([&] {
+                            ReliableMessageMetrics::instance().recordOutboxPoison();
+                        });
+                    }
+                } else {
+                    // 发布失败（含 LocalWakeupPublisher 的 wakeup 存储故障）不标
+                    // processed：事件保持未 processed、可查询，lease 保留由到期
+                    // 驱动重领重试；不阻断同批后续事件。relay 不判 poison（无法
+                    // 区分坏 payload 与瞬时故障；见 P3-09 M）——统一仅不标 processed。
+                    // P3-12：失败事件逐条计 poison（best-effort 可观测）。
+                    ReliableMessageMetrics::recordBestEffort([&] {
+                        ReliableMessageMetrics::instance().recordOutboxPoison();
+                    });
+                }
+            }
         }
     }
+
     // P3-12：outbox lag gauge = 未 processed 事件数（有界公开查询；查询失败不
     // 阻断 relay 消费——best-effort）。
     ReliableMessageMetrics::recordBestEffort([&] {

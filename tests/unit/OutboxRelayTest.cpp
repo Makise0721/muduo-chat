@@ -1,9 +1,14 @@
 // P3-09 OutboxRelay RED→GREEN：穿过 LocalOutboxRelay 公开 interface +
-// MessageStore outbox port + FakeClock + RecordingOutboxConsumer + InMemoryMessageStore，
+// MessageStore outbox port + FakeClock + RecordingPublisher + InMemoryMessageStore，
 // 无固定 sleep、不读私有容器。
 //
+// P4-03 伴改：relay 出口从 MessageAcceptedConsumer 替换为 OutboxPublisher port；
+// RecordingOutboxConsumer/ScriptedOutboxConsumer 伴改为本文件内的
+// RecordingWakeupPublisher（记录 publish 请求与派生接收者——接收者断言经
+// LocalWakeupPublisher 同构的 outboxRecipientsFor 派生保留；可脚本化注入失败）。
+//
 // RED 依据（现状）：docs/tasks/P3-09.md §Interface——尚无 LocalOutboxRelay /
-// MessageAcceptedConsumer / OutboxConfig / OutboxEvent 值类型，MessageStore 亦无
+// OutboxConfig / OutboxEvent 值类型，MessageStore 亦无
 // claimOutboxEvents/markOutboxProcessed/markOutboxPoisoned/findOutboxEvent/
 // poisonedOutboxEvents 端口；本文件引用这些尚不存在的类型与方法 → 编译失败即合法 RED。
 //
@@ -31,14 +36,17 @@
 //                                              // relay 不调用——处理失败统一保持未 processed
 //     findOutboxEvent(eventId);                 // shared_ptr<const OutboxEvent>
 //     poisonedOutboxEvents(limit);              // poison 可查询谓词
+// - chatserver/include/app/OutboxPublisher.hpp 增加 OutboxPublisher port：
+//     OutboxPublishRequest { event, conversationId, sequence, topic }
+//     OutboxPublishOutcome { ok, failure, error }（逐事件结果）
+//     OutboxPublisher::publish(batch, deadlineMs) → 逐事件结果（不抛、不写库）
 // - chatserver/include/app/LocalOutboxRelay.hpp 增加：
 //     OutboxConfig { claimBatchSize=100, scanIntervalMs=5000, claimLeaseMs=30000 }
 //       （冻结参数生产默认，见 P3-09 §冻结参数；测试注入小值）
-//     MessageAcceptedConsumer::onAccepted(const OutboxEvent&, const std::vector<UserId>&)
-//       （relay 出口的公开 port；throw = 保持未 processed（relay 不判 poison））
-//     LocalOutboxRelay(MessageStore&, MessageAcceptedConsumer&, Clock&, const OutboxConfig&)
-//       （与 ReliableMessaging(store, sink, clock, ...) 同构，consumer 即 sink 位）
-//     start() / stop(int64_t deadlineMs) / runScan()（单轮 scan，返回本轮 claim 数）
+//     LocalOutboxRelay(MessageStore&, OutboxPublisher&, Clock&, const OutboxConfig&)
+//       （P4-03：relay 出口为 OutboxPublisher port；逐事件结果 ok 才标 processed，
+//        失败保持未 processed、lease 到期重领重试）
+//     start() / stop(int64_t deadlineMs) / runScan()（单轮扫描，返回本轮 claim 数）
 //     每个 relay 实例须有唯一 leaseOwner（实例标识），使并发 relay 经 lease 竞争。
 //
 // 事件种子经 ReliableMessaging::accept 写入（GREEN 使 InMemory 在 insertMessage
@@ -49,7 +57,9 @@
 #include "app/DomainTypes.hpp"
 #include "app/InMemoryMessageStore.hpp"
 #include "app/LocalOutboxRelay.hpp"
+#include "app/LocalWakeupPublisher.hpp"
 #include "app/MessageStore.hpp"
+#include "app/OutboxPublisher.hpp"
 #include "app/ReliableMessaging.hpp"
 
 #include "FakeClock.hpp"
@@ -58,6 +68,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -113,52 +124,62 @@ SendMessageCommand directTo(UserId recipient, const std::string& cmid, const std
     return cmd;
 }
 
-// Recording 消费 adapter（对应 DeliverySink 的 RecordingDeliverySink 位）：记录
-// 每次 wakeup（事件 + 派生接收者）。
-class RecordingOutboxConsumer : public MessageAcceptedConsumer {
+// P4-03：relay 出口为 OutboxPublisher port。测试 publisher adapter（生产
+// LocalWakeupPublisher 语义 + 记录）：记录每次 publish 请求与派生接收者（从
+// Message 命令派生，与 LocalWakeupPublisher 同构的 outboxRecipientsFor）；默认全
+// 成功，可脚本化注入失败（poisonOn，按 aggregateMessageId），失败不阻断同批。
+class RecordingWakeupPublisher : public OutboxPublisher {
 public:
-    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override
+    explicit RecordingWakeupPublisher(MessageStore& store) : store_(store) {}
+
+    void poisonOn(uint64_t aggregateMessageId) { poison_.insert(aggregateMessageId); }
+    void poisonOff(uint64_t aggregateMessageId) { poison_.erase(aggregateMessageId); }
+
+    std::vector<OutboxPublishOutcome> publish(
+        const std::vector<OutboxPublishRequest>& batch, int64_t deadlineMs) override
     {
-        events_.push_back(event);
-        recipients_.push_back(recipients);
+        (void)deadlineMs;
+        std::vector<OutboxPublishOutcome> out;
+        out.reserve(batch.size());
+        for (size_t i = 0; i < batch.size(); ++i) {
+            const OutboxPublishRequest& req = batch[i];
+            requests_.push_back(req);
+            OutboxPublishOutcome oc;
+            if (poison_.count(req.event.aggregateMessageId.value) != 0) {
+                oc.failure = PublishFailure::Other;
+                oc.error = "scripted poison";
+            } else {
+                const std::shared_ptr<const Message> msg =
+                    store_.findMessage(req.event.aggregateMessageId);
+                if (!msg) {
+                    oc.failure = PublishFailure::Other;
+                    oc.error = "outbox event without message";
+                } else {
+                    recipients_.push_back(outboxRecipientsFor(msg->command));
+                    ++wakeups_;
+                    oc.ok = true;
+                    oc.failure = PublishFailure::None;
+                }
+            }
+            out.push_back(oc);
+        }
+        return out;
     }
 
-    size_t wakeups() const { return events_.size(); }
-    const std::vector<OutboxEvent>& events() const { return events_; }
-
-    const OutboxEvent& lastEvent() const { return events_[events_.size() - 1]; }
+    size_t wakeups() const { return wakeups_; }
+    const std::vector<OutboxPublishRequest>& requests() const { return requests_; }
+    const OutboxEvent& lastEvent() const { return requests_[requests_.size() - 1].event; }
     const std::vector<UserId>& lastRecipients() const
     {
         return recipients_[recipients_.size() - 1];
     }
 
 private:
-    std::vector<OutboxEvent> events_;
+    MessageStore& store_;
+    std::set<uint64_t> poison_;
+    std::vector<OutboxPublishRequest> requests_;
     std::vector<std::vector<UserId> > recipients_;
-};
-
-// Scripted 消费 adapter：按 aggregate_message_id 注入抛异常（模拟处理失败/poison）。
-class ScriptedOutboxConsumer : public MessageAcceptedConsumer {
-public:
-    void poisonOn(uint64_t aggregateMessageId) { poisoned_.insert(aggregateMessageId); }
-    void poisonOff(uint64_t aggregateMessageId) { poisoned_.erase(aggregateMessageId); }
-
-    void onAccepted(const OutboxEvent& event, const std::vector<UserId>& recipients) override
-    {
-        if (poisoned_.count(event.aggregateMessageId.value) != 0) {
-            throw std::runtime_error("scripted poison");
-        }
-        events_.push_back(event);
-        recipients_.push_back(recipients);
-    }
-
-    size_t wakeups() const { return events_.size(); }
-    const std::vector<OutboxEvent>& events() const { return events_; }
-
-private:
-    std::set<uint64_t> poisoned_;
-    std::vector<OutboxEvent> events_;
-    std::vector<std::vector<UserId> > recipients_;
+    size_t wakeups_ = 0;
 };
 
 // RED 1：claim 只返回 available_at<=now 的未处理事件（含 lease 到期可重领），
@@ -214,19 +235,19 @@ TEST(OutboxRelayTest, TwoRelaysOnlyOneWinsLease)
     ASSERT_TRUE(a.ok);
     h.clock.set(kNow);
 
-    RecordingOutboxConsumer c1;
-    RecordingOutboxConsumer c2;
+    RecordingWakeupPublisher c1(h.store);
+    RecordingWakeupPublisher c2(h.store);
     LocalOutboxRelay r1(h.store, c1, h.clock, h.outbox);
     LocalOutboxRelay r2(h.store, c2, h.clock, h.outbox);
 
     ASSERT_EQ(1, r1.runScan());
-    ASSERT_EQ(1u, c1.wakeups());
+    ASSERT_EQ(1u, c1.requests().size());
     ASSERT_EQ(0, r2.runScan());
-    EXPECT_EQ(0u, c2.wakeups());
+    EXPECT_EQ(0u, c2.requests().size());
 
     // 胜者处理完成（processed_at 写入），事件不可再 claim。
-    ASSERT_EQ(1u, c1.events().size());
-    std::shared_ptr<const OutboxEvent> done = h.store.findOutboxEvent(c1.events()[0].id);
+    ASSERT_EQ(1u, c1.requests().size());
+    std::shared_ptr<const OutboxEvent> done = h.store.findOutboxEvent(c1.requests()[0].event.id);
     ASSERT_TRUE(done);
     EXPECT_NE(0, done->processedAtMs);
     EXPECT_EQ(1u, done->attemptCount);
@@ -248,15 +269,15 @@ TEST(OutboxRelayTest, LeaseExpiryAllowsReclaim)
     EXPECT_EQ(1u, claimed[0].attemptCount);
 
     // 新 relay 在 lease 有效期内无法重领。
-    RecordingOutboxConsumer c;
+    RecordingWakeupPublisher c(h.store);
     LocalOutboxRelay r(h.store, c, h.clock, h.outbox);
     ASSERT_EQ(0, r.runScan());
-    EXPECT_EQ(0u, c.wakeups());
+    EXPECT_EQ(0u, c.requests().size());
 
     // lease 到期后重领并处理：attempt_count 递增、owner 更换、最终 processed。
     h.clock.advance(h.outbox.claimLeaseMs + 1);
     ASSERT_EQ(1, r.runScan());
-    ASSERT_EQ(1u, c.wakeups());
+    ASSERT_EQ(1u, c.requests().size());
 
     std::shared_ptr<const OutboxEvent> after = h.store.findOutboxEvent(claimed[0].id);
     ASSERT_TRUE(after);
@@ -276,11 +297,11 @@ TEST(OutboxRelayTest, LostWakeupRecoveredByPeriodicScan)
     ASSERT_TRUE(a.ok);
     h.clock.set(kNow);
 
-    RecordingOutboxConsumer c;
+    RecordingWakeupPublisher c(h.store);
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);
     // 无显式通知：周期扫描自行 claim 并唤醒（runScan 即 timer 驱动的单轮）。
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(1u, c.wakeups());
+    ASSERT_EQ(1u, c.requests().size());
     ASSERT_EQ(1u, c.lastRecipients().size());
     EXPECT_EQ(kBob.value, c.lastRecipients()[0].value);
     EXPECT_EQ(a.messageId.value, c.lastEvent().aggregateMessageId.value);
@@ -306,14 +327,15 @@ TEST(OutboxRelayTest, PoisonEventVisibleAndDoesNotBlockBatch)
     }
     h.clock.set(kNow);
 
-    ScriptedOutboxConsumer c;
-    c.poisonOn(mids[1]);  // 中间事件处理抛异常
+    // P4-03：publish 注入失败（poisonOn）→ 该事件逐事件结果失败 → relay 不标
+    // processed（P3-09 抛异常语义等价）。
+    RecordingWakeupPublisher c(h.store);
+    c.poisonOn(mids[1]);  // 中间事件发布失败
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);
 
-    // 单批全部 claim（batch 10 >= 3）；E1 抛异常不阻断同批 E0/E2。
+    // 单批全部 claim（batch 10 >= 3）；E1 失败不阻断同批 E0/E2。
     ASSERT_EQ(3, relay.runScan());
-    ASSERT_EQ(2u, c.wakeups());
-    ASSERT_EQ(2u, c.events().size());
+    ASSERT_EQ(3u, c.requests().size());
 
     // E1 poison 可查询且未 processed；E0/E2 processed。
     std::vector<OutboxEvent> poisoned = h.store.poisonedOutboxEvents(10);
@@ -321,8 +343,8 @@ TEST(OutboxRelayTest, PoisonEventVisibleAndDoesNotBlockBatch)
     EXPECT_EQ(mids[1], poisoned[0].aggregateMessageId.value);
     EXPECT_EQ(0, poisoned[0].processedAtMs);
 
-    std::shared_ptr<const OutboxEvent> done0 = h.store.findOutboxEvent(c.events()[0].id);
-    std::shared_ptr<const OutboxEvent> done2 = h.store.findOutboxEvent(c.events()[1].id);
+    std::shared_ptr<const OutboxEvent> done0 = h.store.findOutboxEvent(c.requests()[0].event.id);
+    std::shared_ptr<const OutboxEvent> done2 = h.store.findOutboxEvent(c.requests()[2].event.id);
     ASSERT_TRUE(done0);
     ASSERT_TRUE(done2);
     EXPECT_NE(0, done0->processedAtMs);
@@ -332,9 +354,9 @@ TEST(OutboxRelayTest, PoisonEventVisibleAndDoesNotBlockBatch)
     AcceptOutcome a3 = h.rm.accept(alice, directTo(kBob, "poison-after", "y"));
     ASSERT_TRUE(a3.ok);
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(3u, c.wakeups());
+    ASSERT_EQ(4u, c.requests().size());
 
-    // E1 未静默丢弃：lease 到期后仍被重领（attempt+1）并再次判 poison。
+    // E1 未静默丢弃：lease 到期后仍被重领（attempt+1）并再次失败（可查询）。
     h.clock.advance(h.outbox.claimLeaseMs + 1);
     ASSERT_EQ(1, relay.runScan());
     std::vector<OutboxEvent> poisonedAgain = h.store.poisonedOutboxEvents(10);
@@ -344,7 +366,8 @@ TEST(OutboxRelayTest, PoisonEventVisibleAndDoesNotBlockBatch)
     EXPECT_EQ(0, poisonedAgain[0].processedAtMs);
 }
 
-// RED 8：处理成功后才标 processed；失败（抛异常）保持未 processed、lease 到期可重试。
+// RED 8：处理成功后才标 processed；失败（publish 注入失败）保持未 processed、
+// lease 到期可重试。
 TEST(OutboxRelayTest, ProcessedOnlyAfterSuccess)
 {
     OutboxHarness h;
@@ -352,8 +375,8 @@ TEST(OutboxRelayTest, ProcessedOnlyAfterSuccess)
     ASSERT_TRUE(a.ok);
     h.clock.set(kNow);
 
-    ScriptedOutboxConsumer c;
-    c.poisonOn(a.messageId.value);  // 首次处理失败
+    RecordingWakeupPublisher c(h.store);
+    c.poisonOn(a.messageId.value);  // 首次发布失败
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);
 
     ASSERT_EQ(1, relay.runScan());
@@ -378,7 +401,7 @@ TEST(OutboxRelayTest, ProcessedOnlyAfterSuccess)
 TEST(OutboxRelayTest, StopIsBoundedIdempotent)
 {
     OutboxHarness h;
-    RecordingOutboxConsumer c;
+    RecordingWakeupPublisher c(h.store);
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);
 
     relay.stop(h.clock.nowMs() + 1000);  // 未 start：幂等返回
@@ -389,7 +412,7 @@ TEST(OutboxRelayTest, StopIsBoundedIdempotent)
     AcceptOutcome a = h.rm.accept(SessionIdentity{kAlice, 1}, directTo(kBob, "stop", "x"));
     ASSERT_TRUE(a.ok);
     ASSERT_EQ(1, relay.runScan());
-    ASSERT_EQ(1u, c.wakeups());
+    ASSERT_EQ(1u, c.requests().size());
 }
 
 // RED 10：批次/队列有界——超量事件按 batch 上限分批处理，单轮 claim 不超过上限。
@@ -403,7 +426,7 @@ TEST(OutboxRelayTest, BatchQueueBounded)
     }
     h.clock.set(kNow);
 
-    RecordingOutboxConsumer c;
+    RecordingWakeupPublisher c(h.store);
     LocalOutboxRelay relay(h.store, c, h.clock, h.outbox);  // claimBatchSize=10
 
     const int64_t round1 = relay.runScan();
@@ -414,8 +437,7 @@ TEST(OutboxRelayTest, BatchQueueBounded)
     EXPECT_EQ(5, round3);
     EXPECT_EQ(0, relay.runScan());
 
-    EXPECT_EQ(25u, c.wakeups());
-    EXPECT_EQ(25u, c.events().size());
+    EXPECT_EQ(25u, c.requests().size());
 }
 
 } // namespace
