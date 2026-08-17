@@ -154,3 +154,32 @@ void startReliableMessaging();
 // POOL_SHUTDOWN 之前调用——scheduler 线程先于 store/pool 失效退出（有界 join）。
 // wiring 从未构造时 no-op；deadlineMs 为有界 drain 软提示。
 void stopReliableMessaging(int64_t deadlineMs);
+
+// ---- P4-05 Gateway/presence/consumer 生产接线（docs/tasks/P4-05.md §冻结参数）----
+struct GatewayConfig;  // 定义见 app/Config.hpp（mymuduo-safe，本头不引入领域类型）
+
+// main 在加载 AppConfig 后调用（"gateway" 段 → cfg.gateway）。未调用时 wiring 使用
+// 卡冻结默认（GatewayId=1、presence/kafka/consumer 生产默认）；测试直接构造
+// adapter 注入，不经本入口。
+void configureGateway(const GatewayConfig& cfg);
+
+// ---- P4-05 Presence 生产接线（ChatService 登录/登出/断开调用；经 wiring()）----
+// login completion：SessionRegistry.bind 成功后、sessionAvailableDelivery 提交前
+// claim（生成新 epoch 原子覆盖，cluster-context-map §3）。Redis down
+//（DependencyUnavailable）→ 返回 false：调用方回滚 Session 绑定并拒登录
+//（冻结降级：登录暂停、不建 Presence 条目、不误投；durable accept 继续）。
+bool claimPresence(int64_t userId, uint64_t connId);
+// close/loginout：按本地影子 epoch compare-and-delete release（P4-01 契约）。幂等；
+// 失败（Redis down）无害（条目 TTL 到期自然消失），调用方忽略返回值。
+void releasePresence(int64_t userId, uint64_t connId);
+// 生产 renew 调度（main loop runEvery(TTL/2) 驱动，D4：窗口 = TTL/2；对本地已
+// claim 用户逐个 renew，失败指数退避、不阻塞 accept/投递）。wiring 未构造 no-op。
+void renewAllPresence();
+
+// ---- P4-05 生产 consumer poll（P4-04 D1 延期项落地点，docs/tasks/P4-05.md D1）----
+// server 就绪（bindLoop，pool 已 init）后启动 wiring 内独立 poll 线程
+//（KafkaEventConsumer + WakeupProgressHandler；poll deadline 有界，幂等）。
+void startOutboxConsumerPoll();
+// 挂进 shutdown 顺序：EXECUTOR_SHUTDOWN 之后、MESSAGING_STOP 之前——consumer poll
+//（其 handle 消费 wiring().messaging）先于 messaging stop 有界 join。
+void stopOutboxConsumerPoll(int64_t deadlineMs);

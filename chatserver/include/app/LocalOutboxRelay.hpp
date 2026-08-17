@@ -48,7 +48,16 @@ public:
     int runScan();
 
 private:
-    int scanLocked();  // 须在持 mutex_ 时调用；返回本轮 claim 数
+    // P4-05 CF-1 闭环（docs/tasks/P4-05.md 冻结参数：publish 移出 relay 锁——生产
+    // relay 出口为 KafkaPublisher，真实 broker I/O 不接受锁内延迟为既定代价）：
+    // 锁内 claim + 拷贝批量请求（含 poison 判定），锁外 publish，逐事件结果回锁
+    // 标记 processed。三个 seam 由 runScan / workerLoop 共用。
+    struct RelayBatch {
+        int claimedCount = 0;
+        std::vector<OutboxPublishRequest> requests;  // 锁内构建、锁外 publish
+    };
+    RelayBatch scanLocked();   // 须在持 mutex_ 时调用
+    void publishAndMark(const RelayBatch& plan);  // 不持锁调用；publish 锁外 + 回锁标记
     void workerLoop();
 
     MessageStore& store_;

@@ -1,18 +1,27 @@
 #include "app/ProtocolCodec.hpp"
 
 #include "app/Clock.hpp"
-#include "app/Config.hpp"  // RetryConfig/OutboxConfig（P3-08/P3-09 生产参数注入）
+#include "app/Config.hpp"  // RetryConfig/OutboxConfig/GatewayConfig（P3-08/P3-09/P4-05 生产参数注入）
 #include "app/DeliverySink.hpp"  // DeliverySink 完整定义（ReliableMessaging.hpp 仅前向声明）
+#include "app/GatewayAwareDeliverySink.hpp"
+#include "app/InProcessGatewayTransport.hpp"
+#include "app/KafkaEventConsumer.hpp"
+#include "app/KafkaPublisher.hpp"
 #include "app/LocalOutboxRelay.hpp"
-#include "app/LocalWakeupPublisher.hpp"
 #include "app/MySQLMessageStore.hpp"
 #include "app/ReliableMessageMetrics.hpp"  // P3-12 快照（reliable_* METRICS 行）
 #include "app/ReliableMessaging.hpp"
+#include "app/RedisPresenceDirectory.hpp"
+#include "app/WakeupProgressHandler.hpp"
 #include "db/MySQLGuards.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -28,6 +37,8 @@ const uint64_t kFanOutCap = 100;
 // lease 时长占位：accept 路径不使用时钟/租约（ack/claim 属 P3-07/P3-08，
 // 正式参数在 P3-08 RED 前冻结）。
 const uint64_t kLeaseMsPlaceholder = 30000;
+// P4-05 生产 relay publish / consumer poll 软期限（P4-03/P4-04 冻结惯例 5000ms）。
+const int64_t kPublishDeadlineMs = 5000;
 
 // P3-07 接线：ChatService::bindLoop 注册 SessionDeliverySink. The stable
 // delegating adapter binds the sink once, including after lazy wiring.
@@ -43,12 +54,72 @@ RetryConfig g_reliableConfig;
 // 缺省 = 卡冻结值（docs/tasks/P3-09.md §冻结参数）。测试不经本入口。
 OutboxConfig g_outboxConfig;
 
-// P3-09 relay 消费出口 adapter（P4-03 起经 OutboxPublisher port）：把 port 的
-// MessageAccepted 事件转成 ReliableMessaging 的幂等 wakeup（claimFor fencing +
-// scheduler 幂等 → 同一事件重放不重复投递）。wakeupAccepted 传播存储异常 →
-// LocalWakeupPublisher 返回该事件失败 → relay 保持事件未 processed、lease 到期
-// 重试（relay 不判 poison，见 P3-09 M）。实现定义于 wiring() 之后（需完整
-// MessagingWiring 以访问 .store/.messaging）。
+// P4-05 生产 Gateway 参数：main 经 configureGateway 注入（wiring 首用前）；
+// 缺省 = 卡冻结值（docs/tasks/P4-05.md §冻结参数：GatewayId=1、TTL 30s→renew 15s、
+// topic muduo-outbox、group muduo-outbox-consumer、fetchBatchLimit=100）。测试不经本入口。
+GatewayConfig g_gatewayConfig;
+
+// P4-05 生产 consumer poll 载体（docs/tasks/P4-05.md 开卡待定 2）：wiring 内独立
+// poll 线程 + 有界 poll deadline（对齐 P4-04 冻结参数：fetch maxWait 300ms、
+// commit/publish deadline 5000ms → 每 poll 有界返回 → stop 有界 join）。幂等
+// start/stop；stop 不在持锁时 join（避免与 poll 线程 re-lock 互等死锁）。
+class OutboxConsumerPoller {
+public:
+    OutboxConsumerPoller(OutboxEventConsumer& consumer, int64_t pollDeadlineMs)
+        : consumer_(consumer), pollDeadlineMs_(pollDeadlineMs)
+    {
+    }
+    ~OutboxConsumerPoller() { stop(5000); }
+
+    void start()
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (running_) {
+            return;
+        }
+        running_ = true;
+        stopRequested_ = false;
+        thread_ = std::thread([this] { loop(); });
+    }
+
+    void stop(int64_t deadlineMs)
+    {
+        (void)deadlineMs;  // 有界：每 poll 有界（fetch maxWait 300ms / deadline 5000ms）→
+                           // join 即有界；deadline 为软提示，无需无界等待。
+        std::unique_lock<std::mutex> lk(mutex_);
+        if (!running_ && !thread_.joinable()) {
+            return;  // 幂等：未 start 或已 stop 直接返回
+        }
+        stopRequested_ = true;
+        cv_.notify_all();
+        lk.unlock();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        lk.lock();
+        running_ = false;
+    }
+
+private:
+    void loop()
+    {
+        std::unique_lock<std::mutex> lk(mutex_);
+        while (!stopRequested_) {
+            lk.unlock();
+            (void)consumer_.poll(pollDeadlineMs_);  // 不抛（P4-04 契约）；broker 故障
+                                                    // brokerOk=false 无副作用，下轮重试
+            lk.lock();
+        }
+    }
+
+    OutboxEventConsumer& consumer_;
+    int64_t pollDeadlineMs_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::thread thread_;
+    bool running_ = false;
+    bool stopRequested_ = false;
+};
 
 // P3-06 接线单例：store/clock/messaging 全部领域侧对象，保持本 TU（mymuduo
 // 无关）承接 P3-06 结构；P3-07 的 SessionDeliverySink（依赖 TcpConnection）
@@ -57,27 +128,63 @@ OutboxConfig g_outboxConfig;
 // 在 bindLoop 显式构造并启动 scheduler（pool 已 init、sink 已绑定）；首个 accept
 // 也可惰性触发（等价，幂等）。ReliableMessaging 由 executor 单 worker 串行驱动
 // （单一调用者语义）。
+// P4-05（docs/tasks/P4-05.md 设计决定 D1/D2/D3/D5）：在 RM 与真实 TCP sink 之间
+// 插入 GatewayAwareDeliverySink（deliver 前 Presence locate + 影子 epoch 校验 +
+// 本地直投/跨节点 transport/丢弃重路由）；relay 出口从 LocalWakeupPublisher 换为
+// KafkaPublisher（CF-1）；生产 consumer poll（KafkaEventConsumer +
+// WakeupProgressHandler）接进 wiring——本地/跨节点全部投递经同一 durable 路径，
+// ACK 与 MessageId 语义与单机完全一致。
 struct MessagingWiring {
     MessagingWiring()
         : store(ConnectionPool::getInstance(), kFanOutCap),
+          clock(),
+          presence(clock, g_gatewayConfig.presence.host, g_gatewayConfig.presence.port,
+                   g_gatewayConfig.presence.db, g_gatewayConfig.presence.ttlMs,
+                   g_gatewayConfig.presence.connectTimeoutMs,
+                   g_gatewayConfig.presence.commandTimeoutMs),
+          transport(),
+          localSink(),
+          gatewaySink(presence, GatewayId(g_gatewayConfig.id), transport, localSink),
+          sink(),
           messaging(store, sink, clock, kLeaseMsPlaceholder, g_reliableConfig),
-          wakeup(store, messaging),
-          relay(store, wakeup, clock, g_outboxConfig)
+          kafkaPublisher(g_gatewayConfig.kafka.host, g_gatewayConfig.kafka.port,
+                         g_gatewayConfig.consumer.topic, kPublishDeadlineMs),
+          wakeupHandler(store, messaging),
+          consumer(g_gatewayConfig.kafka.host, g_gatewayConfig.kafka.port,
+                   g_gatewayConfig.consumer.topic, g_gatewayConfig.consumer.groupId,
+                   store, wakeupHandler, g_gatewayConfig.consumer.fetchBatchLimit,
+                   g_gatewayConfig.consumer.pollDeadlineMs),
+          relay(store, kafkaPublisher, clock, g_outboxConfig,
+                g_gatewayConfig.consumer.topic, kPublishDeadlineMs),
+          poller(consumer, g_gatewayConfig.consumer.pollDeadlineMs)
     {
-        sink.bind(g_deliverySink);
+        // RM 面：DelegatingDeliverySink → GatewayAwareDeliverySink（deliver 前
+        // locate + epoch 校验）；wrapper 本地投递经 inner localSink → 真实 TCP
+        // sink（ChatService::bindLoop 注册）。
+        sink.bind(&gatewaySink);
+        gatewaySink.setClock(&clock);  // renew 失败指数退避（D4 生产）
+        if (g_deliverySink != nullptr) {
+            localSink.bind(g_deliverySink);
+        }
         g_wiring = this;
     }
     MySQLMessageStore store;
     UnixEpochClock clock;
-    DelegatingDeliverySink sink;
+    RedisPresenceDirectory presence;
+    InProcessGatewayTransport transport;
+    DelegatingDeliverySink localSink;  // inner 稳定委托：wrapper 本地投递 → 真实 sink
+    GatewayAwareDeliverySink gatewaySink;
+    DelegatingDeliverySink sink;       // RM 面稳定委托
     ReliableMessaging messaging;
     // P3-09：relay 单 worker 周期扫描 outbox 并对在线接收者重放幂等 wakeup
     // （accept 提交后的 best-effort wakeup 丢失/进程崩溃由周期扫描恢复）。
-    // P4-03：relay 出口为 OutboxPublisher port；本地 wakeup 由 LocalWakeupPublisher
-    // adapter 承接（P3-09 语义原样）。声明顺序：wakeup 依赖 store/messaging，
-    // relay 依赖 wakeup 与 store/clock，均在其前。
-    LocalWakeupPublisher wakeup;
+    // P4-03：relay 出口为 OutboxPublisher port。P4-05 D1：生产出口 = KafkaPublisher
+    //（真实 broker）；LocalWakeupPublisher 保留为测试/回退 adapter。
+    KafkaPublisher kafkaPublisher;
+    WakeupProgressHandler wakeupHandler;
+    KafkaEventConsumer consumer;
     LocalOutboxRelay relay;
+    OutboxConsumerPoller poller;
 };
 
 MessagingWiring& wiring()
@@ -363,7 +470,12 @@ bool registerDeliverySink(DeliverySink* sink)
         return false;
     }
     if (g_wiring != nullptr) {
-        if (!g_wiring->sink.bind(sink)) {
+        // P4-05 D3：wiring 已构造时把真实 sink 绑进 inner localSink（wrapper 本地
+        // 投递出口），RM 面 delegating sink 已在 wiring 构造时绑到 gatewaySink。
+        if (!g_wiring->sink.bind(&g_wiring->gatewaySink)) {
+            return false;
+        }
+        if (!g_wiring->localSink.bind(sink)) {
             return false;
         }
     }
@@ -406,6 +518,11 @@ void configureOutboxRelay(const OutboxConfig& cfg)
     g_outboxConfig = cfg;
 }
 
+void configureGateway(const GatewayConfig& cfg)
+{
+    g_gatewayConfig = cfg;
+}
+
 void startOutboxRelay()
 {
     wiring().relay.start();
@@ -429,5 +546,45 @@ void stopReliableMessaging(int64_t deadlineMs)
     // wiring 从未构造（无任何消息活动）时 no-op，避免 shutdown 期反构造 store。
     if (g_wiring != nullptr) {
         g_wiring->messaging.stop(deadlineMs);
+    }
+}
+
+// ---- P4-05 Presence 生产接线（ChatService 登录/登出/断开调用；wiring 惰性）----
+
+bool claimPresence(int64_t userId, uint64_t connId)
+{
+    const ClaimResult c = wiring().gatewaySink.bindUser(
+        UserId(static_cast<uint64_t>(userId)), ConnectionId(connId));
+    return c.ok;
+}
+
+void releasePresence(int64_t userId, uint64_t connId)
+{
+    if (g_wiring == nullptr) {
+        return;
+    }
+    (void)g_wiring->gatewaySink.releaseUser(UserId(static_cast<uint64_t>(userId)),
+                                            ConnectionId(connId));
+}
+
+void renewAllPresence()
+{
+    if (g_wiring == nullptr) {
+        return;
+    }
+    g_wiring->gatewaySink.renewAllClaimed();
+}
+
+// ---- P4-05 生产 consumer poll（P4-04 D1 延期项落地点）----
+
+void startOutboxConsumerPoll()
+{
+    wiring().poller.start();
+}
+
+void stopOutboxConsumerPoll(int64_t deadlineMs)
+{
+    if (g_wiring != nullptr) {
+        g_wiring->poller.stop(deadlineMs);
     }
 }

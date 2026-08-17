@@ -289,6 +289,105 @@ bool parseOutboxSection(const json& outbox, AppConfig* out,
     return ok;
 }
 
+// P4-05 正整数 uint64（GatewayId）。
+bool getUint64Positive(const json& obj, const std::string& key, uint64_t* out,
+                       std::vector<FieldError>* errors, const std::string& path)
+{
+    if (!obj.contains(key)) {
+        return true;
+    }
+    if (!obj[key].is_number_integer()) {
+        errors->push_back({path + key, "must be an integer"});
+        return false;
+    }
+    long long v = obj[key].get<long long>();
+    if (v < 1) {
+        errors->push_back({path + key, "must be >= 1"});
+        return false;
+    }
+    *out = static_cast<uint64_t>(v);
+    return true;
+}
+
+// P4-05 gateway 段（字段与 GatewayConfig 一一对应；缺失保持卡冻结默认）。
+bool parseGatewaySection(const json& gateway, AppConfig* out,
+                         std::vector<FieldError>* errors)
+{
+    checkKnownFields(gateway, {"id", "presence", "kafka", "consumer"}, errors, "gateway.");
+    bool ok = true;
+    ok = getUint64Positive(gateway, "id", &out->gateway.id, errors, "gateway.") && ok;
+    if (gateway.contains("presence")) {
+        if (!gateway["presence"].is_object()) {
+            errors->push_back({"gateway.presence", "must be an object"});
+            ok = false;
+        } else {
+            const json& p = gateway["presence"];
+            checkKnownFields(p, {"host", "port", "db", "ttl_ms", "connect_timeout_ms",
+                                 "command_timeout_ms"}, errors, "gateway.presence.");
+            ok = getNonEmptyString(p, "host", &out->gateway.presence.host, errors,
+                                   "gateway.presence.") && ok;
+            ok = getUint16(p, "port", &out->gateway.presence.port, errors,
+                           "gateway.presence.") && ok;
+            if (p.contains("db")) {
+                if (!p["db"].is_number_integer()) {
+                    errors->push_back({"gateway.presence.db", "must be an integer"});
+                    ok = false;
+                } else {
+                    long long v = p["db"].get<long long>();
+                    if (v < 0 || v > 15) {
+                        errors->push_back({"gateway.presence.db", "must be in [0,15]"});
+                        ok = false;
+                    } else {
+                        out->gateway.presence.db = static_cast<int>(v);
+                    }
+                }
+            }
+            ok = getInt64Positive(p, "ttl_ms", &out->gateway.presence.ttlMs, errors,
+                                  "gateway.presence.") && ok;
+            ok = getInt64Positive(p, "connect_timeout_ms",
+                                  &out->gateway.presence.connectTimeoutMs, errors,
+                                  "gateway.presence.") && ok;
+            ok = getInt64Positive(p, "command_timeout_ms",
+                                  &out->gateway.presence.commandTimeoutMs, errors,
+                                  "gateway.presence.") && ok;
+        }
+    }
+    if (gateway.contains("kafka")) {
+        if (!gateway["kafka"].is_object()) {
+            errors->push_back({"gateway.kafka", "must be an object"});
+            ok = false;
+        } else {
+            const json& k = gateway["kafka"];
+            checkKnownFields(k, {"host", "port"}, errors, "gateway.kafka.");
+            ok = getNonEmptyString(k, "host", &out->gateway.kafka.host, errors,
+                                   "gateway.kafka.") && ok;
+            ok = getUint16(k, "port", &out->gateway.kafka.port, errors,
+                           "gateway.kafka.") && ok;
+        }
+    }
+    if (gateway.contains("consumer")) {
+        if (!gateway["consumer"].is_object()) {
+            errors->push_back({"gateway.consumer", "must be an object"});
+            ok = false;
+        } else {
+            const json& c = gateway["consumer"];
+            checkKnownFields(c, {"topic", "group_id", "fetch_batch_limit",
+                                 "poll_deadline_ms"}, errors, "gateway.consumer.");
+            ok = getNonEmptyString(c, "topic", &out->gateway.consumer.topic, errors,
+                                   "gateway.consumer.") && ok;
+            ok = getNonEmptyString(c, "group_id", &out->gateway.consumer.groupId, errors,
+                                   "gateway.consumer.") && ok;
+            ok = getUint32Positive(c, "fetch_batch_limit",
+                                   &out->gateway.consumer.fetchBatchLimit, errors,
+                                   "gateway.consumer.") && ok;
+            ok = getInt64Positive(c, "poll_deadline_ms",
+                                  &out->gateway.consumer.pollDeadlineMs, errors,
+                                  "gateway.consumer.") && ok;
+        }
+    }
+    return ok;
+}
+
 } // namespace
 
 namespace config {
@@ -316,7 +415,8 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
     }
 
     std::vector<FieldError> errors;
-    checkKnownFields(root, {"server", "db", "executor", "reliable", "outbox"}, &errors, "");
+    checkKnownFields(root, {"server", "db", "executor", "reliable", "outbox", "gateway"},
+                     &errors, "");
 
     if (root.contains("server")) {
         if (!root["server"].is_object()) {
@@ -351,6 +451,13 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
             errors.push_back({"outbox", "must be an object"});
         } else {
             parseOutboxSection(root["outbox"], out, &errors);
+        }
+    }
+    if (root.contains("gateway")) {
+        if (!root["gateway"].is_object()) {
+            errors.push_back({"gateway", "must be an object"});
+        } else {
+            parseGatewaySection(root["gateway"], out, &errors);
         }
     }
 

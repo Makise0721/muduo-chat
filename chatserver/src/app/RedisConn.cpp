@@ -28,6 +28,17 @@ int64_t remainingMs(int64_t deadline)
     return left > 0 ? left : 0;
 }
 
+// ---- P4-02 L-7 RESP 有界化（P4-05 生产接线前置，docs/tasks/P4-05.md 冻结参数）----
+// 上限常量：与 P3-06 content 16KB 对齐量级；生产命令/回复均为小值（presence
+// 条目 value ~100B、Lua 脚本返回短数组/整数），正常路径永不触界。超限即断连
+//（协议错误 → command 返回 Error 并关闭连接）。
+const size_t kMaxCmdArgs = 64;                 // 单命令参数个数上限
+const size_t kMaxCmdArgBytes = 1u << 20;       // 单参数字节上限（1 MiB，命令侧防御）
+const size_t kMaxRespLineBytes = 16 * 1024;    // 单条状态行 / Bulk 长度头上限
+const size_t kMaxRespBulkBytes = 64 * 1024;    // Bulk 数据上限
+const unsigned kMaxRespArrayDepth = 8;         // 数组嵌套深度上限
+const size_t kMaxRespArrayElements = 4096;     // 单数组元素数上限（广度守卫）
+
 }  // namespace
 
 RedisConn::~RedisConn()
@@ -160,6 +171,10 @@ bool RedisConn::recvLine(std::string& line, int64_t deadline)
             return true;
         }
         if (c != '\r') {
+            // 有界化：状态行超限 → 协议错误（断连，见 command()）。
+            if (line.size() >= kMaxRespLineBytes) {
+                return false;
+            }
             line.push_back(c);
         }
     }
@@ -194,7 +209,7 @@ bool RedisConn::recvExact(std::string& out, size_t n, int64_t deadline)
     return true;
 }
 
-RedisConn::Reply RedisConn::parseReply(int64_t deadline)
+RedisConn::Reply RedisConn::parseReply(int64_t deadline, unsigned depth)
 {
     Reply r;
     char t;
@@ -243,6 +258,12 @@ RedisConn::Reply RedisConn::parseReply(int64_t deadline)
             r.type = Reply::Type::Nil;
             return r;
         }
+        // 有界化：Bulk 数据超限 → 协议错误（断连）。
+        if (static_cast<unsigned long long>(len) > kMaxRespBulkBytes) {
+            r.type = Reply::Type::Error;
+            r.str = "reply too large";
+            return r;
+        }
         std::string data;
         if (!recvExact(data, static_cast<size_t>(len), deadline)) {
             r.type = Reply::Type::Error;
@@ -271,10 +292,17 @@ RedisConn::Reply RedisConn::parseReply(int64_t deadline)
             r.type = Reply::Type::Nil;
             return r;
         }
+        // 有界化：数组嵌套深度 / 元素数超限 → 协议错误（断连）。
+        if (depth >= kMaxRespArrayDepth ||
+            static_cast<unsigned long long>(n) > kMaxRespArrayElements) {
+            r.type = Reply::Type::Error;
+            r.str = "reply too deep or too large";
+            return r;
+        }
         r.type = Reply::Type::Array;
         r.array.reserve(static_cast<size_t>(n));
         for (long long i = 0; i < n; ++i) {
-            r.array.push_back(parseReply(deadline));
+            r.array.push_back(parseReply(deadline, depth + 1));
         }
         return r;
     }
@@ -292,6 +320,21 @@ RedisConn::Reply RedisConn::command(const std::vector<std::string>& argv, int64_
         err.type = Reply::Type::Error;
         err.str = "not connected";
         return err;
+    }
+    // 有界化（命令侧防御）：参数个数 / 单参数长度超限 → 不发、断连。
+    if (argv.size() > kMaxCmdArgs) {
+        close();
+        err.type = Reply::Type::Error;
+        err.str = "too many arguments";
+        return err;
+    }
+    for (size_t i = 0; i < argv.size(); ++i) {
+        if (argv[i].size() > kMaxCmdArgBytes) {
+            close();
+            err.type = Reply::Type::Error;
+            err.str = "argument too large";
+            return err;
+        }
     }
     std::string req = "*" + std::to_string(argv.size()) + "\r\n";
     for (size_t i = 0; i < argv.size(); ++i) {

@@ -38,6 +38,9 @@ add_library(chatserver_core STATIC
     chatserver/src/app/InMemoryPresenceDirectory.cpp
     chatserver/src/app/RedisConn.cpp
     chatserver/src/app/RedisPresenceDirectory.cpp
+    chatserver/src/app/GatewayAwareDeliverySink.cpp
+    chatserver/src/app/InProcessGatewayTransport.cpp
+    chatserver/src/app/RecordingGatewayTransport.cpp
     chatserver/src/app/RecordingPublisher.cpp
     chatserver/src/app/KafkaPublisher.cpp
     chatserver/src/app/KafkaWire.cpp

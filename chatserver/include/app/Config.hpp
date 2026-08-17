@@ -58,6 +58,38 @@ struct ExecutorConfig {
     int queueCapacity = 64;
 };
 
+// P4-05 冻结参数（docs/tasks/P4-05.md §冻结参数 / 开卡待定 5）：生产默认 = 卡冻结值；
+// 测试注入小值只经构造参数，绝不作为生产默认。生产配置经 AppConfig.gateway
+// （P2-09 JSON "gateway" 段）→ ProtocolCodec wiring 注入；测试不经 config 文件。
+// 定义于 Config.hpp（mymuduo-safe），ProtocolCodec wiring / main.cpp 共用。
+struct PresenceConfig {
+    std::string host = "127.0.0.1";
+    uint16_t port = 6379;
+    int db = 0;
+    int64_t ttlMs = 30000;          // 生产默认 TTL 30s（P4-02 冻结）→ renew 间隔 TTL/2=15s
+    int64_t connectTimeoutMs = 1000;
+    int64_t commandTimeoutMs = 1000;
+};
+
+struct KafkaConfig {
+    std::string host = "127.0.0.1";
+    uint16_t port = 9092;
+};
+
+struct ConsumerConfig {
+    std::string topic = "muduo-outbox";              // P4-03/P4-04 冻结生产命名
+    std::string groupId = "muduo-outbox-consumer";   // P4-04 冻结生产 group
+    uint32_t fetchBatchLimit = 100;                  // P4-04 冻结 fetch 批上限
+    int64_t pollDeadlineMs = 5000;                   // 对 P4-04 commit/publish deadline 惯例
+};
+
+struct GatewayConfig {
+    uint64_t id = 1;             // GatewayId 生产默认 1（冻结）
+    PresenceConfig presence;
+    KafkaConfig kafka;
+    ConsumerConfig consumer;
+};
+
 struct AppConfig {
     AppConfig()
     {
@@ -68,8 +100,9 @@ struct AppConfig {
     ServerEndpointConfig v2;  // ip 继承 v1；仅 port 可配置
     DbConfig db;
     ExecutorConfig executor;
-    RetryConfig reliable;  // P3-08 可靠消息参数（默认 = 卡冻结值）
-    OutboxConfig outbox;   // P3-09 outbox relay 参数（默认 = 卡冻结值）
+    RetryConfig reliable;   // P3-08 可靠消息参数（默认 = 卡冻结值）
+    OutboxConfig outbox;    // P3-09 outbox relay 参数（默认 = 卡冻结值）
+    GatewayConfig gateway;  // P4-05 gateway/presence/kafka/consumer 参数（默认 = 卡冻结值）
 };
 
 namespace config {

@@ -141,6 +141,9 @@ int main(int argc, char** argv) {
     configureReliableMessaging(cfg.reliable);
     // P3-09：outbox relay 生产参数注入（缺省 = 卡冻结值，见 AppConfig.outbox）。
     configureOutboxRelay(cfg.outbox);
+    // P4-05：Gateway/presence/kafka/consumer 生产参数注入（缺省 = 卡冻结值，
+    // 见 AppConfig.gateway；GatewayId 默认 1，冻结）。
+    configureGateway(cfg.gateway);
 
     auto& connPool = ConnectionPool::getInstance();
     connPool.init(cfg.db.host, cfg.db.user, cfg.db.password, cfg.db.dbname,
@@ -221,6 +224,9 @@ int main(int argc, char** argv) {
     std::cout << "Server started, entering event loop" << std::endl;
     ChatService::instance()->bindLoop(&loop, cfg.executor.workers,
                                       cfg.executor.queueCapacity);
+    // P4-05：renew 调度（D4：窗口 = TTL/2，生产 TTL 30s → 15s；main loop
+    // runEvery 驱动，卡冻结载体；wiring 未构造 no-op）。
+    loop.runEvery(cfg.gateway.presence.ttlMs / 2, renewAllPresence);
     server.start();
     v2Server.start();
     loop.loop();

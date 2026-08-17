@@ -177,6 +177,9 @@ void ChatService::bindLoop(EventLoop* loop, int executorWorkers, int executorQue
     // P3-09：启动 outbox relay 单 worker 周期扫描（lost wakeup 恢复：accept 提交
     // 后 wakeup 丢失/进程崩溃，重启后未处理事件仍可被 claim 并重放）。
     startOutboxRelay();
+    // P4-05 D1：启动生产 consumer poll（KafkaEventConsumer + WakeupProgressHandler，
+    // 独立 poll 线程 + 有界 deadline）——本地/跨节点全部投递经同一 durable 路径。
+    startOutboxConsumerPoll();
 }
 
 void ChatService::shutdownApp()
@@ -186,9 +189,13 @@ void ChatService::shutdownApp()
     }
     // P3-09：relay worker（其 wakeup 消费 wiring().messaging）先于 messaging stop
     // 有界 join（单轮批次有界）。顺序：EXECUTOR_SHUTDOWN → OUTBOX_STOP →
-    // MESSAGING_STOP → POOL_SHUTDOWN。
+    // CONSUMER_STOP → MESSAGING_STOP → POOL_SHUTDOWN。
     std::cout << "OUTBOX_STOP" << std::endl;
     stopOutboxRelay(5000);
+    // P4-05：consumer poll（其 handle 消费 wiring().messaging）先于 messaging stop
+    // 有界 join（每 poll 有界）。顺序见上。
+    std::cout << "CONSUMER_STOP" << std::endl;
+    stopOutboxConsumerPoll(5000);
     // P3-08：scheduler 线程先于 ConnectionPool 失效退出（有界 join；wiring 未
     // 构造时 no-op）。顺序：EXECUTOR_SHUTDOWN → MESSAGING_STOP → POOL_SHUTDOWN。
     std::cout << "MESSAGING_STOP" << std::endl;
@@ -278,6 +285,22 @@ void ChatService::login(const TcpConnectionPtr& conn, json& js, Timestamp time) 
                     conn->send(response.dump() + "\n");
                     return;
                 }
+            }
+            // P4-05：Presence claim（登录接线：bind 成功后、sessionAvailableDelivery
+            // 提交前 claim 生成新 epoch 原子覆盖，cluster-context-map §3；connId =
+            // 连接对象地址低 32 位，D5）。Redis down → 登录暂停（冻结降级，P4-00/
+            // ADR-0002）：回滚 Session 绑定并拒登录（不建 Presence 条目、不误投；
+            // durable accept 不受影响）。
+            const uint64_t connId = connectionKey(conn);
+            if (!claimPresence(id, connId)) {
+                _sessions.unbindUser(id);
+                _app.invalidateSessionAttempt(id, gen);
+                json paused;
+                paused["msgid"] = LOGIN_MSG_ACK;
+                paused["errno"] = 1;
+                paused["errmsg"] = "login temporarily unavailable, please retry!";
+                conn->send(paused.dump() + "\n");
+                return;
             }
             // DB 状态影子异步落库（登录成功后必须是 online）。
             _executor->submit(
@@ -401,6 +424,12 @@ void ChatService::loginout(const TcpConnectionPtr& conn, json& js, Timestamp tim
     // B-10 语义保留：登出按 payload id、未登录也成功（幂等）；经 registry
     // 释放保持双向一致性（同连接/同用户恰好一次）。
     _sessions.unbindUser(userid);
+
+    // P4-05：close/loginout compare-and-delete release（按本地影子 epoch；旧 epoch
+    // 被拒且条目不变，P4-01 契约；Redis down 失败无害——条目 TTL 到期消失）。幂等。
+    if (bs.userId != 0) {
+        releasePresence(bs.userId, connectionKey(conn));
+    }
 
     // 会话代次递增：在途登录 completion 不再生效。
     if (bs.userId != 0) {
@@ -670,6 +699,12 @@ void ChatService::clientCloseException(const TcpConnectionPtr& conn) {
     // 未绑定返回 0，不产生状态写入。
     _sessions.removeConnection(conn);
     int64_t userid = _sessions.unbind(conn);
+
+    if (userid != 0) {
+        // P4-05：断开 release（compare-and-delete；幂等，失败无害——条目 TTL 到期
+        // 消失，Redis down 时本地 locate 按离线处理）。
+        releasePresence(userid, connectionKey(conn));
+    }
 
     if (bs.userId != 0 && _executor) {
         // P3-08 冻结策略（docs/tasks/P3-08.md rejection carryover）：submit 被拒

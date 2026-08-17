@@ -156,6 +156,64 @@ TEST_F(ConfigTest, OutboxPartialKeepsFrozenDefaults)
     std::remove(path.c_str());
 }
 
+// L2（2026-08-17）：P4-05 gateway 段最小解析用例——gateway.id 覆盖后缺失字段保持
+// 卡冻结默认（GatewayId 生产默认 1、TTL 30s、topic/group/fetchBatchLimit 卡冻结值）。
+TEST_F(ConfigTest, GatewaySectionOverridesKeepsFrozenDefaults)
+{
+    std::string path = writeTempFile(
+        "{\"gateway\":{\"id\":3,"
+        "\"presence\":{\"host\":\"redis.local\",\"port\":6380,\"db\":2,\"ttl_ms\":5000},"
+        "\"kafka\":{\"host\":\"kafka.local\",\"port\":9093},"
+        "\"consumer\":{\"topic\":\"my-topic\",\"group_id\":\"my-group\","
+        "\"fetch_batch_limit\":50,\"poll_deadline_ms\":3000}}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.gateway.id, 3u);
+    EXPECT_EQ(cfg.gateway.presence.host, "redis.local");
+    EXPECT_EQ(cfg.gateway.presence.port, 6380);
+    EXPECT_EQ(cfg.gateway.presence.db, 2);
+    EXPECT_EQ(cfg.gateway.presence.ttlMs, 5000);
+    EXPECT_EQ(cfg.gateway.kafka.host, "kafka.local");
+    EXPECT_EQ(cfg.gateway.kafka.port, 9093);
+    EXPECT_EQ(cfg.gateway.consumer.topic, "my-topic");
+    EXPECT_EQ(cfg.gateway.consumer.groupId, "my-group");
+    EXPECT_EQ(cfg.gateway.consumer.fetchBatchLimit, 50u);
+    EXPECT_EQ(cfg.gateway.consumer.pollDeadlineMs, 3000);
+    // 未出现字段保持卡冻结默认（缺省 = 冻结值）。
+    EXPECT_EQ(cfg.gateway.presence.connectTimeoutMs, 1000);
+    EXPECT_EQ(cfg.gateway.presence.commandTimeoutMs, 1000);
+    std::remove(path.c_str());
+}
+
+// L2（2026-08-17）：gateway 段缺省（无 gateway 段）= 卡冻结默认（GatewayId=1、TTL
+// 30s、presence/kafka 127.0.0.1、consumer 冻结命名）。
+TEST_F(ConfigTest, GatewayDefaultsAreFrozenValues)
+{
+    AppConfig cfg;
+    EXPECT_EQ(cfg.gateway.id, 1u);
+    EXPECT_EQ(cfg.gateway.presence.host, "127.0.0.1");
+    EXPECT_EQ(cfg.gateway.presence.port, 6379);
+    EXPECT_EQ(cfg.gateway.presence.db, 0);
+    EXPECT_EQ(cfg.gateway.presence.ttlMs, 30000);
+    EXPECT_EQ(cfg.gateway.presence.connectTimeoutMs, 1000);
+    EXPECT_EQ(cfg.gateway.presence.commandTimeoutMs, 1000);
+    EXPECT_EQ(cfg.gateway.kafka.host, "127.0.0.1");
+    EXPECT_EQ(cfg.gateway.kafka.port, 9092);
+    EXPECT_EQ(cfg.gateway.consumer.topic, "muduo-outbox");
+    EXPECT_EQ(cfg.gateway.consumer.groupId, "muduo-outbox-consumer");
+    EXPECT_EQ(cfg.gateway.consumer.fetchBatchLimit, 100u);
+    EXPECT_EQ(cfg.gateway.consumer.pollDeadlineMs, 5000);
+    // 空配置文件同样保持 gateway 冻结默认。
+    std::string path = writeTempFile("{}");
+    AppConfig empty;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &empty, &err)) << err;
+    EXPECT_EQ(empty.gateway.id, 1u);
+    EXPECT_EQ(empty.gateway.presence.ttlMs, 30000);
+    std::remove(path.c_str());
+}
+
 // P3-11：executor 段部分覆盖（最小解析用例）——只出现 queue_capacity 时
 // workers 保持卡冻结默认 1（缺失字段不改变默认；显式多 worker 见
 // ExecutorWorkersMultiValueAllowed）。
@@ -282,6 +340,40 @@ TEST_F(ConfigTest, FailFastMatrix)
         {"{\"outbox\":{\"claim_lease_ms\":0}}", "outbox.claim_lease_ms"},
         {"{\"outbox\":{\"unknown_field\":1}}", "outbox.unknown_field"},
         {"{\"outbox\":5}", "outbox"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        std::string path = writeTempFile(cases[i].json);
+        AppConfig cfg;
+        std::string err;
+        EXPECT_FALSE(loadConfigFile(path, &cfg, &err))
+            << "case " << i << " should fail: " << cases[i].json;
+        EXPECT_NE(err.find(cases[i].expectSubstr), std::string::npos)
+            << "case " << i << " err should mention '" << cases[i].expectSubstr
+            << "', got: " << err;
+        std::remove(path.c_str());
+    }
+}
+
+// L2（2026-08-17）：gateway 段 fail-fast——非法 id / presence db 越界 / 未知字段 /
+// 非对象段全部被拒并带路径字段名。
+TEST_F(ConfigTest, GatewayFailFastMatrix)
+{
+    FailCase cases[] = {
+        {"{\"gateway\":{\"id\":0}}", "gateway.id"},           // id 越界（<1）
+        {"{\"gateway\":{\"id\":-1}}", "gateway.id"},
+        {"{\"gateway\":{\"id\":\"2\"}}", "gateway.id"},       // id 类型错
+        {"{\"gateway\":{\"presence\":{\"db\":16}}}", "gateway.presence.db"},  // db 越界 [0,15]
+        {"{\"gateway\":{\"presence\":{\"db\":-1}}}", "gateway.presence.db"},
+        {"{\"gateway\":{\"presence\":{\"port\":0}}}", "gateway.presence.port"},
+        {"{\"gateway\":{\"presence\":{\"ttl_ms\":0}}}", "gateway.presence.ttl_ms"},
+        {"{\"gateway\":{\"unknown_field\":1}}", "gateway.unknown_field"},
+        {"{\"gateway\":{\"presence\":{\"unknown_field\":1}}}", "gateway.presence.unknown_field"},
+        {"{\"gateway\":{\"kafka\":{\"unknown_field\":1}}}", "gateway.kafka.unknown_field"},
+        {"{\"gateway\":{\"consumer\":{\"unknown_field\":1}}}", "gateway.consumer.unknown_field"},
+        {"{\"gateway\":5}", "gateway"},                       // 非对象段
+        {"{\"gateway\":{\"presence\":5}}", "gateway.presence"},
+        {"{\"gateway\":{\"kafka\":5}}", "gateway.kafka"},
+        {"{\"gateway\":{\"consumer\":5}}", "gateway.consumer"},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         std::string path = writeTempFile(cases[i].json);

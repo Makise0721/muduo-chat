@@ -77,23 +77,30 @@ void LocalOutboxRelay::stop(int64_t deadlineMs)
 
 int LocalOutboxRelay::runScan()
 {
-    std::lock_guard<std::mutex> lk(mutex_);
-    return scanLocked();
+    RelayBatch plan;
+    {
+        // 锁内：claim + 构建 publish 批（CF-1：锁内不执行 publish）。
+        std::lock_guard<std::mutex> lk(mutex_);
+        plan = scanLocked();
+    }
+    // 锁外：publish（真实 broker I/O，不占 relay 锁；锁外回锁标记 processed）。
+    publishAndMark(plan);
+    return plan.claimedCount;
 }
 
-int LocalOutboxRelay::scanLocked()
+LocalOutboxRelay::RelayBatch LocalOutboxRelay::scanLocked()
 {
+    RelayBatch plan;
     const int64_t now = clock_.nowMs();
     std::vector<OutboxEvent> claimed = store_.claimOutboxEvents(
         now, leaseOwner_, now + config_.claimLeaseMs, config_.claimBatchSize);
-    const int claimedCount = static_cast<int>(claimed.size());
+    plan.claimedCount = static_cast<int>(claimed.size());
 
     // P4-03：构建 publish 批——每事件 load Message（取 conversationId/sequence，
     // 缺 Message 或载荷损坏（findMessage 抛，如 outbox payload 被外部破坏）判
     // poison，不可 publish）；poison 事件不入批、保持未 processed，且不阻断同批
     // 后续事件（P3-09 逐事件 try/catch 语义原样）。
-    std::vector<OutboxPublishRequest> requests;
-    requests.reserve(claimed.size());
+    plan.requests.reserve(claimed.size());
     for (size_t i = 0; i < claimed.size(); ++i) {
         const OutboxEvent& e = claimed[i];
         std::shared_ptr<const Message> msg;
@@ -116,48 +123,62 @@ int LocalOutboxRelay::scanLocked()
         req.conversationId = msg->conversationId;
         req.sequence = msg->sequence.value;
         req.topic = topic_;
-        requests.push_back(req);
+        plan.requests.push_back(req);
     }
+    return plan;
+}
 
-    if (!requests.empty()) {
-        // publisher 契约"不抛"；防御性 catch（如 adapter 违反契约）→ 整批保持未
-        // processed，lease 到期重领重试（绝不崩溃、不静默丢弃）。
-        std::vector<OutboxPublishOutcome> outcomes;
-        try {
-            outcomes = publisher_.publish(requests, publishDeadlineMs_);
-        } catch (const std::exception& e) {
-            ReliableMessageMetrics::recordBestEffort([&] {
-                for (size_t i = 0; i < requests.size(); ++i) {
-                    ReliableMessageMetrics::instance().recordOutboxPoison();
-                }
-            });
-            outcomes.clear();
-            (void)e;
-        }
-        if (outcomes.size() == requests.size()) {
-            for (size_t i = 0; i < requests.size(); ++i) {
-                if (outcomes[i].ok) {
-                    // 处理成功（publish 成功、无异常）后才标 processed；标 processed
-                    // 的瞬时存储故障逐事件 catch（P3-09 语义：不阻断同批后续事件，
-                    // 事件保持未 processed、lease 到期重试）。
-                    try {
-                        store_.markOutboxProcessed(requests[i].event.id, clock_.nowMs());
-                    } catch (const std::exception&) {
-                        ReliableMessageMetrics::recordBestEffort([&] {
-                            ReliableMessageMetrics::instance().recordOutboxPoison();
-                        });
-                    }
-                } else {
-                    // 发布失败（含 LocalWakeupPublisher 的 wakeup 存储故障）不标
-                    // processed：事件保持未 processed、可查询，lease 保留由到期
-                    // 驱动重领重试；不阻断同批后续事件。relay 不判 poison（无法
-                    // 区分坏 payload 与瞬时故障；见 P3-09 M）——统一仅不标 processed。
-                    // P3-12：失败事件逐条计 poison（best-effort 可观测）。
-                    ReliableMessageMetrics::recordBestEffort([&] {
-                        ReliableMessageMetrics::instance().recordOutboxPoison();
-                    });
-                }
+void LocalOutboxRelay::publishAndMark(const RelayBatch& plan)
+{
+    if (plan.requests.empty()) {
+        // P3-12：无请求仍需刷新 outbox lag gauge（best-effort）。
+        ReliableMessageMetrics::recordBestEffort([&] {
+            const uint64_t lag = store_.countUnprocessedOutboxEvents();
+            ReliableMessageMetrics::instance().updateOutboxLag(lag);
+        });
+        return;
+    }
+    // publisher 契约"不抛"；防御性 catch（如 adapter 违反契约）→ 整批保持未
+    // processed，lease 到期重领重试（绝不崩溃、不静默丢弃）。
+    std::vector<OutboxPublishOutcome> outcomes;
+    try {
+        outcomes = publisher_.publish(plan.requests, publishDeadlineMs_);
+    } catch (const std::exception& e) {
+        ReliableMessageMetrics::recordBestEffort([&] {
+            for (size_t i = 0; i < plan.requests.size(); ++i) {
+                ReliableMessageMetrics::instance().recordOutboxPoison();
             }
+        });
+        outcomes.clear();
+        (void)e;
+    }
+    if (outcomes.size() != plan.requests.size()) {
+        // 防御：adapter 逐事件结果与请求数不符 → 整批保持未 processed。
+        outcomes.clear();
+    }
+    // 回锁：逐事件结果 ok 才标 processed（CF-1：processed 标记在锁内完成）。
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (size_t i = 0; i < plan.requests.size(); ++i) {
+        if (!outcomes.empty() && outcomes[i].ok) {
+            // 处理成功（publish 成功、无异常）后才标 processed；标 processed
+            // 的瞬时存储故障逐事件 catch（P3-09 语义：不阻断同批后续事件，
+            // 事件保持未 processed、lease 到期重试）。
+            try {
+                store_.markOutboxProcessed(plan.requests[i].event.id, clock_.nowMs());
+            } catch (const std::exception&) {
+                ReliableMessageMetrics::recordBestEffort([&] {
+                    ReliableMessageMetrics::instance().recordOutboxPoison();
+                });
+            }
+        } else {
+            // 发布失败（含 LocalWakeupPublisher 的 wakeup 存储故障）不标
+            // processed：事件保持未 processed、可查询，lease 保留由到期
+            // 驱动重领重试；不阻断同批后续事件。relay 不判 poison（无法
+            // 区分坏 payload 与瞬时故障；见 P3-09 M）——统一仅不标 processed。
+            // P3-12：失败事件逐条计 poison（best-effort 可观测）。
+            ReliableMessageMetrics::recordBestEffort([&] {
+                ReliableMessageMetrics::instance().recordOutboxPoison();
+            });
         }
     }
 
@@ -167,19 +188,27 @@ int LocalOutboxRelay::scanLocked()
         const uint64_t lag = store_.countUnprocessedOutboxEvents();
         ReliableMessageMetrics::instance().updateOutboxLag(lag);
     });
-    return claimedCount;
 }
 
 void LocalOutboxRelay::workerLoop()
 {
     std::unique_lock<std::mutex> lock(mutex_);
     while (!stopRequested_) {
+        RelayBatch plan;
         try {
-            scanLocked();
+            plan = scanLocked();  // 持锁：claim + 构建批
         } catch (...) {
             // store 故障（如 MySQL 不可用）best-effort：下一轮再试，不终止线程
             // （scheduler 模式同构；单轮批次有界 → 退出仍有界）。
         }
+        // CF-1：publish 与 processed 标记移出锁（真实 broker I/O 不占 relay 锁）。
+        lock.unlock();
+        try {
+            publishAndMark(plan);
+        } catch (...) {
+            // publishAndMark 内部已逐事件防御；此处兜底不终止线程。
+        }
+        lock.lock();
         int64_t waitMs = config_.scanIntervalMs;
         if (waitMs < 1) {
             waitMs = 1;
