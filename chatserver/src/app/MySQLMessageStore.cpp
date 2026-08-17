@@ -1478,3 +1478,152 @@ uint64_t MySQLMessageStore::countUnprocessedOutboxEvents()
                    nullptr, 0, n);
     return n;
 }
+
+void MySQLMessageStore::recordDeadLetter(const DeadLetterRecord& r)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    // INSERT IGNORE：UNIQUE(topic, partition_id, kafka_offset) 冲突静默跳过——
+    // kill-前已落库的事件重放时不双插（幂等，卡 D3）。
+    int32_t pPartition = r.partitionId;
+    std::string topic = r.topic;
+    std::string eventType = r.eventType;
+    std::string reason = r.reason;
+    std::string rawValue = r.rawValue;
+    unsigned long topicLen = 0, typeLen = 0, reasonLen = 0, rawLen = 0;
+    uint64_t pKafkaOffset = static_cast<uint64_t>(r.kafkaOffset);
+    uint64_t pMessageId = r.messageId;
+    uint64_t pConversationId = r.conversationId;
+    uint64_t pSequence = r.sequence;
+    MYSQL_BIND binds[9];
+    bindString(binds[0], &topic, &topicLen);
+    bindInt(binds[1], &pPartition);
+    bindU64(binds[2], &pKafkaOffset);
+    bindU64(binds[3], &pMessageId);
+    bindU64(binds[4], &pConversationId);
+    bindU64(binds[5], &pSequence);
+    bindString(binds[6], &eventType, &typeLen);
+    bindString(binds[7], &reason, &reasonLen);
+    bindBlob(binds[8], &rawValue, &rawLen);
+    (void)execStmt(*mysql,
+        "INSERT IGNORE INTO KafkaDeadLetter(topic, partition_id, kafka_offset, message_id, "
+        "conversation_id, sequence, event_type, reason, raw_value) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        binds, 9);
+}
+
+std::vector<DeadLetterRecord> MySQLMessageStore::deadLetters(uint64_t limit)
+{
+    finishPending();
+    ConnectionPool::AcquireResult acq = pool_.acquire(kAcquireTimeoutMs);
+    if (!acq.lease) {
+        throw MessageStoreError(StoreErrorKind::DependencyBusy, "connection acquire failed");
+    }
+    MySQL* mysql = acq.lease.get();
+    const char* sql =
+        "SELECT topic, partition_id, kafka_offset, message_id, conversation_id, sequence, "
+        "event_type, reason, raw_value FROM KafkaDeadLetter ORDER BY id LIMIT ?";
+    MYSQL_STMT* stmt = mysql->prepareStatement(sql);
+    if (!stmt) {
+        throwStoreError(mysql_errno(mysql->getConnection()),
+                        std::string("prepare dead-letter query failed"));
+    }
+    std::vector<DeadLetterRecord> out;
+    {
+        PreparedStatementGuard guard(stmt);
+        uint64_t pLimit = limit;
+        MYSQL_BIND limitBind;
+        bindU64(limitBind, &pLimit);
+        if (mysql_stmt_bind_param(stmt, &limitBind) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "bind dead-letter query params");
+        }
+        if (mysql_stmt_execute(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "execute dead-letter query");
+        }
+        char topicBuf[256] = {0};
+        unsigned long topicLen = 0;
+        int32_t partitionId = 0;
+        uint64_t kafkaOffset = 0;
+        uint64_t messageId = 0;
+        uint64_t conversationId = 0;
+        uint64_t sequence = 0;
+        char typeBuf[65] = {0};
+        unsigned long typeLen = 0;
+        char reasonBuf[33] = {0};
+        unsigned long reasonLen = 0;
+        char rawProbe = 0;
+        unsigned long rawLen = 0;
+        bool nulls[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        MYSQL_BIND bindOut[9];
+        memset(bindOut, 0, sizeof(bindOut));
+        bindOut[0].buffer_type = MYSQL_TYPE_STRING;
+        bindOut[0].buffer = topicBuf;
+        bindOut[0].buffer_length = sizeof(topicBuf);
+        bindOut[0].length = &topicLen;
+        bindOut[0].is_null = &nulls[0];
+        bindOut[1].buffer_type = MYSQL_TYPE_LONG;
+        bindOut[1].buffer = &partitionId;
+        bindOut[1].is_null = &nulls[1];
+        bindOut[2].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[2].is_unsigned = 1;
+        bindOut[2].buffer = &kafkaOffset;
+        bindOut[2].is_null = &nulls[2];
+        bindOut[3].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[3].is_unsigned = 1;
+        bindOut[3].buffer = &messageId;
+        bindOut[3].is_null = &nulls[3];
+        bindOut[4].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[4].is_unsigned = 1;
+        bindOut[4].buffer = &conversationId;
+        bindOut[4].is_null = &nulls[4];
+        bindOut[5].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindOut[5].is_unsigned = 1;
+        bindOut[5].buffer = &sequence;
+        bindOut[5].is_null = &nulls[5];
+        bindOut[6].buffer_type = MYSQL_TYPE_STRING;
+        bindOut[6].buffer = typeBuf;
+        bindOut[6].buffer_length = sizeof(typeBuf);
+        bindOut[6].length = &typeLen;
+        bindOut[6].is_null = &nulls[6];
+        bindOut[7].buffer_type = MYSQL_TYPE_STRING;
+        bindOut[7].buffer = reasonBuf;
+        bindOut[7].buffer_length = sizeof(reasonBuf);
+        bindOut[7].length = &reasonLen;
+        bindOut[7].is_null = &nulls[7];
+        bindOut[8].buffer_type = MYSQL_TYPE_BLOB;
+        bindOut[8].buffer = &rawProbe;
+        bindOut[8].buffer_length = 1;
+        bindOut[8].length = &rawLen;
+        bindOut[8].is_null = &nulls[8];
+        if (mysql_stmt_bind_result(stmt, bindOut) != 0 || mysql_stmt_store_result(stmt) != 0) {
+            throwStoreError(mysql_stmt_errno(stmt), "store dead-letter query result");
+        }
+        while (true) {
+            int rc = mysql_stmt_fetch(stmt);
+            if (rc == MYSQL_NO_DATA) {
+                break;
+            }
+            // raw_value BLOB 以 1 字节探针绑定：截断（MYSQL_DATA_TRUNCATED）正常，
+            // fetchBlob 二段读取全量（queryOutboxEvents 同款处理）。
+            if (rc != 0 && rc != MYSQL_DATA_TRUNCATED) {
+                throwStoreError(mysql_stmt_errno(stmt), "fetch dead-letter query result");
+            }
+            DeadLetterRecord r;
+            r.topic = std::string(topicBuf, topicLen);
+            r.partitionId = partitionId;
+            r.kafkaOffset = static_cast<int64_t>(kafkaOffset);
+            r.messageId = messageId;
+            r.conversationId = conversationId;
+            r.sequence = sequence;
+            r.eventType = std::string(typeBuf, typeLen);
+            r.reason = std::string(reasonBuf, reasonLen);
+            r.rawValue = fetchBlob(stmt, 8, rawLen);
+            out.push_back(r);
+        }
+    }
+    return out;
+}

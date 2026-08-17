@@ -16,6 +16,23 @@ struct ExpiredDeliveryRecord {
     DeliveryState fromState = DeliveryState::Pending;
 };
 
+// P4-04 消费侧 dead-letter 行（卡 D3：键 = Kafka record 定位 topic/partition/
+// offset + 原始 bytes；发布侧 poison 按 outbox 事件 id 键控，语义不同不复用）。
+struct DeadLetterRecord {
+    std::string topic;
+    int32_t partitionId = 0;
+    int64_t kafkaOffset = 0;
+    uint64_t messageId = 0;        // 信封 message_id（不可解析时 0）
+    uint64_t conversationId = 0;
+    uint64_t sequence = 0;
+    std::string eventType;
+    std::string reason;   // poison_payload|unknown_event_type|sequence_regression|
+                          // sequence_conflict|message_missing
+    std::string rawValue;  // 原始 record bytes（信封原文）；message_missing 场景为
+                           // handler 侧按 P4-03 冻结信封字段重建的文本（handler 无
+                           // 原始 bytes，见 WakeupProgressHandler）
+};
+
 class MessageStore {
 public:
     virtual ~MessageStore() = default;
@@ -154,5 +171,19 @@ public:
     virtual uint64_t countUnprocessedOutboxEvents()
     {
         return 0;
+    }
+
+    // ---- P4-04 消费侧 dead-letter port（InMemory/MySQL 双 adapter，契约双跑；
+    //      默认 no-op 沿 P3-09 模式，既有测试替身零伴改；行落地 MySQL
+    //      KafkaDeadLetter 表（0003 migration），UNIQUE(topic,partition_id,
+    //      kafka_offset) 幂等）----
+
+    // 幂等落库：UNIQUE(topic,partition_id,kafka_offset) 冲突 = 已存在，成功返回。
+    virtual void recordDeadLetter(const DeadLetterRecord& r) { (void)r; }
+    // 可查询谓词（消费侧 poison 绝不只日志丢弃的证据面），最多 limit 行。
+    virtual std::vector<DeadLetterRecord> deadLetters(uint64_t limit)
+    {
+        (void)limit;
+        return std::vector<DeadLetterRecord>();
     }
 };

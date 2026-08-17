@@ -303,3 +303,26 @@ uint64_t InMemoryMessageStore::countUnprocessedOutboxEvents()
     }
     return n;
 }
+
+void InMemoryMessageStore::recordDeadLetter(const DeadLetterRecord& r)
+{
+    // UNIQUE(topic, partition_id, kafka_offset) 的内存等价：kill-前已落库的事件
+    // 重放时不双插（幂等，与 MySQL INSERT IGNORE 对称）。
+    for (size_t i = 0; i < deadLetters_.size(); ++i) {
+        if (deadLetters_[i].topic == r.topic
+            && deadLetters_[i].partitionId == r.partitionId
+            && deadLetters_[i].kafkaOffset == r.kafkaOffset) {
+            return;  // 已存在，成功返回
+        }
+    }
+    deadLetters_.push_back(r);
+}
+
+std::vector<DeadLetterRecord> InMemoryMessageStore::deadLetters(uint64_t limit)
+{
+    std::vector<DeadLetterRecord> out;
+    for (size_t i = 0; i < deadLetters_.size() && out.size() < limit; ++i) {
+        out.push_back(deadLetters_[i]);
+    }
+    return out;
+}

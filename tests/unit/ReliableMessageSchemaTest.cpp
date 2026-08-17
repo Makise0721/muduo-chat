@@ -414,9 +414,11 @@ TEST(ReliableMessageSchemaTest, MigrationExpandsSchemaWithSixReliableTables)
 
     schema_migration::MigrateResult r = makeMigrator(kTestDb).migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    // P4-04 伴改：0003 追加 KafkaDeadLetter（消费侧 dead-letter 表，additive）。
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0001", r.applied[0]);
     EXPECT_EQ("0002", r.applied[1]);
+    EXPECT_EQ("0003", r.applied[2]);
 
     MySQL conn;
     makeConn(conn, kTestDb);
@@ -424,18 +426,20 @@ TEST(ReliableMessageSchemaTest, MigrationExpandsSchemaWithSixReliableTables)
     EXPECT_EQ((std::set<std::string>{
                   "User", "Friend", "AllGroup", "GroupUser", "OfflineMessage",
                   "Conversation", "DirectConversation", "GroupConversation",
-                  "ChatMessage", "MessageDelivery", "OutboxEvent", "schema_migrations"}),
+                  "ChatMessage", "MessageDelivery", "OutboxEvent", "KafkaDeadLetter",
+                  "schema_migrations"}),
               names);
 
-    // 幂等：重复执行不重复应用，0002 只记录一次。
+    // 幂等：重复执行不重复应用，0002/0003 只记录一次。
     schema_migration::MigrateResult r2 = makeMigrator(kTestDb).migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r2.ok) << r2.error;
     EXPECT_TRUE(r2.applied.empty());
     schema_migration::StatusResult st = makeMigrator(kTestDb).status();
     ASSERT_TRUE(st.ok) << st.error;
-    ASSERT_EQ(2u, st.versions.size());
+    ASSERT_EQ(3u, st.versions.size());
     EXPECT_EQ("0001", st.versions[0].version);
     EXPECT_EQ("0002", st.versions[1].version);
+    EXPECT_EQ("0003", st.versions[2].version);
     EXPECT_EQ(64u, st.versions[1].checksum.size());
 }
 
@@ -808,13 +812,14 @@ TEST(ReliableMessageSchemaTest, InterruptedMigrationRerunConverges)
     }
     EXPECT_EQ(8u, tableNames(conn).size());  // 0001 五表 + 0002 前三表
 
-    // 中断后重跑：0001 全部 + 0002 剩余语句补齐（IF NOT EXISTS 幂等）。
+    // 中断后重跑：0001 全部 + 0002 剩余语句补齐（IF NOT EXISTS 幂等）+ 0003 追加。
     schema_migration::MigrateResult r = makeMigrator(kTestDb).migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0001", r.applied[0]);
     EXPECT_EQ("0002", r.applied[1]);
-    EXPECT_EQ(12u, tableNames(conn).size());
+    EXPECT_EQ("0003", r.applied[2]);
+    EXPECT_EQ(13u, tableNames(conn).size());
 
     // 已完成后重跑幂等。
     schema_migration::MigrateResult r2 = makeMigrator(kTestDb).migrateTo(migrationsDir(), "", 30);
@@ -853,8 +858,9 @@ TEST(ReliableMessageSchemaTest, EmptyAndLegacyUpgradeConvergeToSameSchema)
 
     schema_migration::MigrateResult r = makeMigrator(kTestDb2).migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0002", r.applied[1]);
+    EXPECT_EQ("0003", r.applied[2]);
 
     // 升级后旧 5 表数据/行数不变。
     EXPECT_EQ(3ll, countRows(connLegacy, "User"));

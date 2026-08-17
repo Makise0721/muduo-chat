@@ -385,3 +385,13 @@ discover_gtest(LegacyCutoverTest)
 discover_gtest(SessionDeliverySinkTest)
 discover_gtest(PresenceContractTest)
 discover_gtest(RedisPresenceContractTest)
+
+# P4-04 RED：幂等 Delivery consumer 契约（引用尚不存在的 app/OutboxEventConsumer.hpp、
+# app/KafkaEventConsumer.hpp、app/WakeupProgressHandler.hpp 与 MessageStore 的
+# dead-letter 扩展 → 编译失败即合法 RED，沿 P4-02/P4-03 先例）。真实 Kafka 消费
+# 用例（127.0.0.1:9092，env KAFKA_TEST_HOST/PORT）+ MySQL dead-letter 双跑，不 skip。
+add_executable(OutboxConsumerContractTest unit/OutboxConsumerContractTest.cpp)
+target_link_libraries(OutboxConsumerContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
+set_target_properties(OutboxConsumerContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+set_target_properties(OutboxConsumerContractTest PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
+discover_gtest(OutboxConsumerContractTest)

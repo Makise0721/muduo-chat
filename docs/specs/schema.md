@@ -1,4 +1,4 @@
-# 数据库 Schema 规范（0001 baseline + 0002 expand）
+# 数据库 Schema 规范（0001 baseline + 0002 expand + 0003 consumer dead-letter）
 
 状态：`定稿`（P3-03 冻结；与 sql/migrations/0001_baseline.sql、0002_expand.sql 逐条一致，漂移由 SchemaMigrationTest.DdlDriftBetweenChatSqlAndBaseline 与 ReliableMessageSchemaTest.SchemaContractAssertsColumnsIndexesAndForeignKeys 固化）
 
@@ -97,6 +97,24 @@
 | `attempt_count` | `INT` | NOT NULL DEFAULT 0 |
 | `processed_at` | `DATETIME` | NULL |
 
+### 3.7 KafkaDeadLetter
+
+消费侧 dead-letter 表（P4-04 D3：键 = Kafka record 定位 topic/partition/offset + 原始 bytes；与发布侧 outbox poison 机制不复用）。仅 `CREATE TABLE IF NOT EXISTS` 追加，不改、不删 0001/0002 既有表。
+
+| 列 | 类型 | 键/约束 |
+|----|------|---------|
+| `id` | `BIGINT UNSIGNED` | PK，AUTO_INCREMENT |
+| `topic` | `VARCHAR(191)` | NOT NULL |
+| `partition_id` | `INT` | NOT NULL |
+| `kafka_offset` | `BIGINT UNSIGNED` | NOT NULL，`UNIQUE(topic, partition_id, kafka_offset)`（幂等落库） |
+| `message_id` | `BIGINT UNSIGNED` | NULL（信封 message_id；不可解析时 0） |
+| `conversation_id` | `BIGINT UNSIGNED` | NULL |
+| `sequence` | `BIGINT UNSIGNED` | NULL |
+| `event_type` | `VARCHAR(64)` | NULL |
+| `reason` | `VARCHAR(32)` | NOT NULL：`poison_payload`\|`unknown_event_type`\|`sequence_regression`\|`sequence_conflict`\|`message_missing`（消费处置管线冻结词汇） |
+| `raw_value` | `MEDIUMBLOB` | NOT NULL（原始 record bytes，信封原文） |
+| `created_at` | `DATETIME` | NOT NULL DEFAULT CURRENT_TIMESTAMP |
+
 ## 4. 约束清单（契约不可削弱）
 
 | 约束 | 位置 | 语义 |
@@ -108,10 +126,12 @@
 | `UNIQUE(group_id)` | GroupConversation | 群对话一表一 |
 | `PRIMARY KEY(message_id, recipient_id)` | MessageDelivery | 每接收者至多一行 Delivery |
 | `INDEX(recipient_id, state, next_attempt_at)` | MessageDelivery | 待投递扫描 |
+| `UNIQUE(topic, partition_id, kafka_offset)` | KafkaDeadLetter | 消费侧 dead-letter 幂等落库：kill-前已落库的事件重放时不双插（P4-04） |
 | FK ×10（见 §3 各表） | 六表 | 同型引用 + `ON DELETE CASCADE` |
 
 已知限制：`client_message_id` 超长（>64 字节）只在 DB 严格 sql_mode（`STRICT_TRANS_TABLES`）下被拒绝（error 1406）；非严格部署会静默截断——ASCII 1..64 上界由领域层 `ClientMessageId` 校验（P3-02）兜底，不依赖 DB 约束。
 
 ## 5. 变更
 
+- P4-04：新增 §3.7 KafkaDeadLetter 表与 §4 对应约束行（消费侧 dead-letter，additive 追加，不改/不删 0001/0002 既有表）。对应 `0003_consumer_dead_letter.sql`（P4-04 提交）。
 - P3-03：新增 §3 六表与 §4 约束清单；§2 旧五表概述。对应 `0002_expand.sql`（P3-03 提交）。

@@ -33,6 +33,10 @@ public:
     std::shared_ptr<const OutboxEvent> findOutboxEvent(uint64_t eventId) override;
     std::vector<OutboxEvent> poisonedOutboxEvents(uint64_t limit) override;
     uint64_t countUnprocessedOutboxEvents() override;
+    // P4-04 dead-letter（UNIQUE(topic,partition_id,kafka_offset) 内存等价：同键
+    // 已存在 = 幂等 no-op；deadLetters 按插入序返回前 limit 行）。
+    void recordDeadLetter(const DeadLetterRecord& r) override;
+    std::vector<DeadLetterRecord> deadLetters(uint64_t limit) override;
 
 private:
     struct DeliveryKey {
@@ -55,6 +59,7 @@ private:
     std::map<uint64_t, uint64_t> nextSequenceByConversation_;
     std::map<DeliveryKey, Delivery> deliveries_;
     std::map<uint64_t, OutboxEvent> outboxEvents_;  // P3-09：accept 同点写入，relay 消费
+    std::vector<DeadLetterRecord> deadLetters_;     // P4-04：消费侧 poison 落库
     uint64_t nextConversationId_ = 1;
     uint64_t nextMessageId_ = 1;
     uint64_t nextOutboxEventId_ = 1;

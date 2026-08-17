@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P4-03 已 VERIFIED）
+当前活动任务：无（P4-04 已 VERIFIED）
 
-下一任务：[P4-04 幂等 Delivery consumer](../plans/post-p2-implementation-plan.md#p4-04-幂等-delivery-consumer)（待开卡；见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
+下一任务：[P4-05 Gateway 定向投递与 epoch 校验](../plans/post-p2-implementation-plan.md#p4-05-gateway-定向投递与-epoch-校验)（见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)）
 
 ## 1. 文档与事实优先级
 

@@ -100,6 +100,10 @@ public:
     std::shared_ptr<const OutboxEvent> findOutboxEvent(uint64_t eventId) override;
     std::vector<OutboxEvent> poisonedOutboxEvents(uint64_t limit) override;
     uint64_t countUnprocessedOutboxEvents() override;
+    // P4-04 dead-letter：INSERT IGNORE 沿 UNIQUE(topic,partition_id,kafka_offset)
+    //（冲突 = 已存在，幂等成功返回）；deadLetters 按 id 升序前 limit 行。
+    void recordDeadLetter(const DeadLetterRecord& r) override;
+    std::vector<DeadLetterRecord> deadLetters(uint64_t limit) override;
 
 private:
     void fire(Step step);

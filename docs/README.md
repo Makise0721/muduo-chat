@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md) 已 VERIFIED；下一卡 P4-04 幂等 Delivery consumer 待开卡。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md)、[P4-04 幂等 Delivery consumer](tasks/P4-04.md) 已 VERIFIED；下一卡 [P4-05 Gateway 定向投递与 epoch 校验](plans/post-p2-implementation-plan.md#p4-05-gateway-定向投递与-epoch-校验) 待开卡。
 
 ## 从这里开始
 

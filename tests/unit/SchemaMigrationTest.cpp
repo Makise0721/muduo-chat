@@ -261,20 +261,21 @@ TEST(SchemaMigrationTest, EmptyDatabaseAppliesBaselineOnce)
 
     schema_migration::MigrateResult r1 = makeMigrator().migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r1.ok) << r1.error;
-    ASSERT_EQ(2u, r1.applied.size());
+    ASSERT_EQ(3u, r1.applied.size());
     EXPECT_EQ("0001", r1.applied[0]);
     EXPECT_EQ("0002", r1.applied[1]);
+    EXPECT_EQ("0003", r1.applied[2]);
 
     std::set<std::string> names = tableNames();
     EXPECT_EQ((std::set<std::string>{"User", "Friend", "AllGroup", "GroupUser", "OfflineMessage",
                                      "Conversation", "DirectConversation", "GroupConversation",
                                      "ChatMessage", "MessageDelivery", "OutboxEvent",
-                                     "schema_migrations"}),
+                                     "KafkaDeadLetter", "schema_migrations"}),
               names);
 
     schema_migration::StatusResult st = makeMigrator().status();
     ASSERT_TRUE(st.ok) << st.error;
-    ASSERT_EQ(2u, st.versions.size());
+    ASSERT_EQ(3u, st.versions.size());
     EXPECT_EQ("0001", st.versions[0].version);
     EXPECT_EQ(64u, st.versions[0].checksum.size());
     EXPECT_EQ(0, std::count_if(st.versions[0].checksum.begin(), st.versions[0].checksum.end(),
@@ -284,6 +285,10 @@ TEST(SchemaMigrationTest, EmptyDatabaseAppliesBaselineOnce)
     EXPECT_EQ(64u, st.versions[1].checksum.size());
     EXPECT_EQ(0, std::count_if(st.versions[1].checksum.begin(), st.versions[1].checksum.end(),
                                [](char c) { return !std::isxdigit(static_cast<unsigned char>(c)); }));
+    EXPECT_EQ("0003", st.versions[2].version);
+    EXPECT_EQ(64u, st.versions[2].checksum.size());
+    EXPECT_EQ(0, std::count_if(st.versions[2].checksum.begin(), st.versions[2].checksum.end(),
+                               [](char c) { return !std::isxdigit(static_cast<unsigned char>(c)); }));
 
     // 幂等：重复执行不重复应用，checksum 稳定。
     schema_migration::MigrateResult r2 = makeMigrator().migrateTo(migrationsDir(), "", 30);
@@ -291,9 +296,10 @@ TEST(SchemaMigrationTest, EmptyDatabaseAppliesBaselineOnce)
     EXPECT_TRUE(r2.applied.empty());
     schema_migration::StatusResult st2 = makeMigrator().status();
     ASSERT_TRUE(st2.ok);
-    ASSERT_EQ(2u, st2.versions.size());
+    ASSERT_EQ(3u, st2.versions.size());
     EXPECT_EQ(st.versions[0].checksum, st2.versions[0].checksum);
     EXPECT_EQ(st.versions[1].checksum, st2.versions[1].checksum);
+    EXPECT_EQ(st.versions[2].checksum, st2.versions[2].checksum);
 }
 
 TEST(SchemaMigrationTest, OldFiveTableDatabaseUpgrade)
@@ -303,18 +309,20 @@ TEST(SchemaMigrationTest, OldFiveTableDatabaseUpgrade)
     ASSERT_EQ((std::set<std::string>{"User", "Friend", "AllGroup", "GroupUser", "OfflineMessage"}),
               tableNames());
 
-    // 旧五表库首次升级：已存在表视为已应用，不报错、不重复建；0001 记录 + 0002 追加六表。
+    // 旧五表库首次升级：已存在表视为已应用，不报错、不重复建；0001 记录 + 0002
+    // 追加六表 + 0003 追加 KafkaDeadLetter。
     schema_migration::MigrateResult r = makeMigrator().migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0001", r.applied[0]);
     EXPECT_EQ("0002", r.applied[1]);
+    EXPECT_EQ("0003", r.applied[2]);
 
     std::set<std::string> names = tableNames();
     EXPECT_EQ((std::set<std::string>{"User", "Friend", "AllGroup", "GroupUser", "OfflineMessage",
                                      "Conversation", "DirectConversation", "GroupConversation",
                                      "ChatMessage", "MessageDelivery", "OutboxEvent",
-                                     "schema_migrations"}),
+                                     "KafkaDeadLetter", "schema_migrations"}),
               names);
 
     // 升级后库上重跑幂等。
@@ -330,19 +338,21 @@ TEST(SchemaMigrationTest, ColumnDriftLibraryMarkedApplied)
     ASSERT_EQ((std::set<std::string>{"User", "Friend", "AllGroup", "GroupUser", "OfflineMessage"}),
               tableNames());
 
-    // 现状行为（文档化限制）：列形漂移不可检测——迁移成功且记录 0001+0002，
+    // 现状行为（文档化限制）：列形漂移不可检测——迁移成功且记录 0001+0002+0003，
     // 漂移库被静默标记为已应用；由 P3-03 故障测试（逐条违反唯一约束/FK）兜底。
     schema_migration::MigrateResult r = makeMigrator().migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0001", r.applied[0]);
     EXPECT_EQ("0002", r.applied[1]);
+    EXPECT_EQ("0003", r.applied[2]);
 
     schema_migration::StatusResult st = makeMigrator().status();
     ASSERT_TRUE(st.ok) << st.error;
-    ASSERT_EQ(2u, st.versions.size());
+    ASSERT_EQ(3u, st.versions.size());
     EXPECT_EQ("0001", st.versions[0].version);
     EXPECT_EQ("0002", st.versions[1].version);
+    EXPECT_EQ("0003", st.versions[2].version);
 
     // 漂移未被修复（IF NOT EXISTS no-op）：password 列仍是 varchar(80)。
     MySQL conn;
@@ -451,16 +461,17 @@ TEST(SchemaMigrationTest, ConcurrentRunnersSingleLockHolder)
 
     ASSERT_TRUE(ra.ok) << ra.error;
     ASSERT_TRUE(rb.ok) << rb.error;
-    // advisory lock 保证只有持锁者执行 0001+0002；另一个等锁后看到已应用。
-    EXPECT_LE(ra.applied.size(), 2u);
-    EXPECT_LE(rb.applied.size(), 2u);
-    EXPECT_EQ(2u, ra.applied.size() + rb.applied.size());
+    // advisory lock 保证只有持锁者执行 0001+0002+0003；另一个等锁后看到已应用。
+    EXPECT_LE(ra.applied.size(), 3u);
+    EXPECT_LE(rb.applied.size(), 3u);
+    EXPECT_EQ(3u, ra.applied.size() + rb.applied.size());
 
     schema_migration::StatusResult st = makeMigrator().status();
     ASSERT_TRUE(st.ok) << st.error;
-    ASSERT_EQ(2u, st.versions.size());
+    ASSERT_EQ(3u, st.versions.size());
     EXPECT_EQ("0001", st.versions[0].version);
     EXPECT_EQ("0002", st.versions[1].version);
+    EXPECT_EQ("0003", st.versions[2].version);
 }
 
 TEST(SchemaMigrationTest, InvalidTargetVersionFailsFast)
@@ -511,9 +522,10 @@ TEST(SchemaMigrationTest, DbNameWithQuoteMigratesSafely)
     schema_migration::Migrator m("127.0.0.1", "root", MySqlTestFixture::password(), "chat'p301", 3306);
     schema_migration::MigrateResult r = m.migrateTo(migrationsDir(), "", 30);
     ASSERT_TRUE(r.ok) << r.error;
-    ASSERT_EQ(2u, r.applied.size());
+    ASSERT_EQ(3u, r.applied.size());
     EXPECT_EQ("0001", r.applied[0]);
     EXPECT_EQ("0002", r.applied[1]);
+    EXPECT_EQ("0003", r.applied[2]);
 
     ASSERT_TRUE(admin.update("DROP DATABASE IF EXISTS `chat'p301`"));
 }
