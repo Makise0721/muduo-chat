@@ -345,6 +345,15 @@ add_test(NAME ReliableMessageFaultProcess
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(ReliableMessageFaultProcess PROPERTIES TIMEOUT 900 RESOURCE_LOCK chat_server_ports)
 
+# P4-06 RED：三节点 chaos + 容量/风暴保护（真实 Redis/Kafka/MySQL，不 skip）。
+# l5_lastseen_unbounded 与 db0_presence_accumulation 当前实现必须失败 → 合法 RED；
+# 其余场景照常执行。TIMEOUT 1200 覆盖多场景真实 spawn/kill/重启 + Redis/Kafka/MySQL
+# 故障注入与收敛断言。
+add_test(NAME ClusterChaosProcess
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/cluster_chaos_test.sh
+        $<TARGET_FILE:ChatServer>)
+set_tests_properties(ClusterChaosProcess PROPERTIES TIMEOUT 1200 RESOURCE_LOCK chat_server_ports)
+
 foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest ReliableMessageMetricsTest SessionSerialExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest OutboxPublisherContractTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest LegacyCutoverTest SessionDeliverySinkTest PresenceContractTest RedisPresenceContractTest GatewayDeliveryContractTest GatewayPresenceWiringContractTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()

@@ -455,7 +455,8 @@ std::string reliableMetricsLine()
        << " reliable_ack_latency_p50_ms=" << s.ackLatencyP50Ms
        << " reliable_ack_latency_p95_ms=" << s.ackLatencyP95Ms
        << " reliable_ack_latency_p99_ms=" << s.ackLatencyP99Ms
-       << " reliable_oldest_pending_age_ms=" << s.oldestPendingAgeMs;
+       << " reliable_oldest_pending_age_ms=" << s.oldestPendingAgeMs
+       << " consumer_seen_conversations=" << s.consumerSeenConversations;
     return os.str();
 }
 

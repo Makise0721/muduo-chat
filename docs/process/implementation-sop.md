@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P4-05 已 VERIFIED）
+当前活动任务：无（P4-06 已 VERIFIED）
 
-下一任务：[P4-06 三节点 chaos 与容量保护](../plans/post-p2-implementation-plan.md#p4-06-三节点-chaos-与容量保护)（见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)；P4-06 待开卡）
+下一任务：[P4-07 M4 独立验收](../plans/post-p2-implementation-plan.md#p4-07-m4-独立验收)（见 [计划 §8](../plans/post-p2-implementation-plan.md#8-p4-任务队列可靠多节点)；P4-06 已 VERIFIED，待开卡）
 
 ## 1. 文档与事实优先级
 

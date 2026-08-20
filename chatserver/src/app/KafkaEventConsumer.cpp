@@ -1,10 +1,12 @@
 #include "app/KafkaEventConsumer.hpp"
 
 #include "app/KafkaWire.hpp"
+#include "app/ReliableMessageMetrics.hpp"
 #include "json.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <map>
 #include <set>
 #include <thread>
@@ -57,6 +59,12 @@ const int32_t kPartitionMaxBytes = 1 << 20;     // 1 MiB/分区（同 KafkaTestC
 const int64_t kIdleRetrySleepMs = 50;           // 无进展时退避（冻结参数）
 const int16_t kErrOffsetOutOfRange = 1;
 const int16_t kErrUnknownTopicOrPartition = 3;
+
+// P4-06 L-5 容量保护（卡登记）：consumer 同时追踪的不同 conversation 数有界。
+// 超过上限丢弃最旧的 seen——只影响重放去重窗口（旧 conversation 的重复投递将
+// 不再被内存去重，而由 DB 幂等兜底 at-least-once），lastSeen/seenMessages 均为
+// 重启重建的内存态，无持久语义。
+const size_t kSeenConversationsCapacity = 100;
 
 int64_t nowMs()
 {
@@ -211,6 +219,10 @@ struct KafkaEventConsumer::Impl {
     // 回归规则之前——未提交批重放时，先前已 Advanced 的 record 不被 lastSeen 已
     // 推进的 seq 误判 sequence_regression。
     std::map<uint64_t, std::set<uint64_t> > seenMessages;
+    // P4-06 L-5 容量保护：conversation 插入序（evict 时丢弃最旧）；容量上限对齐
+    // 冻结 kSeenConversationsCapacity（默认 100，常量注入）。
+    std::deque<uint64_t> conversationOrder;
+    size_t seenConversationsCapacity = kSeenConversationsCapacity;
 };
 
 namespace {
@@ -606,13 +618,33 @@ bool fetchAll(KafkaEventConsumer::Impl& s, int64_t start, int64_t dl,
     return true;
 }
 
+// P4-06 L-5 容量保护：登记一个 conversation 为已见（进入 lastSeen 前调用）。
+// 若为新 conversation 且当前追踪数已达上限，则丢弃最旧 seen（只影响重放去重
+// 窗口；at-least-once 由 DB 幂等兜底）。已在案（lastSeen 含该 conversation）则
+// 空操作（保序不动，避免重复 push_back）。map 迭代器不受其它元素 erase 影响，
+// 调用方持有的 seen 迭代器仍有效。
+void touchConversation(KafkaEventConsumer::Impl& s, uint64_t conversationId)
+{
+    if (s.lastSeen.count(conversationId) != 0) {
+        return;
+    }
+    if (s.conversationOrder.size() >= s.seenConversationsCapacity) {
+        const uint64_t oldest = s.conversationOrder.front();
+        s.conversationOrder.pop_front();
+        s.lastSeen.erase(oldest);
+        s.seenMessages.erase(oldest);
+    }
+    s.conversationOrder.push_back(conversationId);
+}
+
 } // namespace
 
 KafkaEventConsumer::KafkaEventConsumer(const std::string& host, int port,
                                        const std::string& topic, const std::string& groupId,
                                        MessageStore& deadLetterStore,
                                        DeliveryProgressHandler& handler,
-                                       uint32_t fetchBatchLimit, int64_t deadlineMs)
+                                       uint32_t fetchBatchLimit, int64_t deadlineMs,
+                                       size_t seenConversationsCapacity)
     : impl_(new Impl)
 {
     impl_->host = host;
@@ -623,6 +655,9 @@ KafkaEventConsumer::KafkaEventConsumer(const std::string& host, int port,
     impl_->handler = &handler;
     impl_->fetchBatchLimit = fetchBatchLimit > 0 ? fetchBatchLimit : 1;
     impl_->deadlineMs = deadlineMs;
+    // P4-06 单测注入：>0 覆盖冻结常量（默认 0 = kSeenConversationsCapacity=100）。
+    impl_->seenConversationsCapacity = seenConversationsCapacity > 0
+        ? seenConversationsCapacity : kSeenConversationsCapacity;
 }
 
 KafkaEventConsumer::~KafkaEventConsumer()
@@ -640,6 +675,12 @@ OutboxConsumeResult KafkaEventConsumer::poll(int64_t deadlineMs)
     Impl& s = *impl_;
     const int64_t start = nowMs();
     const int64_t dl = start + (deadlineMs > 0 ? deadlineMs : s.deadlineMs);
+    // P4-06 L-5 观测：consumer 当前 seen 集合大小 gauge（有界）。每 poll 更新
+    // 一次（含空批/故障路径——始终反映当前追踪数；recordBestEffort 不抛）。
+    ReliableMessageMetrics::recordBestEffort([&] {
+        ReliableMessageMetrics::instance().updateConsumerSeenConversations(
+            s.lastSeen.size());
+    });
     try {
         // 1) 连接（懒建立；断连/传输失败后由 requestRpc 关闭，此处重连）。
         if (!s.connected) {
@@ -884,6 +925,11 @@ OutboxConsumeResult KafkaEventConsumer::poll(int64_t deadlineMs)
             if (d != ConsumeDisposition::DeadLettered) {
                 s.seenMessages[rec.conversationId].insert(rec.messageId);
             }
+            // P4-06 L-5 容量保护：新 conversation 进入 lastSeen 前登记插入序；
+            // 超限则丢弃最旧（只影响重放去重窗口，at-least-once 由 DB 幂等兜底）。
+            // 已在案的 conversation 空操作；map 迭代器不受其它元素 erase 影响，
+            // 下方 seen 迭代器仍有效。
+            touchConversation(s, rec.conversationId);
             if (seen == s.lastSeen.end() || rec.sequence > seen->second.first) {
                 s.lastSeen[rec.conversationId] =
                     std::make_pair(rec.sequence, rec.messageId);

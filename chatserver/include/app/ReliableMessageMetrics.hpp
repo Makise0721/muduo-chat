@@ -93,6 +93,9 @@ struct Snapshot {
     uint64_t ackLatencyP95Ms = 0;
     uint64_t ackLatencyP99Ms = 0;
     int64_t oldestPendingAgeMs = -1;  // -1 = 无 Pending
+    // P4-06 L-5：consumer 当前追踪的不同 conversation 数（seen 集合大小 gauge，
+    // 有界：KafkaEventConsumer 容量上限；高基数拒绝不适用——它是单值计数）。
+    uint64_t consumerSeenConversations = 0;
 };
 
 // H2 有界内存：ACK latency 样本集保留上限（卡登记 N=4096，超限丢最旧）。
@@ -302,6 +305,15 @@ public:
         ++legacyModeCount_;
     }
 
+    // P4-06 L-5：consumer 当前 seen 集合大小 gauge（单值计数，非高基数）。接线
+    // 自 KafkaEventConsumer::poll（每 poll 更新一次）。只覆盖不做加法，调用方
+    // 保证该值由消费侧单线程写入。
+    void updateConsumerSeenConversations(uint64_t n)
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        consumerSeenConversations_ = n;
+    }
+
     Snapshot snapshot() const
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -329,6 +341,7 @@ public:
             s.ackLatencyP99Ms = nearestRank(sorted, 0.99);
         }
         s.oldestPendingAgeMs = pendingByAge_.empty() ? -1 : clock_.nowMs() - headSinceMs_;
+        s.consumerSeenConversations = consumerSeenConversations_;
         return s;
     }
 
@@ -395,6 +408,7 @@ private:
     // 当前 Pending 的 (pendingSinceMs, deliveryId) 有序集；begin() = 最老 head。
     std::set<std::pair<int64_t, uint64_t> > pendingByAge_;
     int64_t headSinceMs_ = 0;  // 当前 head 建立时刻（无 Pending 时无意义）
+    uint64_t consumerSeenConversations_ = 0;
     mutable std::mutex mutex_;
     Clock& clock_;
 };

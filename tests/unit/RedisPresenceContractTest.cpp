@@ -34,8 +34,10 @@
 //     终态=最大 epoch 唯一路由，败者 epoch 被 fencing（renew→NotEpoch）。
 //   - renew/release compare-and-delete：旧 epoch → NotEpoch 且条目不变；条目缺失/
 //     TTL 到期 → NotFound（可区分）。
-//   - value 内嵌 expiresAtMs，locate 由注入 Clock 比较判定 expired（不依赖 key
-//     自动过期删除）；TTL 到期 → NotFound 且 expired=true。
+//   - value 内嵌 expiresAtMs，locate 由注入 Clock 比较判定 expired（逻辑权威）。
+//     P4-06 环境复原：claim/renew 写值同时 PEXPIRE（==TTL）——键仍存在且逻辑到期
+//     → NotFound 且 expired=true（FakeClock 场景 5 确定性覆盖）；键已被物理删除
+//     → NotFound 且 expired=false（与从未 claim 不可区分；物理删除只防累积）。
 //   - Redis down/超时/端口关闭 → DependencyUnavailable（区别于业务错误），恢复后可用。
 //   - restart（--save ""）后条目消失 == TTL 语义一致（presence 为易失路由投影）。
 
@@ -531,7 +533,10 @@ TEST_F(RedisPresenceContractTest, TtlExpiryDeterministic)
 }
 
 // 卡场景 5b：TTL 到期——真实墙钟对照（短 TTL + 真实等待），证明与 Redis 实际
-// 时间语义一致。
+// 时间语义一致。P4-06 环境复原：claim/renew 写值同时 PEXPIRE（==TTL），到期后
+// Redis 物理删除该键 → locate 返回 NotFound（expired=false，与从未 claim 不可
+// 区分——物理删除只防累积，不影响路由正确性）。expired=true 的逻辑过期判定仍由
+// FakeClock 场景 5（键未物理删）确定性覆盖。
 TEST_F(RedisPresenceContractTest, TtlExpiryAgainstWallClock)
 {
     UnixEpochClock wall;
@@ -544,7 +549,7 @@ TEST_F(RedisPresenceContractTest, TtlExpiryAgainstWallClock)
     std::this_thread::sleep_for(std::chrono::milliseconds(600));
     LocateResult gone = dir.locate(kAlice);
     EXPECT_FALSE(gone.ok);
-    EXPECT_TRUE(gone.expired);
+    EXPECT_FALSE(gone.expired);  // 物理键已随 EXPIRE 删除（与从未 claim 不可区分）
     EXPECT_EQ(PresenceError::NotFound, gone.error);
 }
 

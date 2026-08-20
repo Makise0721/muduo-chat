@@ -52,12 +52,14 @@
 //   // ---- chatserver/include/app/KafkaEventConsumer.hpp（新建）----
 //   class KafkaEventConsumer : public OutboxEventConsumer {
 //   public:
-//       // 构造注入（卡 D1：host/port/topic/groupId/fetchBatchLimit/deadlineMs
-//       // 同 KafkaPublisher 形态）+ dead-letter 落库 store + 处理面 handler。
+//       // 构造注入（卡 D1：host/port/topic/groupId/fetchBatchLimit/deadlineMs 同
+//       // KafkaPublisher 形态）+ dead-letter 落库 store + 处理面 handler。
+//       // P4-06 单测注入：seenConversationsCapacity 默认 0 = 冻结常量
+//       // kSeenConversationsCapacity=100（容量驱逐单测以 0 以外小值注入）。
 //       KafkaEventConsumer(const std::string& host, int port, const std::string& topic,
 //                          const std::string& groupId, MessageStore& deadLetterStore,
 //                          DeliveryProgressHandler& handler, uint32_t fetchBatchLimit,
-//                          int64_t deadlineMs);
+//                          int64_t deadlineMs, size_t seenConversationsCapacity = 0);
 //       OutboxConsumeResult poll(int64_t deadlineMs) override;
 //       // preCommitHook（适配器具体 seam，不进 port；P4-01 injectFailure 先例）：
 //       // OffsetCommit 发出前回调；回调抛出 = 模拟"处理后 commit 前 kill"，
@@ -1399,6 +1401,31 @@ private:
     int64_t lastTick_ = 0;
 };
 
+// P4-06 容量驱逐单测的处理面替身：记录全部 handle 调用 + 按 message_id 幂等
+// （重复 handle 返回 DuplicateNoOp，模拟生产 handler 的 DB/claimFor-fencing 幂等
+// 兜底——WakeupProgressHandler 对同 message_id 重放即返回 DuplicateNoOp）。这样
+// 驱逐（消费者内存 seen 去重失效 → 重复 record 重新到达 handler）经 handled()
+// 计数可观察，而重复投递不产生第二个 Advanced 副作用（disposition 仍
+// DuplicateNoOp）。单线程 poll 驱动，无跨线程 → 无需 atomic。
+class IdempotentRecordingHandler : public DeliveryProgressHandler {
+public:
+    ConsumeDisposition handle(const ConsumedOutboxRecord& record) override
+    {
+        handled_.push_back(record.messageId);
+        if (seen_.count(record.messageId) != 0) {
+            return ConsumeDisposition::DuplicateNoOp;  // store/DB 幂等兜底
+        }
+        seen_.insert(record.messageId);
+        return ConsumeDisposition::Advanced;
+    }
+
+    const std::vector<uint64_t>& handled() const { return handled_; }
+
+private:
+    std::vector<uint64_t> handled_;
+    std::set<uint64_t> seen_;
+};
+
 // preCommitHook 控制器（适配器 seam 注入面；单线程 poll 驱动）：
 // Passive 记录 commit 时标；Throw = 每次 commit 前抛出（kill 注入，armed 期间
 // 持续拦截，setPassive 解除）；TearDownOnce = 下次 commit 前拆代理（commit 传输
@@ -1480,6 +1507,16 @@ protected:
         return std::unique_ptr<KafkaEventConsumer>(new KafkaEventConsumer(
             host_, port_, kTestTopic, kGroupId, store, handler, kFetchBatchLimit,
             kConsumeDeadlineMs));
+    }
+
+    // P4-06 容量驱逐注入：小 cap 确定性触发 touchConversation 驱逐（生产默认 0 =
+    // 冻结常量 100；测试以 0 以外小值注入）。
+    std::unique_ptr<KafkaEventConsumer> makeConsumerWithCapacity(
+        MessageStore& store, DeliveryProgressHandler& handler, size_t capacity)
+    {
+        return std::unique_ptr<KafkaEventConsumer>(new KafkaEventConsumer(
+            host_, port_, kTestTopic, kGroupId, store, handler, kFetchBatchLimit,
+            kConsumeDeadlineMs, capacity));
     }
 
     KafkaPublisher makePublisher()
@@ -2512,6 +2549,198 @@ TEST_F(InMemoryConsumeFixture, ReplayBatchWithMultipleRecordsPerConversationIsDu
         // 重放批最终提交。
         expectBrokerOffsetsMatch(*wire_, topic(), s2.committedThrough);
     }
+}
+
+// ---- P4-06 L-5 容量驱逐（KafkaEventConsumer 有界 seen；docs/tasks/P4-06.md）----
+// 注入小 cap=3（构造参数 seenConversationsCapacity，默认 0 = 冻结常量 100）。
+// 所有 conversation 取同一分区（partition = conversationId % 3），故消费顺序 =
+// 分区内 offset 序 = 发布序（确定性）。驱逐语义：超限丢弃最旧（conversationOrder
+// 队首），只影响重放去重窗口；被驱逐 conversation 的重复 record 不再被内存 seen
+// 去重、重新到达 handler，由 handler 幂等（IdempotentRecordingHandler 模拟生产
+// DB/claimFor-fencing 兜底）收敛为 DuplicateNoOp——无重复副作用。
+TEST_F(InMemoryConsumeFixture, SeenCapacityEvictsOldestConversation)
+{
+    InMemoryMessageStore store;  // 仅作 dead-letter port（本用例无 dead-letter）
+    IdempotentRecordingHandler handler;
+    KafkaPublisher publisher = makePublisher();
+
+    // 5 个不同 conversation（conv % 3 == 2 → 全进 partition 2，offset 序=发布序）。
+    // A=1001/B=1004/C=1007/D=1010/E=1013；cap=3 下第 4 个（D）驱逐 A、第 5 个
+    // （E）驱逐 B——最旧两个被驱逐，C/D/E 保留。
+    const uint64_t kPartition = 2;
+    const uint64_t convA = 1001, convB = 1004, convC = 1007, convD = 1010, convE = 1013;
+    const uint64_t midA = 990201, midB = 990202, midC = 990203, midD = 990204, midE = 990205;
+
+    std::unique_ptr<KafkaEventConsumer> consumer = makeConsumerWithCapacity(store, handler, 3);
+
+    // 阶段 1：消费 5 个不同 conversation（4+），全部 Advanced。
+    publishOne(publisher, craftedRequest(midA, convA, 1, "MessageAccepted",
+                                         payloadJson("evict-a"), topic()));
+    publishOne(publisher, craftedRequest(midB, convB, 1, "MessageAccepted",
+                                         payloadJson("evict-b"), topic()));
+    publishOne(publisher, craftedRequest(midC, convC, 1, "MessageAccepted",
+                                         payloadJson("evict-c"), topic()));
+    publishOne(publisher, craftedRequest(midD, convD, 1, "MessageAccepted",
+                                         payloadJson("evict-d"), topic()));
+    publishOne(publisher, craftedRequest(midE, convE, 1, "MessageAccepted",
+                                         payloadJson("evict-e"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 5, kPollDeadlineMs, &s);
+        ASSERT_EQ(5u, s.records.size());
+        for (size_t i = 0; i < s.records.size(); ++i) {
+            EXPECT_EQ(kPartition, s.records[i].partition) << "record " << i;
+            EXPECT_EQ(ConsumeDisposition::Advanced, s.dispositions[i]);
+        }
+        ASSERT_EQ(5u, handler.handled().size());
+    }
+
+    // 阶段 2：重投保留 conversation（C/D/E）的重复 record——内存 seen 仍去重 →
+    // DuplicateNoOp、handler 不被再次调用（保留集无重复投递）。
+    publishOne(publisher, craftedRequest(midC, convC, 1, "MessageAccepted",
+                                         payloadJson("evict-c"), topic()));
+    publishOne(publisher, craftedRequest(midD, convD, 1, "MessageAccepted",
+                                         payloadJson("evict-d"), topic()));
+    publishOne(publisher, craftedRequest(midE, convE, 1, "MessageAccepted",
+                                         payloadJson("evict-e"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 3, kPollDeadlineMs, &s);
+        ASSERT_EQ(3u, s.records.size());
+        for (size_t i = 0; i < s.records.size(); ++i) {
+            EXPECT_EQ(kPartition, s.records[i].partition) << "record " << i;
+            EXPECT_EQ(ConsumeDisposition::DuplicateNoOp, s.dispositions[i]);
+        }
+        // 未驱逐的保持 FIFO 去重：C/D/E 各恰被 handler 处理一次（无重复投递）。
+        ASSERT_EQ(5u, handler.handled().size());
+    }
+
+    // 阶段 3：重投被驱逐 conversation（A/B）的重复 record——内存 seen 不再去重
+    // （最旧已驱逐）→ 重新到达 handler（handled 计数 +1），但 handler 幂等兜底
+    // 返回 DuplicateNoOp → 无重复副作用（无第二个 Advanced）。
+    publishOne(publisher, craftedRequest(midA, convA, 1, "MessageAccepted",
+                                         payloadJson("evict-a"), topic()));
+    publishOne(publisher, craftedRequest(midB, convB, 1, "MessageAccepted",
+                                         payloadJson("evict-b"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 2, kPollDeadlineMs, &s);
+        ASSERT_EQ(2u, s.records.size());
+        for (size_t i = 0; i < s.records.size(); ++i) {
+            EXPECT_EQ(kPartition, s.records[i].partition) << "record " << i;
+            EXPECT_EQ(ConsumeDisposition::DuplicateNoOp, s.dispositions[i]);
+        }
+    }
+
+    // 聚合断言：A/B（最旧、FIFO 先驱逐）的重复 record 已重投到 handler（各 2 次）；
+    // C/D/E（保留）各 1 次（重投被内存 seen 去重、未到达 handler）。
+    std::map<uint64_t, int> counts;
+    for (size_t i = 0; i < handler.handled().size(); ++i) {
+        ++counts[handler.handled()[i]];
+    }
+    EXPECT_EQ(2, counts[midA]) << "evicted oldest conversation re-delivered to handler";
+    EXPECT_EQ(2, counts[midB]) << "FIFO: second-oldest evicted next";
+    EXPECT_EQ(1, counts[midC]) << "retained conversation: no duplicate delivery";
+    EXPECT_EQ(1, counts[midD]) << "retained conversation: no duplicate delivery";
+    EXPECT_EQ(1, counts[midE]) << "retained conversation: no duplicate delivery";
+    ASSERT_EQ(7u, handler.handled().size());
+    // 无 dead-letter（全部合法 MessageAccepted；驱逐不引入 sequence_regression）。
+    EXPECT_TRUE(store.deadLetters(10).empty());
+}
+
+// ---- P4-06 L-5 容量边界：恰好 cap 内不驱逐；等于 cap 时最新保留 ----
+TEST_F(InMemoryConsumeFixture, SeenCapacityBoundaryKeepsRecent)
+{
+    InMemoryMessageStore store;
+    IdempotentRecordingHandler handler;
+    KafkaPublisher publisher = makePublisher();
+
+    // 4 个不同 conversation（conv % 3 == 0 → 全进 partition 0，offset 序=发布序）。
+    // cap=3：A/B/C 恰好填满（不驱逐）；第 4 个 D 到达时驱逐最旧 A、最新 D 保留。
+    const uint64_t kPartition = 0;
+    const uint64_t convA = 2001, convB = 2004, convC = 2007, convD = 2010;
+    const uint64_t midA = 990301, midB = 990302, midC = 990303, midD = 990304;
+
+    std::unique_ptr<KafkaEventConsumer> consumer = makeConsumerWithCapacity(store, handler, 3);
+
+    // 阶段 1：恰好 cap 内 3 个不同 conversation，全部 Advanced（无驱逐）。
+    publishOne(publisher, craftedRequest(midA, convA, 1, "MessageAccepted",
+                                         payloadJson("bound-a"), topic()));
+    publishOne(publisher, craftedRequest(midB, convB, 1, "MessageAccepted",
+                                         payloadJson("bound-b"), topic()));
+    publishOne(publisher, craftedRequest(midC, convC, 1, "MessageAccepted",
+                                         payloadJson("bound-c"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 3, kPollDeadlineMs, &s);
+        ASSERT_EQ(3u, s.records.size());
+        for (size_t i = 0; i < s.records.size(); ++i) {
+            EXPECT_EQ(kPartition, s.records[i].partition) << "record " << i;
+            EXPECT_EQ(ConsumeDisposition::Advanced, s.dispositions[i]);
+        }
+        ASSERT_EQ(3u, handler.handled().size());
+    }
+
+    // 阶段 2：恰好 cap 内不驱逐——A/B/C 的重复 record 全部被内存 seen 去重
+    // （DuplicateNoOp）、handler 不被再次调用。
+    publishOne(publisher, craftedRequest(midA, convA, 1, "MessageAccepted",
+                                         payloadJson("bound-a"), topic()));
+    publishOne(publisher, craftedRequest(midB, convB, 1, "MessageAccepted",
+                                         payloadJson("bound-b"), topic()));
+    publishOne(publisher, craftedRequest(midC, convC, 1, "MessageAccepted",
+                                         payloadJson("bound-c"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 3, kPollDeadlineMs, &s);
+        ASSERT_EQ(3u, s.records.size());
+        for (size_t i = 0; i < s.records.size(); ++i) {
+            EXPECT_EQ(kPartition, s.records[i].partition) << "record " << i;
+            EXPECT_EQ(ConsumeDisposition::DuplicateNoOp, s.dispositions[i]);
+        }
+        ASSERT_EQ(3u, handler.handled().size());  // 无重复投递
+    }
+
+    // 阶段 3a：等于 cap 时第 4 个 conversation 到达 → 最新 D 保留（Advanced）。
+    publishOne(publisher, craftedRequest(midD, convD, 1, "MessageAccepted",
+                                         payloadJson("bound-d"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 1, kPollDeadlineMs, &s);
+        ASSERT_EQ(1u, s.records.size());
+        EXPECT_EQ(kPartition, s.records[0].partition);
+        EXPECT_EQ(ConsumeDisposition::Advanced, s.dispositions[0]);
+    }
+    // 阶段 3b：D（最新）的重复 record 仍被内存 seen 去重（最新保留）。
+    publishOne(publisher, craftedRequest(midD, convD, 1, "MessageAccepted",
+                                         payloadJson("bound-d"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 1, kPollDeadlineMs, &s);
+        ASSERT_EQ(1u, s.records.size());
+        EXPECT_EQ(ConsumeDisposition::DuplicateNoOp, s.dispositions[0]);
+    }
+    // 阶段 3c：A（最旧，被 D 驱逐）的重复 record 重新到达 handler（内存 seen
+    // 已失效）→ handler 幂等兜底 DuplicateNoOp。
+    publishOne(publisher, craftedRequest(midA, convA, 1, "MessageAccepted",
+                                         payloadJson("bound-a"), topic()));
+    {
+        PollStream s;
+        pollUntilRecords(*consumer, 1, kPollDeadlineMs, &s);
+        ASSERT_EQ(1u, s.records.size());
+        EXPECT_EQ(ConsumeDisposition::DuplicateNoOp, s.dispositions[0]);
+    }
+
+    // 聚合断言：A 被驱逐（handler 处理 2 次）；B/C/D 各 1 次（无重复投递）。
+    std::map<uint64_t, int> counts;
+    for (size_t i = 0; i < handler.handled().size(); ++i) {
+        ++counts[handler.handled()[i]];
+    }
+    EXPECT_EQ(2, counts[midA]) << "oldest evicted when cap reached (A dropped)";
+    EXPECT_EQ(1, counts[midB]) << "within-cap conversation retained";
+    EXPECT_EQ(1, counts[midC]) << "within-cap conversation retained";
+    EXPECT_EQ(1, counts[midD]) << "newest retained at cap boundary";
+    ASSERT_EQ(5u, handler.handled().size());
+    EXPECT_TRUE(store.deadLetters(10).empty());
 }
 
 // ---- RED ⑥（MySQL SQL leg）：KafkaDeadLetter 行直接 SQL 断言（契约双跑）----

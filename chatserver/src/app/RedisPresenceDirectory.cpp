@@ -10,6 +10,8 @@ namespace {
 // claim：INCR 全局单调计数器键生成新 epoch（与 in-memory adapter 的"全局单调
 // epoch 计数器"语义一致：release 后重新 claim 的 epoch 仍严格大于旧值，P4-01
 // 契约断言），原子覆盖条目；value 内嵌 expiresAtMs（全字符串防 uint64 精度丢失）。
+// P4-06 环境复原：SET 同时 PEXPIRE（与 value 的 expiresAtMs 同一 ttl——物理删除
+// 与逻辑判定一致，不冲突；value 仍是逻辑权威，EXPIRE 仅防物理累积）。
 const char kClaimScript[] =
     "local e = redis.call('INCR', KEYS[2])\n"
     "local now = tonumber(ARGV[1])\n"
@@ -17,10 +19,12 @@ const char kClaimScript[] =
     "local v = cjson.encode({ g = ARGV[3], c = ARGV[4], e = tostring(e), "
     "x = tostring(now + ttl) })\n"
     "redis.call('SET', KEYS[1], v)\n"
+    "redis.call('PEXPIRE', KEYS[1], ttl)\n"
     "return e\n";
 
 // renew：compare-and-update。状态码 {1,新expiresAtMs}=ok；{0}=NotFound（缺失或
-// 已过期）；{2}=NotEpoch（旧 epoch，条目不变）。
+// 已过期）；{2}=NotEpoch（旧 epoch，条目不变）。P4-06 环境复原：SET 同时
+// PEXPIRE（与 value 的 expiresAtMs 同一 ttl，物理/逻辑一致）。
 const char kRenewScript[] =
     "local old = redis.call('GET', KEYS[1])\n"
     "if not old then return { 0 } end\n"
@@ -30,6 +34,7 @@ const char kRenewScript[] =
     "if tonumber(o.e) ~= tonumber(ARGV[2]) then return { 2 } end\n"
     "o.x = tostring(now + tonumber(ARGV[3]))\n"
     "redis.call('SET', KEYS[1], cjson.encode(o))\n"
+    "redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]))\n"
     "return { 1, now + tonumber(ARGV[3]) }\n";
 
 // release：compare-and-delete。{1}=已删；{0}=NotFound（缺失或已过期）；{2}=NotEpoch。

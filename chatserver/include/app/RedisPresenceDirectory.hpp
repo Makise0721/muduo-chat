@@ -14,7 +14,10 @@
 // in-memory adapter 的全局单调计数器语义一致）。条目键值只含路由与 epoch
 // （{"g":gateway,"c":connection,"e":epoch,"x":expiresAtMs}，全字符串防精度丢失），
 // 绝不含消息真相。locate 由注入 Clock 判定 `now >= expiresAtMs` 是否过期
-// （context-map §3 TTL 落地约束：不依赖 key 自动过期删除）。
+// （context-map §3 TTL 落地约束）。P4-06 环境复原：claim/renew 写值同时
+// PEXPIRE key <ttlMs>（与 value 的 expiresAtMs 同一 ttl，物理删除与逻辑判定
+// 一致不冲突）——value 仍是逻辑权威，EXPIRE 仅防物理累积（SIGKILL 无 release
+// 时旧键随 TTL 过期，避免无界累积）。
 //
 // 线程语义：实例持单一 RedisConn（同步请求/响应），不跨线程共享；并发 claim 经
 // 每线程/每进程独立实例（独立连接）触发 Redis Lua 原子性——正是多 Gateway 现实
