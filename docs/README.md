@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md)、[P4-04 幂等 Delivery consumer](tasks/P4-04.md)、[P4-05 Gateway 定向投递与 epoch 校验](tasks/P4-05.md)、[P4-06 三节点 chaos 与容量保护](tasks/P4-06.md) 已 VERIFIED；P4-07 M4 独立验收待开卡。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md)、[P4-04 幂等 Delivery consumer](tasks/P4-04.md)、[P4-05 Gateway 定向投递与 epoch 校验](tasks/P4-05.md)、[P4-06 三节点 chaos 与容量保护](tasks/P4-06.md)、[P4-07 M4 独立验收](tasks/P4-07.md) 全部 VERIFIED；M4 已 VERIFIED（入口 [M4 报告](reports/p4-m4-gates.md)）；P5 待启动。
 
 ## 从这里开始
 

@@ -1,0 +1,72 @@
+# P4-07 M4 3 Gateway Compose 拓扑（docker/ 部署文件，不进生产代码）。
+#
+# 环境约束（docs/tasks/P4-07.md 环境变更节）：WSL2 dockerd 29.1.3 运行，但 Docker Hub
+# registry 网络受限无法拉取 base 镜像；本地无可用 base。镜像策略②：`docker import`
+# 自制最小 rootfs（chat-m4-rootfs:latest，由 build_rootfs.sh 构建，与宿主 Ubuntu 24.04
+# 同 glibc ABI，含 ChatServer/dbmigrate/libmymuduo.so + 全部 ldd 动态依赖）。
+#
+# 共享依赖复用宿主（gateway-compose-topology.md §1/§2 的 mysql/redis/kafka 占位镜像不适用，
+# 改为直接复用宿主已运行的 MySQL 127.0.0.1:3306 / Redis 127.0.0.1:6379 / Kafka 127.0.0.1:9092）。
+# 三 Gateway 用 host 网络模式，共享宿主 loopback（127.0.0.1）→ 直接访问宿主共享依赖，
+# 各自绑定独立 v1/v2 端口段（gateway.id=1/2/3）。此为对文档 §3 "单一 bridge chatnet"
+# 的等价落地：本环境宿主依赖只监听 127.0.0.1，容器内无法经 bridge 访问宿主回环，host 网络
+# 是该约束下的最小等价方案（跨节点仍走 Presence/Outbox/Pending，无直接 TCP RPC）。
+#
+# 端口布局（与 gateway-compose-topology.md §2 语义一致，三实例错开避免冲突）：
+#   gw1 v1=16201 v2=16211   gw2 v1=16202 v2=16212   gw3 v1=16203 v2=16213
+#
+# 用法：
+#   bash docker/build_rootfs.sh            # 首次构建 base 镜像
+#   docker compose -f docker/compose.yml up -d
+#   docker compose -f docker/compose.yml ps
+
+name: chat-m4
+
+services:
+  gw1:
+    image: chat-m4-rootfs:latest
+    container_name: chat-m4-gw1
+    network_mode: host
+    environment:
+      DB_PASSWORD: "123456"
+    command:
+      - /bin/ChatServer
+      - "127.0.0.1"
+      - "16201"
+      - --config
+      - /m4/gw1.json
+    volumes:
+      - /mnt/d/agent_learning/muduo-chat/docker/configs:/m4:ro
+    restart: "no"
+
+  gw2:
+    image: chat-m4-rootfs:latest
+    container_name: chat-m4-gw2
+    network_mode: host
+    environment:
+      DB_PASSWORD: "123456"
+    command:
+      - /bin/ChatServer
+      - "127.0.0.1"
+      - "16202"
+      - --config
+      - /m4/gw2.json
+    volumes:
+      - /mnt/d/agent_learning/muduo-chat/docker/configs:/m4:ro
+    restart: "no"
+
+  gw3:
+    image: chat-m4-rootfs:latest
+    container_name: chat-m4-gw3
+    network_mode: host
+    environment:
+      DB_PASSWORD: "123456"
+    command:
+      - /bin/ChatServer
+      - "127.0.0.1"
+      - "16203"
+      - --config
+      - /m4/gw3.json
+    volumes:
+      - /mnt/d/agent_learning/muduo-chat/docker/configs:/m4:ro
+    restart: "no"

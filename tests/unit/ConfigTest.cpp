@@ -177,12 +177,27 @@ TEST_F(ConfigTest, GatewaySectionOverridesKeepsFrozenDefaults)
     EXPECT_EQ(cfg.gateway.kafka.host, "kafka.local");
     EXPECT_EQ(cfg.gateway.kafka.port, 9093);
     EXPECT_EQ(cfg.gateway.consumer.topic, "my-topic");
+    // 显式 group_id 优先（P4-07：显式值覆盖派生）。
     EXPECT_EQ(cfg.gateway.consumer.groupId, "my-group");
+    EXPECT_EQ(cfg.gateway.effectiveConsumerGroupId(), "my-group");
     EXPECT_EQ(cfg.gateway.consumer.fetchBatchLimit, 50u);
     EXPECT_EQ(cfg.gateway.consumer.pollDeadlineMs, 3000);
     // 未出现字段保持卡冻结默认（缺省 = 冻结值）。
     EXPECT_EQ(cfg.gateway.presence.connectTimeoutMs, 1000);
     EXPECT_EQ(cfg.gateway.presence.commandTimeoutMs, 1000);
+    std::remove(path.c_str());
+}
+
+// P4-07 H 修复：gateway.id 覆盖且未显式 group_id 时，生效消费组按 Gateway 派生。
+TEST_F(ConfigTest, GatewayConsumerGroupIdDerivedFromId)
+{
+    std::string path = writeTempFile("{\"gateway\":{\"id\":7}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_EQ(cfg.gateway.id, 7u);
+    EXPECT_EQ(cfg.gateway.consumer.groupId, "");
+    EXPECT_EQ(cfg.gateway.effectiveConsumerGroupId(), "muduo-outbox-consumer-7");
     std::remove(path.c_str());
 }
 
@@ -201,7 +216,9 @@ TEST_F(ConfigTest, GatewayDefaultsAreFrozenValues)
     EXPECT_EQ(cfg.gateway.kafka.host, "127.0.0.1");
     EXPECT_EQ(cfg.gateway.kafka.port, 9092);
     EXPECT_EQ(cfg.gateway.consumer.topic, "muduo-outbox");
-    EXPECT_EQ(cfg.gateway.consumer.groupId, "muduo-outbox-consumer");
+    // P4-07 H 修复：默认 group_id 空串（派生标记），生效消费组按 Gateway 派生。
+    EXPECT_EQ(cfg.gateway.consumer.groupId, "");
+    EXPECT_EQ(cfg.gateway.effectiveConsumerGroupId(), "muduo-outbox-consumer-1");
     EXPECT_EQ(cfg.gateway.consumer.fetchBatchLimit, 100u);
     EXPECT_EQ(cfg.gateway.consumer.pollDeadlineMs, 5000);
     // 空配置文件同样保持 gateway 冻结默认。

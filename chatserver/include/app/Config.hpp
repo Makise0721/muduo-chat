@@ -78,7 +78,10 @@ struct KafkaConfig {
 
 struct ConsumerConfig {
     std::string topic = "muduo-outbox";              // P4-03/P4-04 冻结生产命名
-    std::string groupId = "muduo-outbox-consumer";   // P4-04 冻结生产 group
+    // P4-07 H 修复：默认空串 = 按 Gateway 派生（effectiveConsumerGroupId），
+    // 使每个 Gateway 独立消费组、各自消费全部 outbox 事件并只 wake 本地 active
+    // 用户；config 显式 group_id 优先（显式值覆盖派生）。
+    std::string groupId = "";                        // 显式 group_id（空 = 派生）
     uint32_t fetchBatchLimit = 100;                  // P4-04 冻结 fetch 批上限
     int64_t pollDeadlineMs = 5000;                   // 对 P4-04 commit/publish deadline 惯例
 };
@@ -88,6 +91,17 @@ struct GatewayConfig {
     PresenceConfig presence;
     KafkaConfig kafka;
     ConsumerConfig consumer;
+
+    // P4-07 H 修复：生效消费组 = 显式 group_id（非空）优先，否则按 Gateway 派生
+    // "muduo-outbox-consumer-<id>"——每 Gateway 独立消费组，避免共享组把 outbox
+    // 事件只分给单一 Gateway 消费（跨节点 wakeup 空转）。
+    std::string effectiveConsumerGroupId() const
+    {
+        if (!consumer.groupId.empty()) {
+            return consumer.groupId;
+        }
+        return "muduo-outbox-consumer-" + std::to_string(id);
+    }
 };
 
 struct AppConfig {
