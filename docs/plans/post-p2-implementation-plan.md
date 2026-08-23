@@ -4,7 +4,7 @@
 
 计划基线：`main` @ `2e2a7f9`
 
-状态：M4_VERIFIED（M3/M4 及 P3-00..P4-06 全部 VERIFIED；P5 待启动）
+状态：M4_VERIFIED（M3/M4 及 P3-00..P4-06 全部 VERIFIED）；P5 详细任务卡已定稿（2026-08-23 §9 修订），待启动 P5-00
 
 关键输入：
 
@@ -434,38 +434,154 @@ P4 只有在 P3-13 `VERIFIED` 后启动。以下任务已经足够拆卡，但 R
 
 ## 9. P5 任务队列：证据驱动性能与可观测性
 
-### P5-00 Telemetry interface 与基数预算
+> 2026-08-23 修订：M4 VERIFIED（四轴 H/M=0）后，本节由简要队列展开为详细任务卡。
+> 展开依据 [M4 报告](../reports/p4-m4-gates.md) 数字、进度索引工具事实与环境约束
+> （WSL2 单机、Docker 可用、无 root/sudo）。原六张卡的承诺全部保留；唯一显式修订是
+> P5-00 的 OTel SDK 延后（span interface 按 OTel 语义形状设计，生产 sink 先落结构化
+> 日志，触发条件登记为退出条款），理由与权衡见 P5-00 卡。
 
-- 定义 counter/gauge/histogram/span 小 interface，生产 Prometheus/OTel 与 test recorder 两个 adapter。
-- RED：trace parent/error、metric 单调性、label cardinality budget；UserId/MessageId/ClientMessageId 禁止作为 metric label。
-- 完成：EventLoop、executor、pool、message/outbox/presence/broker 的关键故障可从统一信号定位。
+### 9.0 进入条件与基线事实
 
-### P5-01 Dashboard、告警与 SLO 实验
+P5 只有在 M4 `VERIFIED` 后启动（已达）。执行前必须核对的本阶段基线事实：
 
-- 基于实测定义连接接受、MessageAcceptance latency、ACK latency、oldest pending、outbox/consumer lag、EventLoop lag。
-- 故障注入必须触发对应告警并在恢复后自动清除；没有生产流量前称“实验 SLO”，不称生产 SLA。
+| 当前事实 | 影响 |
+|---|---|
+| 指标有三个互不统一的输出面：SIGUSR1 METRICS 行的 pool/executor 字段（P2-10）、`reliable_*` 行（ReliableMessageMetrics 进程单例，P3-12，维度白名单只在该模块内生效）、结构化日志 LogEvent（P1R-08） | 没有统一 Telemetry interface；span 不存在；基数预算不是全局约束 |
+| EventLoop lag、connection accept/reject reason、outstanding bytes、presence fencing conflicts、consumer lag/rebalance 没有可抓取信号或分散在模块内部计数 | "从统一信号定位故障"未达成；P5-00 补齐缺口而非重写既有冻结契约 |
+| 性能数字没有固定方法学：P2 echo ~123 msg/s、P3-13 durable 均值 65.7 msg/s、M4 跨节点延迟 0.03–0.12s 各自记录，warmup/重复次数/置信区间未冻结 | P5-02 之前任何对比只能定性，优化门槛无从谈起 |
+| profile 工具链空白：仓库只有 chat-bench/logger-bench/chat_load.py 与 chaos harness；无 perf/FlameGraph/锁等待/分配/syscall/cache miss 产物 | P5-02 必须先核实 WSL2 内核 perf 可用性并准备 fallback 组合 |
+| 环境：WSL2 Ubuntu 24.04 单机；Docker 可用（docker/ 已有 3 Gateway Compose）；MySQL/Redis/Kafka 本机回环；无 root/sudo（apt 安装需用户授权）；TSan 轮需测试 topic 卫生（KafkaEventConsumer 积压重放诱发分配器 churn，P4-07 台账） | 所有数字只能称"实验环境"；新工具安装走授权清单；bench 前置步骤含 topic offset 卫生 |
 
-### P5-02 固定 benchmark 与 profile 基线
+环境授权清单（开卡时逐项核对，未经授权不安装）：linux-tools（perf）、valgrind、FlameGraph 脚本仓库、prometheus/grafana 镜像拉取、io_uring 内核可用性探测。
 
-- 固定硬件、编译 flags、数据规模、网络模型、warmup、重复次数、原始 JSON schema 和置信区间。
-- 场景：connect、echo、slow consumer、reliable direct/group、hot Conversation、DB/Redis/Kafka backpressure。
-- 产物：perf/FlameGraph、锁等待、分配、syscall、cache miss 与端到端 latency 对齐到 commit。
+### 9.1 任务依赖与执行顺序
 
-### P5-03 只修实测热点
+```mermaid
+flowchart TD
+    A["P5-00 Telemetry interface 与基数预算"] --> B["P5-01 Dashboard、告警与 SLO 实验"]
+    A --> C["P5-02 固定 benchmark 与 profile 基线"]
+    B --> D["P5-03 只修实测热点"]
+    C --> D
+    C --> E["P5-04 内核与 I/O 实验隔离"]
+    D --> E
+    B --> F["P5-05 M5 证据包"]
+    D --> F
+    E --> F
+```
 
-- 候选包括批量 SQL/ACK、Outbox batch、序列化拷贝、Buffer 分配、锁分片；每项先 profile 再写性能门槛。
-- 正确性/fault matrix 先通过，优化前后相同负载；一个优化一个提交，可独立回滚。
+默认严格串行，任一时刻一张卡 `IN_PROGRESS`。P5-01 与 P5-02 写入路径不重叠，但共享 Debug 树端口与依赖卫生，仍建议串行执行。
 
-### P5-04 内核与 I/O 实验隔离
+### 9.2 P5-00 Telemetry interface 与基数预算
 
-- io_uring、sendmmsg/recvmmsg、零拷贝、内存池都作为独立 spike，不进入默认路径，除非 profile 证明 syscall/分配是主要瓶颈。
-- 每个 spike 有 feature flag、fallback adapter、正确性对照和 sanitizer/benchmark；无收益就删除。
+- 依赖：P4-07 `VERIFIED`（M4 四轴 H/M=0）。
+- Interface / 可观察行为：
+  - `chatserver_core` 新增小 Telemetry interface：counter / gauge / histogram 记录 / span 开始结束；RecordingTelemetry（测试）与生产 adapter 双实现，interface 同时是调用面与测试面。
+  - 全局低基数预算成为 interface 约束：label key 白名单 + 有界枚举 value 集；UserId、MessageId、ClientMessageId、ConnectionId 一律禁止作为 metric label。trace 属性不受此限（追踪天然高基数），但受采样与保留预算约束（§9.8）。
+  - counter 单调（接口层不存在递减操作）；span 携带 parent 与 error 状态；快照为全标量可聚合结构（沿 ReliableMessageMetrics::Snapshot 惯例）。
+  - 统一暴露面：SIGUSR1 METRICS 既有字段零回退（golden pin 不动），统一快照同源生成；新增独立 HTTP `/metrics` Prometheus 文本端点（mymuduo TcpServer 承载、非阻塞、独立端口、config 注入开关，默认关闭不影响既有部署）。
+- RED：
+  - `Telemetry.hpp` 不存在 → contract 测试编译期失败。
+  - RecordingTelemetry contract：counter 只增聚合、histogram nearest-rank 分位数与既有语义一致、span parent/error 字段完整、高基数 label 注入被拒绝并计 reject、快照跨线程聚合正确。
+  - 缺口指标接线测试逐项失败（当前无信号）：EventLoop lag 自探针 gauge（loop-affine 定时器差值）、connection accept/reject reason counters（接 P1R-06 token bucket/maxConnections 计数）、outstanding bytes gauge（接连接发送预算）、presence fencing conflicts counter（接 RedisPresenceDirectory 拒绝路径）、consumer lag gauge 与 rebalance counter（接 KafkaEventConsumer poll）。
+- 最小实现：
+  - interface + RecordingTelemetry（纯内存，Clock 注入沿用 app/Clock.hpp）。
+  - 生产导出：Prometheus 文本格式（`/metrics` 端点 + SIGUSR1 快照同源生成函数）。
+  - span 生产 sink 先落结构化日志 LogEvent（component=trace，含 trace_id/span_id/parent/duration_ms/error）；**OTel SDK 延后**（对本节开头修订的显式记录）：引入条件=出现真实分布式追踪消费方且日志 span 已证明不足；interface 保持 OTel 语义形状，后续加 adapter 不改调用面。
+  - 缺口指标只读接线到模块既有内部计数，不改业务行为；ReliableMessageMetrics 冻结契约不重写，作为数据源桥接进统一快照（ReliableMessageMetricsTest/golden 零修改）。
+- 错误语义：指标记录绝不向业务流传播异常（沿用 recordBestEffort 守护模式）；label 违规属编程错误，测试显式断言，生产入口 BestEffort 吞掉并计数可见。
+- 验证命令：`ctest --test-dir <tree> -R 'Telemetry|MetricsSnapshot|PrometheusEndpoint' --output-on-failure`；进程级 SIGUSR1 + `/metrics` 抓取 smoke；Debug/ASan/TSan 全量。
+- 完成定义：对照架构演进方案 §8 清单逐项打勾——accept 失败、投递停滞、依赖超时、过载拒绝、loop 卡顿都能从单一快照定位到模块；基数预算有测试拦截；既有 golden/METRICS 契约零回退；领域 Clock 不进入 mymuduo TU（沿 ReliableMessageMetrics 同款隔离约束）。
+- 提交边界：两个原子提交——`feat(observability): add telemetry contract and recording adapter`（interface+recorder+contract 测试）、`feat(observability): expose unified snapshot and prometheus endpoint`（缺口接线+导出面）。
 
-### P5-05 M5 证据包
+### 9.3 P5-01 Dashboard、告警与 SLO 实验
 
-- 每个对外数字能定位到 commit、机器、配置、原始输出与统计脚本。
-- 区分 synthetic benchmark、故障演练和真实生产数据；没有真实生产数据就明确写“实验环境”。
-- 最终对抗审查通过后提交 `docs: publish M5 evidence package`。
+- 依赖：P5-00 `VERIFIED`；Docker 可用事实（P4-07 登记）。
+- Interface / 可观察行为：docker/compose.yml 增加 prometheus + grafana 服务（镜像版本开卡按 SOP §8 核对官方最新）；dashboards JSON 入库；告警规则文件入库。每个关键信号一个 panel：connection accept/reject rate、MessageAcceptance latency、ACK latency p50/p95/p99、oldest pending age、outbox lag、consumer lag、EventLoop lag、pool active/wait、executor queue/drop。
+- RED：
+  - dashboard JSON、alert rules 文件不存在（证据 RED）。
+  - promtool test rules 对每条规则构造输入序列断言 firing——当前无规则而失败。
+  - 进程级演练：复用 ClusterChaosProcess 场景族（kill -9、Redis down、Kafka pause、MySQL timeout），断言演练窗口内对应 alert 进入 firing、恢复后自动 resolve；稳态对照轮无 firing。
+- 最小实现：Prometheus 抓取 P5-00 `/metrics` 端点；Grafana provisioning 自动加载 dashboard；告警阈值初值来自 P4 故障恢复实测收敛数据（E1–E4、chaos 收敛时间），全部标注 experimental SLO；P5-02 基线产出后允许一次复核修订并记录于任务卡。
+- 验证命令：promtool check/test rules；compose smoke（up→抓取成功→演练→恢复→resolve）；演练 ×3 轮稳定。
+- 完成定义：每条告警同时有触发证据与自动清除证据（原始序列留档任务卡或 reports）；dashboard 每个 panel 的 PromQL 有查询断言；全文档不出现 SLA/生产承诺措辞——没有真实流量前只称"实验 SLO"。
+- 提交边界：`feat(observability): add experimental dashboards and alert rules`（compose/dashboard/rules 一提交）；演练 harness 改动大则拆 `test(observability)` 第二提交。
+
+### 9.4 P5-02 固定 benchmark 与 profile 基线
+
+- 依赖：P5-00 `VERIFIED`（指标名稳定后才可比）；建议排在 P5-01 后作告警基线参考，但不被其阻塞。
+- Interface / 可观察行为：
+  - 方法学冻结并入库（`docs/specs/benchmark-methodology.md`）：硬件/kernel/编译 flags/数据规模（预建用户数与 Conversation 分布）/网络模型（回环）/warmup 时长与次数/正式重复 ≥5 次/统计口径（均值+95% CI）/结果 schema 版本（bench-result-v1）。
+  - tools/bench 固定场景矩阵 runner：connect、echo、slow-consumer（chat-bench 三件套）＋ reliable direct、reliable group、hot Conversation（单一离线目标，验证 P3-11 登记的行锁串行瓶颈）、DB backpressure（慢查询注入）、Redis down、Kafka pause。每场景记录 msg/s、端到端 p50/p95/p99、DB lock wait、executor queue depth/drop、oldest pending、outbox lag、RSS。
+  - profile 产物对齐 commit：perf/FlameGraph（开卡先做 10 分钟可用性 spike；不可用时 fallback 组合并记录选择理由：`-pg` 构建变体 gprof、strace -cf syscall 计数、定点手工计时 instrumentation、callgrind）；锁等待经 performance_schema 或计时 instrumentation；分配次数经插桩构建变体计数；cache miss 仅在 perf 可用时报告。
+- 环境前置（固化进 runner 步骤）：TSan/topic 卫生（fresh topic 或 consumer group offset=latest，避免 P4-07 台账登记的积压重放 churn 污染测量）；依赖存活核对；负载隔离检查。
+- RED：方法学文档、runner、统计脚本、schema 均不存在（证据 RED）；首轮采集捕获基线数字（echo 预计落在 P2 记录量级、reliable direct 落在 P3-13 区间附近——不预设具体值，如实登记）。
+- 验证命令：同一 commit 隔日两轮，逐场景变异系数入档（作为 P5-03 优化门槛的分母依据）；tools/ 不碰生产码，Debug 全量 CTest 不受影响；`git diff --check`。
+- 完成定义：每场景有可复现命令＋原始 JSON＋CI 区间；热点 Top 列表带 profile 产物链接；不可外推边界明示（WSL2、回环、单机、"实验环境"）；后续一切性能主张必须引用本卡产物。
+- 提交边界：`perf(bench): freeze methodology and capture p5 baseline`（脚本+schema+报告一个提交）；触及构建系统的插桩变体单独提交。
+
+### 9.5 P5-03 只修实测热点
+
+- 依赖：P5-02 `VERIFIED`（热点排序与噪声上限在手）。
+- 执行形态：本卡定义循环协议与候选台账；实际多项时沿 P1R 字母后缀惯例开 P5-03A/B/C 子卡——一项一子卡一提交。
+- 循环协议（固定，不得跳步）：
+  1. 从热点列表取一项，RED 前写下性能门槛（例：hot Conversation msg/s 提升 ≥15% 且 p99 回退 ≤5%；分母=P5-02 变异系数上界）。
+  2. 正确性矩阵与 fault 套件先全绿（优化前基线）。
+  3. 单变量最小实现。
+  4. 同负载同方法学复测 ≥5 轮＋CI 对照。
+  5. Debug/ASan/TSan 全量＋focused repeat。
+  6. 达标→一个可独立 revert 的原子提交；未达标→revert，结论入台账。
+- 候选台账（均有既有归因证据；禁止无 profile 新增候选）：批量 SQL/ACK 合并（DELIVERY_ACK 攒批 UPDATE、登录补投批量）、Outbox lease 批量 claim、序列化拷贝消除（ProtocolCodec JSON）、Buffer 分配复用、锁竞争缓解（accept 事务 Conversation 行 FOR UPDATE 串行=P3-11/P3-13 durable 成本主因、registry 锁分片）。
+- 验证命令：每项 `ctest --test-dir <tree> -R '<相关契约|fault>' --repeat until-fail:N` ＋ bench 对比轮；三树全量回归。
+- 完成定义：合入项有门槛达成证据（原始 JSON 前后对比）；未合入项有"为什么不做"结论；正确性矩阵全程零回退；总台账（`docs/reports/performance/hotspot-ledger.md`）逐项可追溯到 commit。
+- 提交边界：每项 `perf(<area>): <change>`；台账收口 `docs(perf): record hotspot optimization ledger`。
+
+### 9.6 P5-04 内核与 I/O 实验隔离
+
+- 依赖：P5-02 `VERIFIED`（profile 证明方向）；P5-03 完成或有据显式跳过（跳过理由入台账）。
+- Spike 协议：每个候选独立 feature flag 构建开关；flag OFF 时与主线行为等价、默认配置零新代码路径；fallback adapter 常驻；同一 contract/process 正确性套件对 flag ON/OFF 双跑；sanitizer 三树；benchmark 子集复测。无收益即删除代码、结论留台账；转正进默认路径必须先立 ADR 并附 P5-02 方法学下的对比数据。
+- 候选与进入条件（均要求 P5-02 profile 显示对应资源为主要瓶颈才开工）：
+  - io_uring Poller 替换 EPollPoller：先做内核可用性 spike（WSL2 内核版本/config 核实），不可用直接登记跳过；
+  - sendmmsg/recvmmsg 批量收发：syscall 占比为热点时；
+  - MSG_ZEROCOPY 大 payload 路径：拷贝占比显著时；
+  - Buffer 内存池化：分配次数/RSS 增长显著时。
+- 验证命令：flag 双跑网络/process 套件 ＋ bench 子集；io_uring spike 加 TSan 全量。
+- 完成定义：默认构建与主线行为等价且有测试固定；每个 spike 有"继续/删除"结论与数据支撑；删除不留死代码。
+- 提交边界：一个 spike 一个提交序列（`experiment(io): <name>`，不合入则只在台账留结论）；转正另走 ADR＋独立 feat 提交。
+
+### 9.7 P5-05 M5 证据包
+
+- 依赖：P5-00..P5-04 全部终态（`VERIFIED` 或有据显式跳过）。
+- Interface / 可观察行为：`docs/reports/p5-m5-gates.md`——
+  - 正确性矩阵：五闸门 fresh 复验（沿 P4-07 Gate A–D 形态）＋契约/migration/direct/group/v1v2/online-offline/retry-reconnect/worker 矩阵抽认。
+  - 性能矩阵：P5-02 基线＋P5-03 各项前后对比＋P5-04 spike 结论，全部满足五元组定位（commit/机器/配置/原始输出/统计脚本）。
+  - 数据性质分类：synthetic benchmark、故障演练、真实生产数据三类分开标注；本项目无生产流量，全部数字标注"实验环境"，不外推。
+  - 四轴对抗审查（Standards/Spec/Concurrency-Fault/Migration-Security）H/M 未决=0 才标 M5 VERIFIED；Lows 台账继承复核（db0 presence 键累积、expired 语义分裂、Redis AUTH/TLS、容器分区等价边界、TSan KafkaEventConsumer topic 卫生、legacy contract migration 延后项）。
+- RED：报告不存在即 RED；任一对外数字缺五元组定位即被审查打回。
+- 完成定义：架构演进方案 §9 M5 行硬条件达成——每个数字可定位 commit、环境、原始报告和统计脚本；不宣称未经测量的能力；路由四文档与 README 收口一致。
+- 提交边界：`docs: publish M5 evidence package`；随后 P5 任务卡移入 `docs/archive/tasks/p5/`（移动后跑链接检查、rg 旧路径扫描、`git diff --check`）。
+
+### 9.8 P5 冻结值清单
+
+| 项 | 冻结任务 | 说明 |
+|---|---|---|
+| metric 命名空间与维度白名单 | P5-00 | 冻结后 dashboard/告警/报告引用不再改名；新增 label 走白名单变更 |
+| span 采样与保留预算 | P5-00 | trace 属性允许 message_id，但采样/保留必须有界 |
+| 实验 SLO 阈值 | P5-01 | 初值来自 P4 故障收敛实测；P5-02 后允许一次复核修订并记录 |
+| benchmark 方法学（warmup/重复数/CI 口径/schema 版本） | P5-02 | 冻结后 P5-03/P5-04 沿用；改方法学=重新采集基线 |
+| 每项优化的性能门槛 | P5-03 各子卡 | RED 前记录，含分母（噪声上界）来源 |
+| spike feature flag 名与进入条件 | P5-04 各 spike | 进入条件=profile 证明对应资源为主要瓶颈 |
+
+### 9.9 P5 补充停止规则
+
+在 §10 全局规则之上，P5 出现以下情况立即停止：
+
+- 没有 P5-02 profile 证据就开始任何优化或 spike 实现。
+- 一个提交混入多项优化变量，或无法独立 revert。
+- benchmark 方法学在优化中途被更改后继续引用旧基线。
+- 把实验环境数字外推为生产能力，或在文档出现 SLA/生产承诺措辞。
+- UserId/MessageId/ClientMessageId/ConnectionId 进入 metric label 且未被测试拦截。
+- 无收益 spike 代码留在默认路径。
+- 优化后正确性/fault/sanitizer 任一闸门回退。
 
 ## 10. 全局执行与停止规则
 
