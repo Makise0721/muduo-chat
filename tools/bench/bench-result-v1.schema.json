@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "bench-result-v1",
+  "description": "P5-02 fixed benchmark result schema. Field set frozen in docs/specs/benchmark-methodology.md section 8.",
+  "type": "object",
+  "required": ["schema_version", "commit", "timestamp", "host", "build", "scenario", "workload", "warmup", "repetitions", "stats"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "bench-result-v1" },
+    "commit": { "type": "string", "minLength": 40 },
+    "timestamp": { "type": "string" },
+    "host": {
+      "type": "object",
+      "required": ["kernel", "cpu_model", "cpu_count", "ulimit_nofile", "mem_mb"],
+      "properties": {
+        "kernel": { "type": "string" },
+        "cpu_model": { "type": "string" },
+        "cpu_count": { "type": "integer" },
+        "ulimit_nofile": { "type": "integer" },
+        "mem_mb": { "type": "integer" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["commit", "cxx_flags", "build_type"],
+      "properties": {
+        "commit": { "type": "string" },
+        "cxx_flags": { "type": "string" },
+        "build_type": { "type": "string" }
+      }
+    },
+    "scenario": { "type": "string" },
+    "workload": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string" },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "connections": { "type": "integer" },
+        "messages": { "type": "integer" },
+        "payload_size": { "type": "integer" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "warmup": {
+      "type": "object",
+      "required": ["rounds", "duration_ms"],
+      "properties": {
+        "rounds": { "type": "integer" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "repetitions": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["rep", "msg_per_sec", "p50_ms", "p95_ms", "p99_ms", "rss_kb"],
+        "properties": {
+          "rep": { "type": "integer" },
+          "msg_per_sec": { "type": "number" },
+          "p50_ms": { "type": "number" },
+          "p95_ms": { "type": "number" },
+          "p99_ms": { "type": "number" },
+          "db_lock_wait_ms": { "type": "number" },
+          "executor_queue_depth": { "type": "integer" },
+          "executor_dropped": { "type": "integer" },
+          "oldest_pending_age_ms": { "type": "integer" },
+          "outbox_lag": { "type": "integer" },
+          "rss_kb": { "type": "integer" }
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "msg_per_sec": { "$ref": "#/definitions/moment" },
+        "p50_ms": { "$ref": "#/definitions/moment" },
+        "p95_ms": { "$ref": "#/definitions/moment" },
+        "p99_ms": { "$ref": "#/definitions/moment" },
+        "rss_kb": { "$ref": "#/definitions/moment" }
+      }
+    }
+  },
+  "definitions": {
+    "moment": {
+      "type": "object",
+      "required": ["mean", "ci95_low", "ci95_high", "cv"],
+      "properties": {
+        "mean": { "type": "number" },
+        "ci95_low": { "type": "number" },
+        "ci95_high": { "type": "number" },
+        "cv": { "type": "number" }
+      }
+    }
+  }
+}

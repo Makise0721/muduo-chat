@@ -6,3 +6,6 @@ mymuduo/lib/
 *.py
 !tests/scripts/*.py
 !tools/chat_load.py
+!tools/bench/run.py
+!tools/bench/load.py
+!tools/bench/stats.py
