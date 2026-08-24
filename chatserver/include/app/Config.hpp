@@ -104,6 +104,13 @@ struct GatewayConfig {
     }
 };
 
+// P5-00 阶段 B metrics 段（docs/tasks/P5-00.md 设计决定 D11）：默认关闭
+//（enabled=false, port）；JSON "metrics" 段可覆盖。
+struct MetricsConfig {
+    bool enabled = false;
+    uint16_t port = 7001;
+};
+
 struct AppConfig {
     AppConfig()
     {
@@ -117,6 +124,7 @@ struct AppConfig {
     RetryConfig reliable;   // P3-08 可靠消息参数（默认 = 卡冻结值）
     OutboxConfig outbox;    // P3-09 outbox relay 参数（默认 = 卡冻结值）
     GatewayConfig gateway;  // P4-05 gateway/presence/kafka/consumer 参数（默认 = 卡冻结值）
+    MetricsConfig metrics;  // P5-00 阶段 B /metrics 端点参数（默认关闭）
 };
 
 namespace config {

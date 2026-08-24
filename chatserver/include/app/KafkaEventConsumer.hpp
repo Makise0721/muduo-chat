@@ -46,6 +46,12 @@ public:
     // 内部 seam 函数按 Impl& 传参）。
     struct Impl;
 
+    // P5-00 D9：consumer lag gauge = highWatermark 与 cursor 差值（未 poll 前 = 0）；
+    // rebalanceCount = M-2 earliest 回退代理计数（本实现无 consumer group 协议，
+    // rebalance 事件源登记 N/A，零起始）。
+    uint64_t consumerLag() const;
+    uint64_t rebalanceCount() const;
+
 private:
     std::unique_ptr<Impl> impl_;
 };

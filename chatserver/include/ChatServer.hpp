@@ -29,6 +29,10 @@ public:
     // P2-08：多 Reactor——I/O 线程数（在 start() 前调用）。
     void setThreadNum(int numThreads);
 
+    // P5-00 H-1：统一快照缺口字段只读桥接（透传私有 TcpServer）。
+    TcpServer::AcceptReasonCounts acceptReasonCounts() const;
+    uint64_t totalOutstandingBytes() const;
+
     void onConnection(const TcpConnectionPtr& conn);
     void onMessage(const TcpConnectionPtr& conn, Buffer* buffer, Timestamp time);
 

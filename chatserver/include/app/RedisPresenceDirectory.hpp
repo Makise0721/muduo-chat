@@ -4,6 +4,7 @@
 #include "app/PresenceDirectory.hpp"
 #include "app/RedisConn.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -38,6 +39,13 @@ public:
                           SessionEpoch epoch) override;
     LocateResult locate(UserId user) override;
 
+    // P5-00 D9：NotEpoch 拒绝路径原子计数（renew/release 携带旧 epoch 被
+    // compare-and-delete 拒），零起始；不改 error 语义（仍返回 NotEpoch）。
+    uint64_t fencingConflicts() const
+    {
+        return fencingConflicts_.load();
+    }
+
 private:
     bool ensureConnected();
     RedisConn::Reply eval(const char* script, const std::vector<std::string>& keys,
@@ -52,4 +60,5 @@ private:
     int64_t connectTimeoutMs_ = 0;
     int64_t commandTimeoutMs_ = 0;
     RedisConn conn_;
+    std::atomic<uint64_t> fencingConflicts_{0};  // P5-00 D9
 };

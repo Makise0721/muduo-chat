@@ -183,3 +183,11 @@ void startOutboxConsumerPoll();
 // 挂进 shutdown 顺序：EXECUTOR_SHUTDOWN 之后、MESSAGING_STOP 之前——consumer poll
 //（其 handle 消费 wiring().messaging）先于 messaging stop 有界 join。
 void stopOutboxConsumerPoll(int64_t deadlineMs);
+
+// ---- P5-00 H-1 统一快照缺口字段 wiring 只读 getter（main.cpp SIGUSR1 行与
+// /metrics 生产经 MetricsSnapshot::snapshot() 第四源 GapStats 同源取数）----
+// wiring 未构造（无消息/presence 活动）时 no-op 返回 0（沿 renewAllPresence 惯例，
+// 不反构造 store/Redis/Kafka 连接）。
+uint64_t presenceFencingConflicts();
+uint64_t consumerLag();
+uint64_t rebalanceCount();

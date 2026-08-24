@@ -71,6 +71,20 @@ public:
 
     int acceptErrorCount() const { return acceptor_->acceptErrorCount(); }
 
+    // P5-00 D9：accept/reject reason 计数（只读桥接既有 connectionCount /
+    // rateRejectedCount / acceptErrorCount / rejectedConnections）。
+    struct AcceptReasonCounts {
+        uint64_t accept = 0;
+        uint64_t rateReject = 0;
+        uint64_t maxReject = 0;
+        uint64_t emfileRecover = 0;
+    };
+    AcceptReasonCounts acceptReasonCounts() const;
+
+    // P5-00 H-1：连接 outstanding 聚合（各连接 outstandingBytes() 求和，主 loop
+    // affine；不动 CAS 预算 / pause/resume / stall 语义）。
+    uint64_t totalOutstandingBytes() const;
+
     int listenPort() const;
 
     void stopAccept()

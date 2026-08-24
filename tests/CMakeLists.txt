@@ -272,6 +272,30 @@ add_executable(TelemetryContractTest unit/TelemetryContractTest.cpp)
 target_link_libraries(TelemetryContractTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(TelemetryContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+# P5-00 阶段 B RED：统一快照同源生成（引用尚不存在的 app/MetricsSnapshot.hpp →
+# 编译失败即合法 RED，沿阶段 A 先例）。
+add_executable(MetricsSnapshotTest unit/MetricsSnapshotTest.cpp)
+target_link_libraries(MetricsSnapshotTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(MetricsSnapshotTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+# P5-00 阶段 B RED：Prometheus 导出面与 /metrics 端点（引用尚不存在的
+# app/PrometheusTelemetrySink.hpp 与 app/MetricsEndpoint.hpp → 编译失败即合法 RED；
+# 端点 smoke 经 mymuduo EventLoop/TcpServer 随机端口）。
+add_executable(PrometheusEndpointTest unit/PrometheusEndpointTest.cpp)
+target_include_directories(PrometheusEndpointTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(PrometheusEndpointTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(PrometheusEndpointTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
+# P5-00 阶段 B RED：缺口接线 getter 存在性 + 零起始（引用尚不存在的
+# EventLoop::loopLagProbeMs / TcpConnection::outstandingBytes /
+# TcpServer::acceptReasonCounts / RedisPresenceDirectory::fencingConflicts /
+# KafkaEventConsumer::consumerLag/rebalanceCount → member not declared 编译失败
+# 即合法 RED）。
+add_executable(GapWiringContractTest unit/GapWiringContractTest.cpp)
+target_include_directories(GapWiringContractTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
+target_link_libraries(GapWiringContractTest GTest::gtest_main GTest::gtest chatserver_core mymuduo Threads::Threads)
+set_target_properties(GapWiringContractTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 add_test(NAME single-compile-check
     COMMAND ${PYTHON3_EXECUTABLE}
@@ -360,7 +384,7 @@ add_test(NAME ClusterChaosProcess
         $<TARGET_FILE:ChatServer>)
 set_tests_properties(ClusterChaosProcess PROPERTIES TIMEOUT 1200 RESOURCE_LOCK chat_server_ports)
 
-foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest ReliableMessageMetricsTest SessionSerialExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest OutboxPublisherContractTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest LegacyCutoverTest SessionDeliverySinkTest PresenceContractTest RedisPresenceContractTest GatewayDeliveryContractTest GatewayPresenceWiringContractTest TelemetryContractTest)
+foreach(TEST_TARGET IN ITEMS BufferTest EventLoopTest EventLoopThreadPoolTest TcpConnectionTest BenchStatsTest StreamCodecTest LegacyJsonLineCodecTest BinaryFrameCodecTest TimerQueueTest BackpressureTest TcpServerTest LoggerTest DualProtocolCharacterizationTest ChatApplicationRegistrationTest UserRepositoryContractTest MySQLUserRepositoryTest BlockingExecutorTest ReliableMessageMetricsTest SessionSerialExecutorTest EventLoopResponsivenessTest ConnectionPoolTest MySQLPoolIntegrationTest SessionApplicationTest SessionRegistryTest FriendRepositoryContractTest GroupRepositoryContractTest FriendGroupApplicationTest OfflineMessageTest MessageApplicationTest MessageAcceptanceConcurrencyTest     MultiReactorTest ConfigTest SchemaMigrationTest ReliableMessagingContractTest ReliableMessageSchemaTest MySQLReliableMessagingTest MessageAcceptanceApplicationTest ReliableProtocolGoldenTest DeliveryCoordinatorTest DeliveryRetryTest OutboxRelayTest OutboxCrashRecoveryTest OutboxPublisherContractTest MessageRetentionTest MySqlLeaseRoundTripTest LegacyOfflineMigrationTest BackfillReentrancyTest LegacyCutoverTest SessionDeliverySinkTest PresenceContractTest RedisPresenceContractTest GatewayDeliveryContractTest GatewayPresenceWiringContractTest TelemetryContractTest MetricsSnapshotTest PrometheusEndpointTest GapWiringContractTest)
     set_target_properties(${TEST_TARGET} PROPERTIES CROSSCOMPILING_EMULATOR "${GTEST_EMULATOR}")
 endforeach()
 discover_gtest(ReliableMessageSchemaTest)
@@ -417,6 +441,9 @@ discover_gtest(RedisPresenceContractTest)
 discover_gtest(GatewayDeliveryContractTest)
 discover_gtest(GatewayPresenceWiringContractTest)
 discover_gtest(TelemetryContractTest)
+discover_gtest(MetricsSnapshotTest)
+discover_gtest(PrometheusEndpointTest)
+discover_gtest(GapWiringContractTest)
 
 # P4-04 RED：幂等 Delivery consumer 契约（引用尚不存在的 app/OutboxEventConsumer.hpp、
 # app/KafkaEventConsumer.hpp、app/WakeupProgressHandler.hpp 与 MessageStore 的

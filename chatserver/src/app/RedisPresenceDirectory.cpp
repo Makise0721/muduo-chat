@@ -154,6 +154,9 @@ RenewResult RedisPresenceDirectory::renew(UserId user, GatewayId gateway, Connec
             }
             return result;
         }
+        if (status == 2) {
+            fencingConflicts_.fetch_add(1);  // P5-00 D9：NotEpoch 拒绝路径计数
+        }
         result.error = (status == 2) ? PresenceError::NotEpoch : PresenceError::NotFound;
         return result;
     }
@@ -181,6 +184,9 @@ ReleaseResult RedisPresenceDirectory::release(UserId user, GatewayId gateway, Co
         if (status == 1) {
             result.ok = true;
             return result;
+        }
+        if (status == 2) {
+            fencingConflicts_.fetch_add(1);  // P5-00 D9：NotEpoch 拒绝路径计数
         }
         result.error = (status == 2) ? PresenceError::NotEpoch : PresenceError::NotFound;
         return result;

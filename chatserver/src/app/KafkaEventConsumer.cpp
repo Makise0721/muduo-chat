@@ -5,6 +5,7 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -223,6 +224,10 @@ struct KafkaEventConsumer::Impl {
     // 冻结 kSeenConversationsCapacity（默认 100，常量注入）。
     std::deque<uint64_t> conversationOrder;
     size_t seenConversationsCapacity = kSeenConversationsCapacity;
+    // P5-00 D9：highWatermark 存储（ListOffsets latest 落点）与 lag/rebalance 计数。
+    std::map<int32_t, int64_t> highWatermark;
+    std::atomic<uint64_t> consumerLag{0};
+    std::atomic<uint64_t> rebalanceCount{0};
 };
 
 namespace {
@@ -669,6 +674,16 @@ void KafkaEventConsumer::setPreCommitHook(std::function<void()> hook)
     impl_->preCommitHook = hook;
 }
 
+uint64_t KafkaEventConsumer::consumerLag() const
+{
+    return impl_->consumerLag.load();
+}
+
+uint64_t KafkaEventConsumer::rebalanceCount() const
+{
+    return impl_->rebalanceCount.load();
+}
+
 OutboxConsumeResult KafkaEventConsumer::poll(int64_t deadlineMs)
 {
     OutboxConsumeResult result;  // 默认 brokerOk=true
@@ -731,16 +746,31 @@ OutboxConsumeResult KafkaEventConsumer::poll(int64_t deadlineMs)
                 const int64_t er = (e == earliest.end()) ? 0 : e->second;
                 if (off < 0) {
                     s.cursor[p] = er;  // 无提交历史 → earliest
+                    s.rebalanceCount.fetch_add(1);  // P5-00 D9：M-2 earliest 回退代理计数
                     continue;
                 }
                 std::map<int32_t, int64_t>::const_iterator l = latest.find(p);
                 if (l != latest.end() && off > l->second) {
                     s.cursor[p] = er;  // 越界（高于 log-end）→ earliest（M-2）
+                    s.rebalanceCount.fetch_add(1);  // P5-00 D9
                 } else {
                     s.cursor[p] = off;  // 从已提交 offset 恢复（重启接管）
                 }
             }
             s.assigned = true;
+            // P5-00 D9：highWatermark 存储（latest 落点）与 consumer lag 计算
+            //（只读 cursor 差值；无 latest 数据时 lag=0）。
+            s.highWatermark = latest;
+            uint64_t totalLag = 0;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                const int32_t p = parts[i];
+                std::map<int32_t, int64_t>::const_iterator h = latest.find(p);
+                std::map<int32_t, int64_t>::const_iterator c = s.cursor.find(p);
+                if (h != latest.end() && c != s.cursor.end() && h->second > c->second) {
+                    totalLag += static_cast<uint64_t>(h->second - c->second);
+                }
+            }
+            s.consumerLag.store(totalLag);
         }
 
         // 3) Fetch v4 单批拉取（批 ≤ fetchBatchLimit）。
@@ -763,6 +793,7 @@ OutboxConsumeResult KafkaEventConsumer::poll(int64_t deadlineMs)
                 s.cursor[errPartitions[i]] = er.count(errPartitions[i])
                                                  ? er[errPartitions[i]]
                                                  : 0;
+                s.rebalanceCount.fetch_add(1);  // P5-00 D9：M-2 earliest 回退代理计数
             }
         }
 

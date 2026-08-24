@@ -45,6 +45,9 @@ add_library(chatserver_core STATIC
     chatserver/src/app/KafkaPublisher.cpp
     chatserver/src/app/KafkaWire.cpp
     chatserver/src/app/KafkaEventConsumer.cpp
+    chatserver/src/app/MetricsSnapshot.cpp
+    chatserver/src/app/PrometheusTelemetrySink.cpp
+    chatserver/src/app/MetricsEndpoint.cpp
     chatserver/src/app/ProtocolCodec.cpp
     chatserver/src/app/ReliableMessaging.cpp
     chatserver/src/app/SessionRegistry.cpp

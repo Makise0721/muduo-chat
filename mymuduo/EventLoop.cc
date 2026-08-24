@@ -64,6 +64,14 @@ EventLoop::~EventLoop()
     t_loopInThisThread = nullptr;
 }
 
+int64_t EventLoop::steadyNowMs()
+{
+    // P5-00 M-1：同源稳态时钟（TimerQueue 内部 SteadyClock 同款）。
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               SteadyClock::now().time_since_epoch())
+        .count();
+}
+
 TimerId EventLoop::runAfter(int64_t delayMs, TimerCallback cb)
 {
     return timerQueue_->addTimer(std::move(cb), delayMs, 0);
@@ -88,7 +96,17 @@ void EventLoop::loop()
     while (!quit_)
     {
         activeChannels_.clear();
+        const int64_t pollStartMs = steadyNowMs();
         pollReturnTime_ = poller_->poll(kPollTimeMs, &activeChannels_);
+        // P5-00 D9/M-1：loop-affine 探针 = 最近 poll 耗时差值（ms，>=0）。用
+        // steady_clock（亚秒分辨率 + 单调）替代 Timestamp 墙钟，墙钟回拨不产生
+        // 负值。
+        const int64_t pollEndMs = steadyNowMs();
+        int64_t lagMs = pollEndMs - pollStartMs;
+        if (lagMs < 0) {
+            lagMs = 0;
+        }
+        loopLagMs_.store(lagMs);
 
         for (Channel *channel : activeChannels_)
         {

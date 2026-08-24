@@ -35,6 +35,14 @@ void ChatServer::setThreadNum(int numThreads) {
     _server.setThreadNum(numThreads);
 }
 
+TcpServer::AcceptReasonCounts ChatServer::acceptReasonCounts() const {
+    return _server.acceptReasonCounts();
+}
+
+uint64_t ChatServer::totalOutstandingBytes() const {
+    return _server.totalOutstandingBytes();
+}
+
 void ChatServer::onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
         std::cout << "Connection established: " << conn->peerAddress().toIpPort() << std::endl;

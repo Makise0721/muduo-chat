@@ -121,6 +121,13 @@ public:
     void connectDestroyed();
 
     void setState(int s) { state_ = s; }
+
+    // P5-00 D9：只读 getter，返回既有 outstandingBytes_ 原子量（不动 CAS 预算 /
+    // pause/resume / stall 语义）。
+    uint64_t outstandingBytes() const
+    {
+        return outstandingBytes_.load(std::memory_order_relaxed);
+    }
 private:
     enum StateE
     {

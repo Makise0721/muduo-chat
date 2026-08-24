@@ -16,8 +16,13 @@
 class EventLoop;
 
 using TimerCallback = std::function<void()>;
-using Clock = std::chrono::steady_clock;
-using TimePoint = Clock::time_point;
+// P5-00 阶段 B 必要适配：原全局 `using Clock = std::chrono::steady_clock` 与领域
+// class Clock（app/Clock.hpp）同名冲突——冻结测试（PrometheusEndpointTest /
+// GapWiringContractTest）同时引入 EventLoop.h 与领域 Clock，GREEN 必须消解。
+// 更名 SteadyClock（仅 mymuduo 内部使用，零行为变化；docs/tasks/P3-07.md 已记
+// 该别名即冲突点）。
+using SteadyClock = std::chrono::steady_clock;
+using TimePoint = SteadyClock::time_point;
 
 class Timer : noncopyable
 {

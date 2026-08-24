@@ -231,6 +231,38 @@ TEST_F(ConfigTest, GatewayDefaultsAreFrozenValues)
     std::remove(path.c_str());
 }
 
+// P5-00 阶段 B L-2：metrics 段最小解析——enabled/port 正确解析；缺省保持默认关闭。
+TEST_F(ConfigTest, MetricsSectionParsed)
+{
+    std::string path = writeTempFile("{\"metrics\":{\"enabled\":true,\"port\":9001}}");
+    AppConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadConfigFile(path, &cfg, &err)) << err;
+    EXPECT_TRUE(cfg.metrics.enabled);
+    EXPECT_EQ(cfg.metrics.port, 9001);
+    // 缺省（无 metrics 段）= 默认关闭（P5-00 D11）。
+    std::string emptyPath = writeTempFile("{}");
+    AppConfig empty;
+    std::string emptyErr;
+    ASSERT_TRUE(loadConfigFile(emptyPath, &empty, &emptyErr)) << emptyErr;
+    EXPECT_FALSE(empty.metrics.enabled);
+    EXPECT_EQ(empty.metrics.port, 7001);
+    std::remove(path.c_str());
+    std::remove(emptyPath.c_str());
+}
+
+// P5-00 阶段 B L-2：metrics 段未知字段 fail-fast（metrics. 前缀路径字段名，
+// 与既有 unknown 字段用例同款）。
+TEST_F(ConfigTest, MetricsUnknownFieldFailsFast)
+{
+    std::string path = writeTempFile("{\"metrics\":{\"unknown_field\":1}}");
+    AppConfig cfg;
+    std::string err;
+    EXPECT_FALSE(loadConfigFile(path, &cfg, &err));
+    EXPECT_NE(err.find("metrics.unknown_field"), std::string::npos) << err;
+    std::remove(path.c_str());
+}
+
 // P3-11：executor 段部分覆盖（最小解析用例）——只出现 queue_capacity 时
 // workers 保持卡冻结默认 1（缺失字段不改变默认；显式多 worker 见
 // ExecutorWorkersMultiValueAllowed）。

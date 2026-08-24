@@ -590,3 +590,30 @@ void stopOutboxConsumerPoll(int64_t deadlineMs)
         g_wiring->poller.stop(deadlineMs);
     }
 }
+
+// ---- P5-00 H-1 统一快照缺口字段 wiring 只读 getter（main.cpp 同源取数）----
+// 未构造 wiring（无消息/presence 活动）时 no-op 返回 0，不反构造连接。
+
+uint64_t presenceFencingConflicts()
+{
+    if (g_wiring == nullptr) {
+        return 0;
+    }
+    return g_wiring->presence.fencingConflicts();
+}
+
+uint64_t consumerLag()
+{
+    if (g_wiring == nullptr) {
+        return 0;
+    }
+    return g_wiring->consumer.consumerLag();
+}
+
+uint64_t rebalanceCount()
+{
+    if (g_wiring == nullptr) {
+        return 0;
+    }
+    return g_wiring->consumer.rebalanceCount();
+}

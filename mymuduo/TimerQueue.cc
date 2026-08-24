@@ -71,7 +71,7 @@ TimerQueue::~TimerQueue()
 
 TimerId TimerQueue::addTimer(TimerCallback cb, int64_t delayMs, int64_t intervalMs)
 {
-    TimePoint deadline = Clock::now() + std::chrono::milliseconds(delayMs);
+    TimePoint deadline = SteadyClock::now() + std::chrono::milliseconds(delayMs);
     std::shared_ptr<Timer> timer(new Timer(std::move(cb), deadline, intervalMs));
     bool inserted = false;
     TimerId id;
@@ -82,7 +82,7 @@ TimerId TimerQueue::addTimer(TimerCallback cb, int64_t delayMs, int64_t interval
     }
     if (inserted)
     {
-        resetTimerfd(Clock::now());
+        resetTimerfd(SteadyClock::now());
     }
     return id;
 }
@@ -100,7 +100,7 @@ void TimerQueue::cancel(TimerId id)
 
 void TimerQueue::handleRead()
 {
-    TimePoint now = Clock::now();
+    TimePoint now = SteadyClock::now();
     uint64_t expirations = 0;
     ssize_t n = ::read(timerfd_, &expirations, sizeof expirations);
     if (n != sizeof expirations)
@@ -139,7 +139,7 @@ std::vector<TimerId> TimerQueue::getExpired(TimePoint now)
     {
         if (id.timer->repeat() && !id.timer->cancelled())
         {
-            id.timer->restart(Clock::now());
+            id.timer->restart(SteadyClock::now());
             insert(Entry(id.timer->expiration(), id));
         }
     }

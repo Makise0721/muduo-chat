@@ -134,6 +134,21 @@ bool getNonEmptyString(const json& obj, const std::string& key, std::string* out
     return true;
 }
 
+// P5-00 阶段 B：bool 字段（"metrics.enabled"）。
+bool getBool(const json& obj, const std::string& key, bool* out,
+             std::vector<FieldError>* errors, const std::string& path)
+{
+    if (!obj.contains(key)) {
+        return true;
+    }
+    if (!obj[key].is_boolean()) {
+        errors->push_back({path + key, "must be a boolean"});
+        return false;
+    }
+    *out = obj[key].get<bool>();
+    return true;
+}
+
 bool checkKnownFields(const json& obj, const std::vector<std::string>& known,
                       std::vector<FieldError>* errors, const std::string& path)
 {
@@ -388,6 +403,17 @@ bool parseGatewaySection(const json& gateway, AppConfig* out,
     return ok;
 }
 
+// P5-00 阶段 B metrics 段（字段与 MetricsConfig 一一对应；缺失保持默认关闭）。
+bool parseMetricsSection(const json& metrics, AppConfig* out,
+                         std::vector<FieldError>* errors)
+{
+    checkKnownFields(metrics, {"enabled", "port"}, errors, "metrics.");
+    bool ok = true;
+    ok = getBool(metrics, "enabled", &out->metrics.enabled, errors, "metrics.") && ok;
+    ok = getUint16(metrics, "port", &out->metrics.port, errors, "metrics.") && ok;
+    return ok;
+}
+
 } // namespace
 
 namespace config {
@@ -415,7 +441,8 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
     }
 
     std::vector<FieldError> errors;
-    checkKnownFields(root, {"server", "db", "executor", "reliable", "outbox", "gateway"},
+    checkKnownFields(root, {"server", "db", "executor", "reliable", "outbox", "gateway",
+                            "metrics"},
                      &errors, "");
 
     if (root.contains("server")) {
@@ -458,6 +485,13 @@ bool loadConfigFile(const std::string& path, AppConfig* out, std::string* err)
             errors.push_back({"gateway", "must be an object"});
         } else {
             parseGatewaySection(root["gateway"], out, &errors);
+        }
+    }
+    if (root.contains("metrics")) {
+        if (!root["metrics"].is_object()) {
+            errors.push_back({"metrics", "must be an object"});
+        } else {
+            parseMetricsSection(root["metrics"], out, &errors);
         }
     }
 

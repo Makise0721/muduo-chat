@@ -27,6 +27,14 @@ public:
 
     Timestamp pollReturnTime() const { return pollReturnTime_; }
 
+    // P5-00 D9 loop-affine 探针：最近一次 poll 的耗时差值（ms，自记录最近 poll
+    // 返回时刻与耗时；从未测量 = 0），>=0。
+    int64_t loopLagProbeMs() const { return loopLagMs_.load(); }
+
+    // P5-00 M-1：lag 探针时钟源（steady_clock，mymuduo 内部 TimerQueue 同源）。
+    // 亚秒分辨率 + 单调（墙钟回拨不产生负差值）；探针与测试共用同一入口。
+    static int64_t steadyNowMs();
+
     void runInLoop(Functor cb);
     void queueInLoop(Functor cb);
 
@@ -52,6 +60,7 @@ private:
 
     const pid_t threadId_;
     Timestamp pollReturnTime_;
+    std::atomic<int64_t> loopLagMs_{0};  // P5-00 D9 loop-affine 探针（ms）
     std::unique_ptr<Poller> poller_;
 
     int wakeupFd_;

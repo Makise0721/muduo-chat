@@ -54,6 +54,26 @@ int TcpServer::listenPort() const
     return listenPort_;
 }
 
+TcpServer::AcceptReasonCounts TcpServer::acceptReasonCounts() const
+{
+    AcceptReasonCounts r;
+    r.accept = static_cast<uint64_t>(connectionCount());
+    r.rateReject = static_cast<uint64_t>(acceptor_->rateRejectedCount());
+    r.maxReject = static_cast<uint64_t>(rejectedConnections_.load());
+    r.emfileRecover = static_cast<uint64_t>(acceptor_->acceptErrorCount());
+    return r;
+}
+
+uint64_t TcpServer::totalOutstandingBytes() const
+{
+    uint64_t total = 0;
+    for (const auto &kv : connections_)
+    {
+        total += kv.second->outstandingBytes();
+    }
+    return total;
+}
+
 void TcpServer::start()
 {
     if (started_.fetch_add(1) == 0)
