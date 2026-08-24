@@ -1,0 +1,17 @@
+# P5-01 EventLoop 卡顿故障域告警（experimental SLO，无生产承诺）。
+# 初值来源：docs/tasks/P5-01.md 设计决定 D4 冻结值（loop_lag_ms > 2000 持续 10s），
+# 取 P5-00 M-1 稳态时钟探针采样量级；experimental 初值，P5-02 固定 benchmark 基线
+# 产出后允许一次复核修订。
+groups:
+  - name: p5_loop
+    rules:
+      - alert: P5_LOOP_LAG_HIGH
+        expr: loop_lag_ms > 2000
+        for: 10s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "EventLoop lag exceeds experimental threshold (2000ms for 10s)"
+          runbook: "docs/observability/alert-rules.md#p5_loop_lag_high"

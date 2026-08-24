@@ -1,0 +1,72 @@
+# P5-01 过载/拒绝故障域告警（experimental SLO，无生产承诺）。
+# 初值来源：P4 容量保护实测（docs/tasks/P4-07.md 风暴恢复/容量保护契约；M4 报告
+# accept 拒绝路径与 executor drop）。threshold 为 experimental 初值，P5-02 固定
+# benchmark 基线产出后允许一次复核修订。
+groups:
+  - name: p5_capacity
+    rules:
+      - alert: P5_CAPACITY_ACCEPT_RATE_REJECTED
+        expr: rate(accept_rate_reject[1m]) > 0
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Accept rate-limit rejections are occurring (rate > 0 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_accept_rate_rejected"
+
+      - alert: P5_CAPACITY_ACCEPT_MAX_REJECTED
+        expr: rate(accept_max_reject[1m]) > 0
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Accept max-connections rejections are occurring (rate > 0 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_accept_max_rejected"
+
+      - alert: P5_CAPACITY_OUTSTANDING_BYTES_HIGH
+        expr: outstanding_bytes > 10485760
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Outstanding bytes exceed experimental threshold (10MiB for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_outstanding_bytes_high"
+
+      - alert: P5_CAPACITY_EXECUTOR_DROP_FULL
+        expr: rate(executor_dropped[1m]) > 0
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Executor task drops (full) are occurring (rate > 0 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_executor_drop_full"
+
+      - alert: P5_CAPACITY_EXECUTOR_QUEUE_HIGH
+        expr: executor_queue > 56
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Executor queue near capacity (experimental high watermark 56 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_executor_queue_high"
+
+      - alert: P5_CAPACITY_POOL_ACTIVE_HIGH
+        expr: pool_active / (pool_total + 1) > 0.8
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "DB connection pool active ratio exceeds experimental 0.8 for 30s"
+          runbook: "docs/observability/alert-rules.md#p5_capacity_pool_active_high"

@@ -1,0 +1,340 @@
+# P5-01 promtool unit tests：逐条告警断言 firing（构造超阈值输入序列）与自动清除
+# （构造超阈值后回落序列，断言 eval 时 alert 已 resolve，exp_alerts 为空）。
+#
+# 规则为 experimental SLO，无生产承诺。每条 firing + resolve 断言均为本卡 D6
+# 「触发证据 + 自动清除证据」的 promtool 侧落点。
+#
+# 运行（从仓库根）：promtool test rules tests/scripts/p5_01_test_rules.yml
+#
+# 说明：
+#   - rate() 规则（fencing_conflicts / accept_rate_reject / accept_max_reject /
+#     executor_dropped）输入序列需比 range 窗口稠密（interval 15s，range 1m 内 >2
+#     样本），否则边界样本被 range 下界排除、rate() 返回空、永不出触发。
+#   - exp_labels 需与规则 labels 精确匹配（含 alertname/owner/severity/experimental_slo）。
+rule_files:
+  - '../../docker/prometheus/rules/delivery.yml'
+  - '../../docker/prometheus/rules/capacity.yml'
+  - '../../docker/prometheus/rules/loop.yml'
+
+evaluation_interval: 1m
+
+tests:
+  # ---- delivery.yml ----
+  - interval: 1m
+    input_series:
+      - series: 'reliable_oldest_pending_age_ms'
+        values: '65000+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_DELIVERY_OLDEST_PENDING_STALLED'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_DELIVERY_OLDEST_PENDING_STALLED'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_delivery_oldest_pending_stalled'
+              summary: 'Oldest pending delivery age exceeds experimental threshold (60s for 30s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'reliable_outbox_lag'
+        values: '100+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_DELIVERY_OUTBOX_LAG_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_DELIVERY_OUTBOX_LAG_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_delivery_outbox_lag_high'
+              summary: 'Outbox lag exceeds experimental convergence window (60 for 30s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'consumer_lag'
+        values: '100+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_DELIVERY_CONSUMER_LAG_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_DELIVERY_CONSUMER_LAG_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_delivery_consumer_lag_high'
+              summary: 'Consumer lag exceeds experimental threshold (60 for 30s)'
+
+  - interval: 15s
+    input_series:
+      - series: 'fencing_conflicts'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_FENCING_CONFLICTS'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_DELIVERY_FENCING_CONFLICTS'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_delivery_fencing_conflicts'
+              summary: 'Presence fencing conflicts are rising (rate > 0 for 60s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'reliable_ack_latency_p99_ms'
+        values: '5000+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_DELIVERY_ACK_LATENCY_SPIKED'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_DELIVERY_ACK_LATENCY_SPIKED'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_delivery_ack_latency_spiked'
+              summary: 'ACK latency p99 exceeds experimental threshold (3000ms for 30s)'
+
+  # ---- capacity.yml ----
+  - interval: 15s
+    input_series:
+      - series: 'accept_rate_reject'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_ACCEPT_RATE_REJECTED'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_ACCEPT_RATE_REJECTED'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_accept_rate_rejected'
+              summary: 'Accept rate-limit rejections are occurring (rate > 0 for 30s)'
+
+  - interval: 15s
+    input_series:
+      - series: 'accept_max_reject'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_ACCEPT_MAX_REJECTED'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_ACCEPT_MAX_REJECTED'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_accept_max_rejected'
+              summary: 'Accept max-connections rejections are occurring (rate > 0 for 30s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'outstanding_bytes'
+        values: '20971520+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_CAPACITY_OUTSTANDING_BYTES_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_OUTSTANDING_BYTES_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_outstanding_bytes_high'
+              summary: 'Outstanding bytes exceed experimental threshold (10MiB for 30s)'
+
+  - interval: 15s
+    input_series:
+      - series: 'executor_dropped'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_EXECUTOR_DROP_FULL'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_EXECUTOR_DROP_FULL'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_executor_drop_full'
+              summary: 'Executor task drops (full) are occurring (rate > 0 for 30s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'executor_queue'
+        values: '60+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_CAPACITY_EXECUTOR_QUEUE_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_EXECUTOR_QUEUE_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_executor_queue_high'
+              summary: 'Executor queue near capacity (experimental high watermark 56 for 30s)'
+
+  - interval: 1m
+    input_series:
+      - series: 'pool_active'
+        values: '9+0x20'
+      - series: 'pool_total'
+        values: '10+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_CAPACITY_POOL_ACTIVE_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_CAPACITY_POOL_ACTIVE_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_capacity_pool_active_high'
+              summary: 'DB connection pool active ratio exceeds experimental 0.8 for 30s'
+
+  # ---- loop.yml ----
+  - interval: 1m
+    input_series:
+      - series: 'loop_lag_ms'
+        values: '3000+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: 'P5_LOOP_LAG_HIGH'
+        exp_alerts:
+          - exp_labels:
+              alertname: 'P5_LOOP_LAG_HIGH'
+              experimental_slo: 'true'
+              owner: 'platform'
+              severity: 'warning'
+            exp_annotations:
+              runbook: 'docs/observability/alert-rules.md#p5_loop_lag_high'
+              summary: 'EventLoop lag exceeds experimental threshold (2000ms for 10s)'
+
+  # ---- resolve：超阈值后回落，断言自动清除 ----
+  - interval: 1m
+    input_series:
+      - series: 'reliable_oldest_pending_age_ms'
+        values: '65000+0x5 0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_OLDEST_PENDING_STALLED'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'reliable_outbox_lag'
+        values: '100+0x5 0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_OUTBOX_LAG_HIGH'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'consumer_lag'
+        values: '100+0x5 0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_CONSUMER_LAG_HIGH'
+        exp_alerts: []
+
+  - interval: 15s
+    input_series:
+      - series: 'fencing_conflicts'
+        values: '0+1x20 0+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_FENCING_CONFLICTS'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'reliable_ack_latency_p99_ms'
+        values: '5000+0x5 1000+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_DELIVERY_ACK_LATENCY_SPIKED'
+        exp_alerts: []
+
+  - interval: 15s
+    input_series:
+      - series: 'accept_rate_reject'
+        values: '0+1x20 0+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_ACCEPT_RATE_REJECTED'
+        exp_alerts: []
+
+  - interval: 15s
+    input_series:
+      - series: 'accept_max_reject'
+        values: '0+1x20 0+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_ACCEPT_MAX_REJECTED'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'outstanding_bytes'
+        values: '20971520+0x5 0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_OUTSTANDING_BYTES_HIGH'
+        exp_alerts: []
+
+  - interval: 15s
+    input_series:
+      - series: 'executor_dropped'
+        values: '0+1x20 0+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_EXECUTOR_DROP_FULL'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'executor_queue'
+        values: '60+0x5 10+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_EXECUTOR_QUEUE_HIGH'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'pool_active'
+        values: '9+0x5 1+0x15'
+      - series: 'pool_total'
+        values: '10+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_CAPACITY_POOL_ACTIVE_HIGH'
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'loop_lag_ms'
+        values: '3000+0x5 100+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: 'P5_LOOP_LAG_HIGH'
+        exp_alerts: []

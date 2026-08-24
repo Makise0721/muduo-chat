@@ -70,3 +70,31 @@ services:
     volumes:
       - /mnt/d/agent_learning/muduo-chat/docker/configs:/m4:ro
     restart: "no"
+
+  # P5-01 实验 SLO 观测面（experimental，无生产承诺）。镜像拉取受阻（Docker Hub
+  # registry 受限）登记为 P5-05 复查项；本环境验证用官方 tarball 等价运行，见
+  # docs/tasks/P5-01.md 环境决策节。host 网络共享宿主 loopback → 抓取宿主 /metrics。
+  prometheus:
+    image: prom/prometheus:3.14.0
+    container_name: chat-p5-prometheus
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - /mnt/d/agent_learning/muduo-chat/docker/prometheus:/etc/prometheus:ro
+    restart: "no"
+
+  grafana:
+    image: grafana/grafana:13.2.0
+    container_name: chat-p5-grafana
+    network_mode: host
+    # admin 默认凭据（admin/admin）仅供本机实验（experimental，无生产承诺）；
+    # 生产部署必须改用安全凭据/外部密钥。
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - /mnt/d/agent_learning/muduo-chat/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /mnt/d/agent_learning/muduo-chat/docker/grafana/dashboards:/etc/grafana/dashboards:ro
+    restart: "no"

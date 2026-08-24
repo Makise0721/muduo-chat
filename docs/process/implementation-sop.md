@@ -2,9 +2,9 @@
 
 状态：当前可执行
 
-当前活动任务：无（P5-00 已 VERIFIED；P5-01 Dashboard/告警/SLO 待开卡）
+当前活动任务：无（P5-01 已 VERIFIED；P5-02 固定 benchmark 与 profile 基线待开卡）
 
-下一任务：P5-01（Dashboard、告警与 SLO 实验，见计划 §9.3）
+下一任务：P5-02（固定 benchmark 与 profile 基线，见计划 §9.4）
 
 ## 1. 文档与事实优先级
 

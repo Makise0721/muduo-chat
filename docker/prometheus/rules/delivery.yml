@@ -1,0 +1,61 @@
+# P5-01 投递停滞故障域告警（experimental SLO，无生产承诺）。
+# 初值来源：P4 故障收敛实测（docs/reports/p4-m4-gates.md 故障恢复与收敛节——E2 重路由
+# 收敛、outbox lag 收敛为零、Kafka/Redis down 恢复后收敛）；阈值取收敛上限 × 容差，
+# 全为 experimental 初值，P5-02 固定 benchmark 基线产出后允许一次复核修订。
+groups:
+  - name: p5_delivery
+    rules:
+      - alert: P5_DELIVERY_OLDEST_PENDING_STALLED
+        expr: reliable_oldest_pending_age_ms > 60000
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Oldest pending delivery age exceeds experimental threshold (60s for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_delivery_oldest_pending_stalled"
+
+      - alert: P5_DELIVERY_OUTBOX_LAG_HIGH
+        expr: reliable_outbox_lag > 60
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Outbox lag exceeds experimental convergence window (60 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_delivery_outbox_lag_high"
+
+      - alert: P5_DELIVERY_CONSUMER_LAG_HIGH
+        expr: consumer_lag > 60
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Consumer lag exceeds experimental threshold (60 for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_delivery_consumer_lag_high"
+
+      - alert: P5_DELIVERY_FENCING_CONFLICTS
+        expr: rate(fencing_conflicts[1m]) > 0
+        for: 60s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "Presence fencing conflicts are rising (rate > 0 for 60s)"
+          runbook: "docs/observability/alert-rules.md#p5_delivery_fencing_conflicts"
+
+      - alert: P5_DELIVERY_ACK_LATENCY_SPIKED
+        expr: reliable_ack_latency_p99_ms > 3000
+        for: 30s
+        labels:
+          owner: platform
+          severity: warning
+          experimental_slo: "true"
+        annotations:
+          summary: "ACK latency p99 exceeds experimental threshold (3000ms for 30s)"
+          runbook: "docs/observability/alert-rules.md#p5_delivery_ack_latency_spiked"

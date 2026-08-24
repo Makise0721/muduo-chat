@@ -1,0 +1,15 @@
+# P5-01 Grafana provisioning：dashboard provider 自动加载（docker/ 部署文件）。
+# 指向 docker/grafana/dashboards/*.json，folder 命名 P5-01。experimental 观测面。
+apiVersion: 1
+
+providers:
+  - name: p5-01
+    orgId: 1
+    folder: P5-01
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false
