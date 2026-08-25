@@ -46,7 +46,8 @@ void sendFailureReply(const TcpConnectionPtr& conn, const json& js,
         return;
     }
     const std::string* cmid = parsed.hasClientMessageId ? &parsed.clientMessageId : nullptr;
-    conn->send(buildErrorReply(ERROR_RESP_MSG, errnoCode, errmsg, cmid).dump() + "\n");
+    // P5-03B：零拷贝 encode seam（与 buildErrorReply(...).dump() + "\n" 字节一致）。
+    conn->send(encodeErrorReply(ERROR_RESP_MSG, errnoCode, errmsg, cmid));
 }
 
 } // namespace
@@ -529,12 +530,13 @@ void ChatService::oneChat(const TcpConnectionPtr& conn, json& js, Timestamp time
                     conn->send(response.dump() + "\n");
                 } else {
                     // spec §2.2：五字段 MESSAGE_ACCEPTED，事务提交后发出。
-                    conn->send(buildMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
+                    // P5-03B：零拷贝 encode seam（与 buildXReply(...).dump() 字节一致）。
+                    conn->send(encodeMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
                                                           view->clientMessageId,
                                                           view->messageId,
                                                           view->conversationId,
                                                           view->sequence,
-                                                          view->duplicate).dump() + "\n");
+                                                          view->duplicate));
                 }
                 return;
             }
@@ -667,12 +669,12 @@ void ChatService::groupChat(const TcpConnectionPtr& conn, json& js, Timestamp ti
                     response["errno"] = 0;
                     conn->send(response.dump() + "\n");
                 } else {
-                    conn->send(buildMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
+                    conn->send(encodeMessageAcceptedReply(MESSAGE_ACCEPTED_MSG,
                                                           view->clientMessageId,
                                                           view->messageId,
                                                           view->conversationId,
                                                           view->sequence,
-                                                          view->duplicate).dump() + "\n");
+                                                          view->duplicate));
                 }
                 return;
             }

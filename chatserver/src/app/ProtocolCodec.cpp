@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -426,6 +427,106 @@ nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errm
         reply["client_message_id"] = *clientMessageId;
     }
     return reply;
+}
+
+// ---- P5-03B 零拷贝 encode seam ----
+// 直接字符串构建 wire 字节，与 `buildXReply(...).dump() + "\n"` 逐字节一致
+// （ProtocolEncodeContractTest 7 用例 + ReliableProtocolGolden golden 锚定）。
+// 序列化规则与 nlohmann dump(indent=-1, ensure_ascii=false) 对齐：
+// - 键序 = std::map 升序（MESSAGE_ACCEPTED: client_message_id, conversation_id,
+//   duplicate, message_id, msgid, sequence；错误: client_message_id, errmsg,
+//   errno, msgid）；
+// - 字符串转义：\b \t \n \f \r \" \\ 与其它 <0x20 控制字符 \u00xx，其余字节原样
+//   （ensure_ascii=false，非 ASCII UTF-8 字节不转义）；
+// - 整数/布尔：纯十进制 / true|false（无前导零）。
+
+namespace {
+
+// 追加 JSON 字符串字面量（含首尾双引号），字节等价 nlohmann dump_escaped。
+void appendJsonString(std::string& out, const std::string& s)
+{
+    out.push_back('"');
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        switch (c) {
+            case 0x08:
+                out += "\\b";
+                break;
+            case 0x09:
+                out += "\\t";
+                break;
+            case 0x0A:
+                out += "\\n";
+                break;
+            case 0x0C:
+                out += "\\f";
+                break;
+            case 0x0D:
+                out += "\\r";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            default:
+                if (c <= 0x1F) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+                    out.append(buf, 6);
+                } else {
+                    out.push_back(static_cast<char>(c));
+                }
+                break;
+        }
+    }
+    out.push_back('"');
+}
+
+} // namespace
+
+std::string encodeMessageAcceptedReply(int msgid, const std::string& clientMessageId,
+                                       uint64_t messageId, uint64_t conversationId,
+                                       uint64_t sequence, bool duplicate)
+{
+    std::string out;
+    out.reserve(96 + clientMessageId.size());
+    out += "{\"client_message_id\":";
+    appendJsonString(out, clientMessageId);
+    out += ",\"conversation_id\":";
+    out += std::to_string(conversationId);
+    out += ",\"duplicate\":";
+    out += duplicate ? "true" : "false";
+    out += ",\"message_id\":";
+    out += std::to_string(messageId);
+    out += ",\"msgid\":";
+    out += std::to_string(msgid);
+    out += ",\"sequence\":";
+    out += std::to_string(sequence);
+    out += "}\n";
+    return out;
+}
+
+std::string encodeErrorReply(int msgid, int errnoCode, const std::string& errmsg,
+                             const std::string* clientMessageId)
+{
+    std::string out;
+    out.reserve(64 + errmsg.size() + (clientMessageId != nullptr ? clientMessageId->size() : 0));
+    out += '{';
+    if (clientMessageId != nullptr) {
+        out += "\"client_message_id\":";
+        appendJsonString(out, *clientMessageId);
+        out += ',';
+    }
+    out += "\"errmsg\":";
+    appendJsonString(out, errmsg);
+    out += ",\"errno\":";
+    out += std::to_string(errnoCode);
+    out += ",\"msgid\":";
+    out += std::to_string(msgid);
+    out += "}\n";
+    return out;
 }
 
 uint64_t legacyModeCount()

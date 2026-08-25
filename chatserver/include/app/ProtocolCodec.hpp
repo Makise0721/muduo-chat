@@ -92,6 +92,17 @@ nlohmann::json buildMessageAcceptedReply(int msgid, const std::string& clientMes
 nlohmann::json buildErrorReply(int msgid, int errnoCode, const std::string& errmsg,
                                const std::string* clientMessageId);
 
+// ---- P5-03B 零拷贝 encode seam（序列化拷贝消除，docs/tasks/P5-03B.md）----
+// 直接序列化 wire 字节（含尾随 '\n'，与 `buildXReply(...).dump() + "\n"` 及
+// ReliableProtocolGolden 既有 golden 逐字节一致），但避开完整 nlohmann::json 对象
+// 构造 + dump 的序列化拷贝与中间堆分配。纯函数、确定性；"失败不改 output" 映射为
+// encode 不触碰/不改写既有 dump 路径。msgid 11/13 字段/errno/errmsg 语义零变化。
+std::string encodeMessageAcceptedReply(int msgid, const std::string& clientMessageId,
+                                       uint64_t messageId, uint64_t conversationId,
+                                       uint64_t sequence, bool duplicate);
+std::string encodeErrorReply(int msgid, int errnoCode, const std::string& errmsg,
+                             const std::string* clientMessageId);
+
 // legacy-mode 计数（spec §5.1 能力差异可观测；正式指标 P3-12 暴露）。
 uint64_t legacyModeCount();
 
