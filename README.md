@@ -1,6 +1,6 @@
 # muduo-chat
 
-基于自研 mymuduo 网络库（Reactor 模式，C++11/Linux）的可靠聊天系统。项目按五个里程碑推进：M1 网络框架、M2 非阻塞内核、M3 可靠单机消息、M4 可靠多节点、M5 可观测性与性能，全部 VERIFIED（2026-08）。
+基于自研 mymuduo 网络库（Reactor 模式，C++11/Linux）的可靠聊天系统。
 
 ## 特性总览
 
@@ -107,7 +107,3 @@ docker compose -f docker/compose.yml up -d
 - 里程碑验收报告：[docs/reports/p2-m2-gates.md](docs/reports/p2-m2-gates.md)、[p3-m3-gates.md](docs/reports/p3-m3-gates.md)、[p4-m4-gates.md](docs/reports/p4-m4-gates.md)、[p5-m5-gates.md](docs/reports/p5-m5-gates.md)
 - 性能数据：[docs/reports/performance/](docs/reports/performance/)
 - 协议与领域行为：[docs/specs/](docs/specs/)；设计决定：[docs/adr/](docs/adr/)
-
-## 项目状态
-
-M1-M5 全部 VERIFIED（2026-08），任务卡与证据已归档至 `docs/archive/tasks/`。README 及报告中出现的吞吐/延迟等数字均为实验环境（WSL2 Ubuntu 24.04 单机、回环依赖）测量结果，不外推生产环境。本项目仅供学习交流使用。
