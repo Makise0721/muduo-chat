@@ -6,7 +6,7 @@
 
 关联：[P4 实施计划](../plans/post-p2-implementation-plan.md) §8、[集群故障与所有权契约](../specs/cluster-failure-contract.md)、[架构演进方案](evolution-plan.md) §7
 
-本图定义 Gateway/Connection/Session/Presence/Delivery 五个集群词汇的边界与归属。单机词汇（Message、Conversation、Delivery 状态机、ACK 等）仍以根 [CONTEXT.md](../../CONTEXT.md) 为准，本图不重定义。
+本图定义 Gateway/Connection/Session/Presence/Delivery 五个集群词汇的边界与归属。单机词汇（Message、Conversation、Delivery 状态机、ACK 等）仍以根领域词汇表（CONTEXT.md，已于项目收尾移除）为准，本图不重定义。
 
 ## 1. 词汇与唯一含义
 

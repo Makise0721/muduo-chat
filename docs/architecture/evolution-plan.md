@@ -76,7 +76,7 @@ interface 同时是调用面和测试面。不要为测试暴露私有容器；�
 
 ## 6. 可靠消息契约
 
-详细术语见根 [CONTEXT.md](../../CONTEXT.md)，候选决定见 [ADR-0001](../adr/0001-reliable-message-semantics.md)。ADR 仍为 `proposed` 时不得修改协议或 schema。
+详细术语见根领域词汇表（CONTEXT.md，已于项目收尾移除），候选决定见 [ADR-0001](../adr/0001-reliable-message-semantics.md)。ADR 仍为 `proposed` 时不得修改协议或 schema。
 
 目标承诺：
 

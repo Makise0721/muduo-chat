@@ -8,7 +8,7 @@
 
 - [ADR-0001](../adr/0001-reliable-message-semantics.md)：本规范引用的承诺来源
 - [P3 实施计划](../plans/post-p2-implementation-plan.md) §2 推荐语义与权衡、§5 P3-00 任务卡、§6 目标 schema 契约、§7 协议兼容最小集合
-- [CONTEXT.md](../../CONTEXT.md)：术语来源，本规范全部英文术语与之一致
+- 领域词汇表（CONTEXT.md，已于项目收尾移除）：术语来源，本规范全部英文术语与之一致
 - [行为矩阵](domain-behavior-matrix.md)：B-09/B-11/B-12/B-17/B-18/B-19/B-21/B-22 为现状基线，新规范是目标（§6 对照）
 
 ## 1. 目标承诺

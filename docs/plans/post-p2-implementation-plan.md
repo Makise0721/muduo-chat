@@ -12,7 +12,7 @@
 - [M2 验收报告](../reports/p2-m2-gates.md) 的性能与验收矩阵
 - [P2 对抗审查](../reviews/p2-adversarial-review.md) 的最终结论
 - [ADR-0001](../adr/0001-reliable-message-semantics.md) 的 proposed 可靠消息承诺
-- 根目录 [CONTEXT.md](../../CONTEXT.md) 的领域词汇
+- 根目录领域词汇表（CONTEXT.md，已于项目收尾移除）的领域词汇
 
 ## 1. 当前事实与计划边界
 

@@ -8,7 +8,7 @@
 2. [实施 SOP](process/implementation-sop.md)：单任务 RED→GREEN、WSL2 验证、提交和停止规则。
 3. [进度索引](process/implementation-progress.md)：已完成任务与可定位证据。
 4. [架构演进方案](architecture/evolution-plan.md)：长期架构目标、模块 interface 和里程碑。
-5. [领域词汇](../CONTEXT.md) 与 [ADR](adr/)：术语和难以逆转的设计决定。
+5. 领域词汇表（CONTEXT.md，已于项目收尾移除）与 [ADR](adr/)：术语和难以逆转的设计决定。
 
 ## 目录职责
 

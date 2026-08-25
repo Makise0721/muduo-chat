@@ -11,7 +11,7 @@
 - [架构演进方案](../architecture/evolution-plan.md) §7（Presence/fencing 与 Outbox/Kafka）
 - [Cluster context map](../architecture/cluster-context-map.md)：术语与所有权边界
 - [message-reliability.md](message-reliability.md) §4：单机故障点表（P3，本规范是其集群扩展，不推翻单机承诺）
-- [CONTEXT.md](../../CONTEXT.md)：单机术语来源；集群词汇在本规范/ADR/context map 定义，CONTEXT.md 同步待单独授权
+- 领域词汇表（CONTEXT.md，已于项目收尾移除）：单机术语来源；集群词汇在本规范/ADR/context map 定义，CONTEXT.md 同步待单独授权
 
 ## 1. 目标承诺
 
