@@ -5,6 +5,13 @@ target_include_directories(BufferTest PRIVATE ${PROJECT_SOURCE_DIR}/mymuduo)
 target_link_libraries(BufferTest GTest::gtest_main GTest::gtest mymuduo Threads::Threads)
 set_target_properties(BufferTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+# 已从构建集移除：P5-04 进入条件失效收口（阶段 1 复测 HEAD f4ae57f 分配计数
+# vector<char> emplace_back 92,406 次，较 @350d4e2 anchor 317,263 次 -70.9%，
+# 即 P5-03B 序列化拷贝消除效应；分配 churn 不再为主要瓶颈，计划 §9.6 进入
+# 条件不成立，spike 有据跳过不实现）。文件保留为 Buffer 池化候选规格
+# （tests/unit/BufferPoolContractTest.cpp 头部注明非构建目标），沿 P5-03A/C
+# 先例不再注册为构建目标。
+
 include(GoogleTest)
 
 # gtest 测试统一注入 TSAN_OPTIONS（libmysqlclient 经 libcrypto 维护全局分配器

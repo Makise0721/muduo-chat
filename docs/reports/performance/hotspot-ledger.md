@@ -103,3 +103,20 @@ profile 产物：`/mnt/d/muduo-chat-build/p5-02-gprof-profile.txt`（gprof flat/
   - P5-03D 锁竞争缓解（accept 事务）→ **评估不实施**（改法评估为高风险/范围失控，两个子改法均超单变量正确性可控范围）。
 - **归因总结（P5-03A/C 两 FAIL 共同归因 + P5-03D 评估确认）**：durable 主成本 = **accept 事务 Conversation 行 FOR UPDATE 串行 + 3-4× SQL/msg 架构性瓶颈**（MySQLMessageStore.cpp:624-763）；两个 FAIL 的优化均落在 accept 事务外部或与其同收益面 → 收益面不足；而针对事务本身的减负改法均超单变量正确性可控范围（触碰 P3-04 序列分配原子性/跨表原子性/schema）→ P5-03 循环按单变量纪律收口。
 - **移交 P5-04**：Buffer 分配复用候选与 P5-04「Buffer 内存池化」spike 重叠（需 feature flag + 进入条件 = 分配次数/RSS 证明为主要瓶颈），**移交 P5-04 内核与 I/O 实验隔离**（计划 §9.6）。
+
+## P5-04 开卡登记（2026-08-25，luna_worker）
+
+- **移交行核对**：上节「移交 P5-04」成立——Buffer 分配复用候选由 P5-04 卡承接为「Buffer 内存池化」首批 spike（计划 §9.6），详见 [P5-04.md](../tasks/P5-04.md)。
+- **Spike 进入条件核查表（RED 前冻结，逐候选判定）**：
+  - io_uring Poller → **跳过登记**（编排者实测：kernel 6.6.87.2-microsoft-standard-WSL2、liburing 未安装、原始 syscall `io_uring_setup` → errno=22 EINVAL，WSL2 对本实现不可用；探测程序留存 `/mnt/d/muduo-chat-build/p5-04-spike/iouring_probe.c`；环境变化可复评）。
+  - sendmmsg/recvmmsg → **证据不足不开工**（无 syscall 占比 profile 数据；gprof 为 CPU flat profile 且 DB I/O wait 不可见）。
+  - MSG_ZEROCOPY → **弱证据不开工**（拷贝占比无独立数据，16 采样定性排序不作占比解读）。
+   - Buffer 内存池化（P5-03 移交）→ **选为首批 spike**（`vector<char>` emplace_back 317,263 次 gprof 调用计数实证相对最强；RSS 无增长如实登记、不主张内存收益；317,263 为 @350d4e2 历史值，HEAD f4ae57f 分配计数重测口径已写入卡内 RED 设计）。feature flag 名冻结：CMake option `ENABLE_BUFFER_POOL`，默认 OFF。
+
+## P5-04 收口登记（2026-08-25，luna_worker）
+
+- **判定：CLOSED（全候选有据跳过；无实现提交，无 spike 代码进入仓库）**。
+- **决定性证据**：阶段 1 在 HEAD f4ae57f 重测分配计数 = `vector<char>` emplace_back **92,406 次**，较 @350d4e2 anchor 317,263 次 **-70.9%**（P5-03B 序列化拷贝消除效应）；分配 churn 不再为主要瓶颈，Buffer 池化的 §9.6 进入条件失效。正确性基线 497/497、bench before echo 17788.42 msg/s（CV 0.0180）如实留档（P5-04 卡「阶段 1 基线与 RED 登记」节）。
+- **四候选结论**：io_uring → 跳过（WSL2 内核 EINVAL，探测程序留存 `/mnt/d/muduo-chat-build/p5-04-spike/iouring_probe.c`）；sendmmsg/recvmmsg → 证据不足不开工（无 syscall 占比 profile）；MSG_ZEROCOPY → 弱证据不开工（拷贝占比无独立数据）；Buffer 内存池化 → 进入条件失效（分配计数 -70.9%），按 §9.6「无收益即删除代码、结论留台账」不实现。
+- **处置**：RED 契约 `tests/unit/BufferPoolContractTest.cpp` 保留为候选规格（头部注明非构建目标），构建注册已移除（沿 P5-03A/C 先例），ctest -N 回到 497。
+- **复评条件**：环境变化（WSL 内核启用 io_uring / 裸 Linux 部署），或后续 profile 显示分配 churn 回升为主要瓶颈。详见 [P5-04.md](../tasks/P5-04.md)「阶段 1 复评与收口决定」。未改实现代码、未 stage。
