@@ -7,17 +7,71 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-
+  build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+      kafka:
+        image: bitnami/kafka:latest
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_CFG_NODE_ID: 0
+          KAFKA_CFG_PROCESS_ROLES: controller,broker
+          KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+          KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@127.0.0.1:9093
 
     steps:
     - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libmysqlclient-dev mysql-client redis-tools
+
+    - name: Configure (Debug, tests on)
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON
+
+    - name: Build
+      run: cmake --build build --parallel 4
+
+    - name: Wait for Kafka readiness
+      run: |
+        for i in $(seq 1 60); do
+          if docker exec ${{ job.services.kafka.id }} kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
+            echo "kafka ready"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "kafka not ready in time"
+        exit 1
+
+    - name: Test
+      env:
+        DB_PASSWORD: 123456
+      run: ctest --test-dir build --output-on-failure
