@@ -1,223 +1,113 @@
-# ChatServer - 基于mymuduo的聊天室系统
+# muduo-chat
 
-一个基于mymuduo网络库实现的单聊群聊聊天室系统，支持用户注册登录、好友添加、群组创建、消息收发等功能。
+基于自研 mymuduo 网络库（Reactor 模式，C++11/Linux）的可靠聊天系统。项目按五个里程碑推进：M1 网络框架、M2 非阻塞内核、M3 可靠单机消息、M4 可靠多节点、M5 可观测性与性能，全部 VERIFIED（2026-08）。
 
-## 项目结构
+## 特性总览
 
-```
-.
-├── mymuduo/            # 网络基础设施
-│   ├── include/        # 网络库头文件
-│   └── src/            # 网络库源文件
-├── chatserver/         # 聊天服务器业务代码
-│   ├── include/        # 业务层头文件
-│   │   ├── ChatServer.hpp    # 封装 TcpServer
-│   │   ├── ChatService.hpp   # 核心业务单例
-│   │   └── db/               # MySQL 操作类
-│   ├── src/            # 业务层源文件
-│   └── main.cpp        # 程序启动入口
-├── thirdparty/         # 存放 json.hpp 等第三方库
-├── sql/                # 存放 chat.sql 数据库脚本
-└── CMakeLists.txt      # 顶层 CMake，同时编译 mymuduo 和 chatserver
-```
+- **双协议**：v1（换行分隔 JSON）与 v2（二进制帧），独立监听端口。
+- **durable 消息接受**：Message/sequence/Delivery 同事务提交后应答发送方。
+- **at-least-once 投递**：接收端 ACK、超时重投、过期保留；客户端按 MessageId 去重。不宣称 exactly-once。
+- **Conversation 局部顺序**：同一会话内保序，不做全局顺序。
+- **跨网关投递**：Outbox 表 → Kafka → 幂等 consumer；每 Gateway 独立消费组。
+- **Redis presence fencing**：SessionEpoch 校验，防止旧连接误投（旧 epoch 丢弃并重路由）。
+- **keyed serial executor**：阻塞 DB 工作移出 EventLoop，按键串行执行，多 Reactor 安全扩并。
+- **统一 Telemetry**：SIGUSR1 METRICS 兼容行 + Prometheus `/metrics` 端点（配置默认关闭）+ Grafana dashboard 与告警规则（SLO 标注 experimental）。
 
-- 用户注册和登录
-- 单对单聊天
-- 群组聊天
-- 好友管理
-- 离线消息存储
-- 在线状态管理
+## 快速开始
 
-## 环境要求
+### 依赖
 
-- C++11或更高版本
-- CMake 3.10+
-- Linux系统
-- MySQL 5.7+
+- Linux；CMake 3.10+；GCC 或 Clang（C++11）
+- MySQL 8.x（必需；验证环境为 8.0.46）
+- 可选：Redis、Kafka（仅 M4/M5 集群投递与对应集成测试需要）
 
-## 安装依赖
-
-### 安装MySQL
+Debian/Ubuntu 示例：
 
 ```bash
-sudo apt-get update
-sudo apt-get install mysql-server mysql-client libmysqlclient-dev
+sudo apt-get install cmake build-essential libmysqlclient-dev
 ```
 
-### 安装其他依赖
+### 构建
 
 ```bash
-sudo apt-get install cmake build-essential
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
-## 数据库配置
+构建产物在 `bin/`（ChatServer、ChatClient、dbmigrate）。测试默认开启（`option(ENABLE_TESTS ... ON)`），纯部署可加 `-DENABLE_TESTS=OFF`。
 
-1. 创建数据库和表结构：
+### 数据库迁移
 
-```bash
-mysql -u root -p < sql/chat.sql
-```
+版本化迁移脚本位于 `sql/migrations/`（0001_baseline 起）。使用 `bin/dbmigrate` 应用：
 
-2. 设置数据库密码：
-
-服务器通过环境变量 `DB_PASSWORD` 获取MySQL root密码。如果没有设置，默认使用 "123456" 并输出警告。
-
-例如：
 ```bash
 export DB_PASSWORD=your_password
-```
-或者在运行服务器时直接设置：
-```bash
-DB_PASSWORD=your_password ./bin/ChatServer 127.0.0.1 6000
+bin/dbmigrate --to 3 --db chat          # 迁移到指定版本
+bin/dbmigrate status --db chat          # 查看已应用版本与 checksum
 ```
 
-如果需要修改其他连接参数（如主机、端口、数据库名等），请编辑 `chatserver/main.cpp` 中的 `connPool.init` 调用。
+`--db` 必填；其余连接参数有 `--host/--user/--password/--port/--migrations-dir/--lock-timeout` 可选。密码缺省读 `DB_PASSWORD` 环境变量。
 
-## 编译项目
+### 配置与运行
 
-```bash
-mkdir build && cd build
-cmake ..
-make
-```
-
-编译成功后，可执行文件位于 `bin/ChatServer`。
-
-## 运行服务器
+服务端支持 `--config <json>` 或位置参数 `ip port [threads]`（位置参数覆盖 v1 端点）：
 
 ```bash
-./bin/ChatServer 127.0.0.1 6000
+bin/ChatServer --config config.json
+# 或
+DB_PASSWORD=your_password bin/ChatServer 127.0.0.1 6000
 ```
 
-参数说明：
-- 第一个参数：服务器IP地址
-- 第二个参数：服务器端口号
+JSON 配置段与缺省值（未出现的字段保持默认）：
 
-## 消息协议
-所有消息使用JSON格式，包含以下字段：
-每条消息必须以换行符 `\n` 结束（即“一行一个 JSON”），否则服务器可能无法正确解析。
+| 段 | 字段 | 缺省 |
+|---|---|---|
+| `server.v1` | `ip` / `port` / `threads` | 127.0.0.1 / 6000 / 1 |
+| `server.v2` | `port`（ip 继承 v1） | 7000 |
+| `db` | `host` / `port` / `user` / `password` / `dbname` / `pool_size` | 127.0.0.1 / 3306 / root / （DB_PASSWORD） / chat / 5 |
+| `executor` | `workers` / `queue_capacity` | 1 / 64 |
+| `reliable` | ACK 超时、退避、保留期、清理批次等 | 卡冻结值 |
+| `outbox` | `claim_batch` / `scan_interval_ms` / `claim_lease_ms` | 卡冻结值 |
+| `gateway` | `id`（默认 1）、`presence`（Redis）、`kafka`、`consumer` | 卡冻结值 |
+| `metrics` | `enabled` / `port` | false / 7001 |
 
-### 登录消息 (msgid: 1)
-```json
-{
-  "msgid": 1,
-  "id": 123,
-  "password": "123456"
-}
-```
+完整字段示例见 `docker/configs/gw1.json`。
 
-### 注册消息 (msgid: 4)
-```json
-{
-  "msgid": 4,
-  "name": "username",
-  "password": "123456"
-}
-```
-
-### 单聊消息 (msgid: 6)
-```json
-{
-  "msgid": 6,
-  "id": 123,
-  "name": "sender",
-  "toid": 456,
-  "content": "Hello",
-  "time": "2024-01-01 12:00:00"
-}
-```
-（P3-06：字段名由 `msg` 改为 `content`；发送 `msg` 字段的旧客户端自动兼容映射，
-P3-10 部署窗口内声明退出，见 docs/specs/message-reliability.md §5.1）
-
-### 添加好友 (msgid: 7)
-```json
-{
-  "msgid": 7,
-  "id": 123,
-  "friendid": 456
-}
-```
-
-### 创建群组 (msgid: 8)
-```json
-{
-  "msgid": 8,
-  "id": 123,
-  "groupname": "聊天群",
-  "groupdesc": "这是一个测试群组"
-}
-```
-
-### 加入群组 (msgid: 9)
-```json
-{
-  "msgid": 9,
-  "id": 123,
-  "groupid": 1
-}
-```
-
-### 群聊消息 (msgid: 10)
-```json
-{
-  "msgid": 10,
-  "id": 123,
-  "name": "sender",
-  "groupid": 1,
-  "content": "Hello everyone",
-  "time": "2024-01-01 12:00:00"
-}
-```
-
-## 客户端测试
-
-可以使用telnet或netcat进行简单测试：
+### 客户端
 
 ```bash
-# 连接服务器
-nc 127.0.0.1 6000
-
-# 发送注册消息
-{"msgid":4,"name":"test","password":"123456"}
-
-# 发送登录消息
-{"msgid":1,"id":1,"password":"123456"}
+bin/ChatClient 127.0.0.1 6000
 ```
 
-## 核心组件说明
+v1 协议为换行分隔 JSON（登录 msgid=1、注册 msgid=4、单聊 msgid=6 等），可用 telnet/netcat 直接调试；协议细节见 [docs/specs/message-reliability.md](docs/specs/message-reliability.md)。
 
-### ChatServer
-封装mymuduo的TcpServer，处理网络连接和消息分发。
+## 测试
 
-### ChatService
-核心业务逻辑单例类，维护消息处理器映射表，处理各种业务逻辑。
+```bash
+ctest --test-dir build --output-on-failure
+```
 
-### MySQL
-数据库操作封装，提供连接、查询、更新等功能。
+- 共 497 个用例（M5 验收口径）。真实 MySQL 必需；Redis/Kafka 用于集群集成用例，同样要求本地真实依赖（测试不 skip）。
+- 单测基于 GTest；`ENABLE_TESTS=ON` 时随主构建生成。
 
-### ConnectionPool
-MySQL连接池，提高数据库访问效率。
+## 多节点部署
 
-## 技术架构
+`docker/compose.yml` 提供 3 Gateway 容器拓扑（host 网络，复用宿主本机 MySQL/Redis/Kafka）：
 
-- **网络层**：基于mymuduo的Reactor模式，非阻塞IO
-- **业务层**：单例模式的ChatService，消息处理器映射
-- **数据层**：MySQL存储用户数据
-- **协议层**：JSON格式的消息协议
+```bash
+bash docker/build_rootfs.sh                 # 构建最小 rootfs 镜像
+docker compose -f docker/compose.yml up -d
+```
 
-## 注意事项
+端口布局：gw1 v1=16201/v2=16211，gw2 16202/16212，gw3 16203/16213（gateway.id=1/2/3）。同文件含 Prometheus 与 Grafana 服务（抓取宿主 `/metrics`，experimental 观测面）；告警规则在 `docker/prometheus/rules/`，dashboard 在 `docker/grafana/dashboards/`。
 
-1. 确保MySQL服务已启动
-2. 修改main.cpp中的数据库连接信息
-3. 首次运行需要导入数据库脚本
-4. 服务器默认监听6000端口，可根据需要修改
+## 文档入口
 
-## 参考资料
+- 导航总览：[docs/README.md](docs/README.md)
+- 里程碑验收报告：[docs/reports/p2-m2-gates.md](docs/reports/p2-m2-gates.md)、[p3-m3-gates.md](docs/reports/p3-m3-gates.md)、[p4-m4-gates.md](docs/reports/p4-m4-gates.md)、[p5-m5-gates.md](docs/reports/p5-m5-gates.md)
+- 性能数据：[docs/reports/performance/](docs/reports/performance/)
+- 协议与领域行为：[docs/specs/](docs/specs/)；设计决定：[docs/adr/](docs/adr/)
 
-- muduo网络库
-- nlohmann/json库
-- MySQL官方文档
+## 项目状态
 
-## 许可证
-
-本项目仅供学习交流使用。
+M1-M5 全部 VERIFIED（2026-08），任务卡与证据已归档至 `docs/archive/tasks/`。README 及报告中出现的吞吐/延迟等数字均为实验环境（WSL2 Ubuntu 24.04 单机、回环依赖）测量结果，不外推生产环境。本项目仅供学习交流使用。
