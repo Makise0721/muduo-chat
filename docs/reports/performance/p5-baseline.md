@@ -3,7 +3,7 @@
 状态：第一轮采集完成（2026-08-24）；**第二轮隔日复跑待补**（同 commit 隔日复跑后更新本报告
 与 P5-02 卡，逐场景 CV 入档作为 P5-03 优化门槛分母）。
 方法学：`docs/specs/benchmark-methodology.md`（冻结，bench-result-v1）。
-任务卡：[docs/tasks/P5-02.md](../tasks/P5-02.md)。
+任务卡：[docs/archive/tasks/p5/P5-02.md](../../archive/tasks/p5/P5-02.md)。
 
 ## 环境
 

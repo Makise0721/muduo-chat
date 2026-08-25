@@ -1,6 +1,6 @@
 # muduo-chat 文档导航
 
-当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md)、[P4-04 幂等 Delivery consumer](tasks/P4-04.md)、[P4-05 Gateway 定向投递与 epoch 校验](tasks/P4-05.md)、[P4-06 三节点 chaos 与容量保护](tasks/P4-06.md)、[P4-07 M4 独立验收](tasks/P4-07.md) 全部 VERIFIED；M4 已 VERIFIED（入口 [M4 报告](reports/p4-m4-gates.md)）；[P5-00](tasks/P5-00.md)、[P5-01](tasks/P5-01.md)、[P5-02](tasks/P5-02.md)、P5-03A..D、P5-04、[P5-05 M5 证据包](tasks/P5-05.md) 全部终态（03A/C FAILED/REVERTED、03B PASS/已提交 3fb46bb、03D 评估不实施、04 CLOSED 有据跳过，其余 VERIFIED）；M5 已 VERIFIED（入口 [M5 报告](reports/p5-m5-gates.md)）。
+当前状态：P1/P2 已完成并通过对应验收；P3-00..P3-13 全部 VERIFIED；M3 已 VERIFIED（[M3 报告](reports/p3-m3-gates.md)）；[P4-00](tasks/P4-00.md)、[P4-01 PresenceDirectory interface 与 in-memory contract](tasks/P4-01.md)、[P4-02 Redis fencing adapter](tasks/P4-02.md)、[P4-03 OutboxPublisher port 与 Kafka adapter](tasks/P4-03.md)、[P4-04 幂等 Delivery consumer](tasks/P4-04.md)、[P4-05 Gateway 定向投递与 epoch 校验](tasks/P4-05.md)、[P4-06 三节点 chaos 与容量保护](tasks/P4-06.md)、[P4-07 M4 独立验收](tasks/P4-07.md) 全部 VERIFIED；M4 已 VERIFIED（入口 [M4 报告](reports/p4-m4-gates.md)）；[P5-00](archive/tasks/p5/P5-00.md)、[P5-01](archive/tasks/p5/P5-01.md)、[P5-02](archive/tasks/p5/P5-02.md)、P5-03A..D、P5-04、[P5-05 M5 证据包](archive/tasks/p5/P5-05.md) 全部终态（03A/C FAILED/REVERTED、03B PASS/已提交 3fb46bb、03D 评估不实施、04 CLOSED 有据跳过，其余 VERIFIED）；M5 已 VERIFIED（入口 [M5 报告](reports/p5-m5-gates.md)）。
 
 ## 从这里开始
 
@@ -35,4 +35,4 @@
 
 ## 历史材料
 
-P0、P1、P1R、P2 的任务卡位于 [archive/tasks](archive/tasks/)。归档文件保留执行时的原始路径和状态措辞，因此其中的 `docs/tasks/...` 等文本是历史事实，不是当前导航链接。
+P0、P1、P1R、P2、P5 的任务卡位于 [archive/tasks](archive/tasks/)。归档文件保留执行时的原始路径和状态措辞，因此其中的 `docs/tasks/...` 等文本是历史事实，不是当前导航链接。

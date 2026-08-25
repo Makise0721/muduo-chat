@@ -3,8 +3,8 @@
 本文档说明 `docker/grafana/dashboards/chat-overview.json` 每个 panel 的 PromQL 查询，
 作为人工与脚本（prometheus 实测 /api/v1/query 断言）核对 dashboard 的落点。指标名来自
 P5-00 /metrics 端点（`chatserver/main.cpp publishSnapshotToSink` 统一快照同源导出，
-冻结字段名，见 docs/tasks/P5-00.md §问题与证据）。所有 SLO 均为 **experimental**，
-无真实流量前不构成任何 SLA/生产承诺（docs/tasks/P5-01.md §9.9 停止规则）。
+冻结字段名，见 docs/archive/tasks/p5/P5-00.md §问题与证据）。所有 SLO 均为 **experimental**，
+无真实流量前不构成任何 SLA/生产承诺（docs/archive/tasks/p5/P5-01.md §9.9 停止规则）。
 
 ## 数据源与抓取
 
@@ -37,7 +37,7 @@ P5-00 /metrics 端点（`chatserver/main.cpp publishSnapshotToSink` 统一快照
 
 - dashboard 仅覆盖现有 **9 panel**（上表 #1–#9），**未覆盖**设计决定 D5 清单中的
   **MessageAcceptance latency** 与 **DB pool wait** 两信号：
-  - 根因：P5-00 `/metrics` 字段名冻结（docs/tasks/P5-00.md §问题与证据）未暴露
+  - 根因：P5-00 `/metrics` 字段名冻结（docs/archive/tasks/p5/P5-00.md §问题与证据）未暴露
     MessageAcceptance latency（msgid 11 accept 耗时）与 pool 获取等待（pool wait）
     两个字段；P5-01 禁止 C++ 生产代码改动，无法在卡内补齐。
   - 处理：本缺口登记在案，延后至 P5-02（或后续卡）评估是否需要新增对应指标字段并

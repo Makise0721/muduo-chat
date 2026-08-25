@@ -3,7 +3,7 @@
 本文档记录 `docker/prometheus/rules/{delivery,capacity,loop}.yml` 每条告警的触发/清除
 语义与阈值初值来源。所有阈值均为 **experimental 初值**（D4），来自 P4 故障收敛实测
 （docs/reports/p4-m4-gates.md 故障恢复与收敛节；docs/tasks/P4-07.md 容量保护/风暴
-恢复契约）。P5-02 固定 benchmark 基线产出后允许一次复核修订（docs/tasks/P5-01.md §D4）。
+恢复契约）。P5-02 固定 benchmark 基线产出后允许一次复核修订（docs/archive/tasks/p5/P5-01.md §D4）。
 
 **无 SLA/生产承诺**：本仓库在无真实流量前只称「实验 SLO」，任何阈值不构成生产承诺。
 
@@ -28,10 +28,10 @@
 
 - 每条规则 `expr` 满足并持续 `for` 时长 → 触发（firing）。experimental_slo=true 标签标识。
 - `expr` 不再满足（回落阈值下）且维持 → 自动清除（resolve）。无人工干预、无 AlertManager
-  投递（本卡范围外，docs/tasks/P5-01.md §非目标）。
+  投递（本卡范围外，docs/archive/tasks/p5/P5-01.md §非目标）。
 - 触发/清除证据：promtool unit test（tests/scripts/p5_01_test_rules.yml 逐条 firing +
   resolve 断言）与真实演练（tests/scripts/p5_01_rehearsal.py ×3 轮）。
-- 真实演练覆盖（Kafka broker SIGSTOP，docs/tasks/P5-01.md GREEN 记录）：`P5_DELIVERY_OUTBOX_LAG_HIGH`
+- 真实演练覆盖（Kafka broker SIGSTOP，docs/archive/tasks/p5/P5-01.md GREEN 记录）：`P5_DELIVERY_OUTBOX_LAG_HIGH`
   与 `P5_DELIVERY_OLDEST_PENDING_STALLED` 在 pause 窗口内 firing → CONT 恢复 → 收敛 → 自动 resolve；
   稳态对照轮无 P5_* firing。其余规则（capacity/loop 域）由 promtool unit test 逐条 firing+resolve
   断言覆盖（构造输入序列）。
@@ -40,4 +40,4 @@
 
 任何阈值改动必须三处同步：`docker/prometheus/rules/*.yml` + 本文件 + 断言脚本
 （tests/scripts/p5_01_test_rules.yml / p5_01_rehearsal.py）。本卡初值即冻结，改动记
-revision 于 docs/tasks/P5-01.md。
+revision 于 docs/archive/tasks/p5/P5-01.md。
