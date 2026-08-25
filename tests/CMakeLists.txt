@@ -219,6 +219,11 @@ add_executable(OutboxCrashRecoveryTest unit/OutboxCrashRecoveryTest.cpp)
 target_link_libraries(OutboxCrashRecoveryTest GTest::gtest_main GTest::gtest chatserver_core Threads::Threads)
 set_target_properties(OutboxCrashRecoveryTest PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 
+# 已从构建集移除：P5-03C FAILED/reverted（主门槛未达：reliable-direct msg/s 仅
+# +5.84% < 15%、95% CI 前后重叠）后其引用的 MessageStore::markOutboxEventsProcessed
+# 已还原不存在，注册会再次导致全量 CTest 构建失败。文件保留为批量 processed 标记
+# 候选规格（RED 契约 9 用例 + 接线断言 batchCalls=1），不再注册为构建目标。
+
 # P4-03 RED：OutboxPublisher port 与 Recording/Kafka 双 adapter 契约（引用尚不存在的
 # app/OutboxPublisher.hpp、app/RecordingPublisher.hpp、app/KafkaPublisher.hpp →
 # 编译失败即合法 RED）。真实 Kafka 集成，不 skip。
