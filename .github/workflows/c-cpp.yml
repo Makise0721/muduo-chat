@@ -49,27 +49,23 @@ jobs:
 
     - name: Start Kafka
       run: |
-        mkdir -p /tmp/kafka-cfg
-        cat > /tmp/kafka-cfg/server.properties <<'EOF'
-        process.roles=broker,controller
-        node.id=1
-        controller.quorum.voters=1@127.0.0.1:9093
-        listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-        advertised.listeners=PLAINTEXT://127.0.0.1:9092
-        controller.listener.names=CONTROLLER
-        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-        inter.broker.listener.name=PLAINTEXT
-        log.dirs=/tmp/kraft-combined-logs
-        num.partitions=1
-        offsets.topic.replication.factor=1
-        transaction.state.log.replication.factor=1
-        transaction.state.log.min.isr=1
-        group.initial.rebalance.delay.ms=0
-        EOF
         # --pid=host: ClusterChaosProcess kp7 需要从宿主 PID 命名空间 pgrep 到 broker 的 java 进程做 SIGSTOP/SIGCONT
+        # apache/kafka 镜像把 KAFKA_* 环境变量转换为 server.properties（点号<->下划线）；
+        # 不用文件挂载（root 属主只读文件会让 appuser 的 configure 步骤写失败）
         docker run -d --name kafka --pid=host \
           -p 9092:9092 \
-          -v /tmp/kafka-cfg/server.properties:/opt/kafka/config/server.properties \
+          -e KAFKA_NODE_ID=1 \
+          -e KAFKA_PROCESS_ROLES=broker,controller \
+          -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+          -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092 \
+          -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093 \
+          -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+          -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+          -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
+          -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+          -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+          -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+          -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
           apache/kafka:latest
 
     - name: Wait for Kafka readiness
