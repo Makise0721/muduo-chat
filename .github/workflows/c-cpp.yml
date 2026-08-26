@@ -70,20 +70,20 @@ jobs:
 
     - name: Wait for Kafka readiness
       run: |
+        # 宿主侧 TCP 探测（与 tests/scripts 惯用法一致）+ broker 日志确认启动完成，
+        # 不依赖 docker exec（exec 内 kafka-topics.sh 在该镜像+--pid=host 组合下不可靠）
         for i in $(seq 1 60); do
-          if docker exec kafka kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list >/dev/null 2>&1; then
-            echo "kafka ready (try $i)"
-            exit 0
-          fi
-          if [ $((i % 6)) -eq 0 ]; then
-            echo "--- try $i: kafka container status ---"
-            docker ps -a --filter name=kafka --format "{{.Status}}"
-            docker logs kafka 2>&1 | tail -15 || true
+          if (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; then
+            started=$(docker logs kafka 2>&1 | grep -c "Kafka Server started" || true)
+            if [ "$started" -ge 1 ]; then
+              echo "kafka ready (try $i)"
+              exit 0
+            fi
           fi
           sleep 5
         done
-        echo "kafka not ready in time; full logs:"
-        docker logs kafka 2>&1 | tail -100
+        echo "kafka not ready in time; last logs:"
+        docker logs kafka 2>&1 | tail -60
         exit 1
 
     - name: Test
