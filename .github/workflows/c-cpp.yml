@@ -129,9 +129,20 @@ jobs:
         exit 1
 
     - name: Test
-      env:
-        DB_PASSWORD: 123456
-        MYSQL_HOST: 127.0.0.1
       # Root is required: ClusterChaosProcess kp7 SIGSTOPs the kafka broker
       # process (container uid) — cross-uid signals need CAP_KILL.
-      run: sudo env DB_PASSWORD="$DB_PASSWORD" MYSQL_HOST="$MYSQL_HOST" "$(which ctest)" --test-dir build --output-on-failure
+      # ulimit: the backpressure test holds ~1200 concurrent client sockets.
+      run: >-
+        sudo sh -c 'ulimit -n 65535;
+        export DB_PASSWORD=123456 MYSQL_HOST=127.0.0.1 P307_KEEP_LOG=/tmp/bp-server.log;
+        ctest --test-dir build --output-on-failure'
+
+    - name: Dump backpressure server log on failure
+      if: failure()
+      run: |
+        if [ -f /tmp/bp-server.log ]; then
+          echo "--- bp server log: errors / connection lifecycle (tail 120) ---"
+          grep -E "ERROR|error |new connection|is down" /tmp/bp-server.log | tail -n 120 || true
+        else
+          echo "no bp server log kept"
+        fi
