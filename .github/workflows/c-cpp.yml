@@ -39,8 +39,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        # policy-rc.d 阻止 apt 安装 redis-server 时自启服务（6379 已被容器占用）
-        echo '#!/bin/sh' | sudo tee /usr/sbin/policy-rc.d >/dev/null
+        # policy-rc.d 阻止 apt 安装 redis-server 时自启服务（6379 已被容器占用�?        echo '#!/bin/sh' | sudo tee /usr/sbin/policy-rc.d >/dev/null
         echo 'exit 101' | sudo tee -a /usr/sbin/policy-rc.d >/dev/null
         sudo chmod +x /usr/sbin/policy-rc.d
         sudo apt-get install -y libmysqlclient-dev mysql-client redis-tools redis-server libgtest-dev libgmock-dev
@@ -53,9 +52,8 @@ jobs:
 
     - name: Start Kafka
       run: |
-        # --pid=host: ClusterChaosProcess kp7 需要从宿主 PID 命名空间 pgrep 到 broker 的 java 进程做 SIGSTOP/SIGCONT
-        # apache/kafka 镜像把 KAFKA_* 环境变量转换为 server.properties（点号<->下划线）；
-        # 不用文件挂载（root 属主只读文件会让 appuser 的 configure 步骤写失败）
+        # --pid=host: ClusterChaosProcess kp7 需要从宿主 PID 命名空间 pgrep �?broker �?java 进程�?SIGSTOP/SIGCONT
+        # apache/kafka 镜像�?KAFKA_* 环境变量转换�?server.properties（点�?->下划线）�?        # 不用文件挂载（root 属主只读文件会让 appuser �?configure 步骤写失败）
         docker run -d --name kafka --pid=host \
           -p 9092:9092 \
           -e KAFKA_NODE_ID=1 \
@@ -75,9 +73,7 @@ jobs:
 
     - name: Wait for Kafka readiness
       run: |
-        # 宿主侧 TCP 探测（与 tests/scripts 惯用法一致）+ broker 日志确认启动完成，
-        # 不依赖 docker exec（exec 内 kafka-topics.sh 在该镜像+--pid=host 组合下不可靠）
-        for i in $(seq 1 60); do
+        # 宿主�?TCP 探测（与 tests/scripts 惯用法一致）+ broker 日志确认启动完成�?        # 不依�?docker exec（exec �?kafka-topics.sh 在该镜像+--pid=host 组合下不可靠�?        for i in $(seq 1 60); do
           if (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; then
             started=$(docker logs kafka 2>&1 | grep -c "Kafka Server started" || true)
             if [ "$started" -ge 1 ]; then
@@ -93,17 +89,13 @@ jobs:
 
     - name: Warm up Kafka group coordinator
       run: |
-        # 全新 broker 首次 group 操作会冷创建 __consumer_offsets，窗口期协调器
-        # 返回 COORDINATOR_NOT_AVAILABLE——生产 KafkaEventConsumer 的 poll 对
-        # broker 错误零容忍（本地 broker 常热故从未暴露）。此处先触发创建并
-        # 等待 group 路径可用；exec 报错原样输出以便诊断。
-        docker exec kafka kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list
-        docker exec kafka kafka-topics.sh --bootstrap-server 127.0.0.1:9092 \
+        # 全新 broker 首次 group 操作会冷创建 __consumer_offsets，窗口期协调�?        # 返回 COORDINATOR_NOT_AVAILABLE——生�?KafkaEventConsumer �?poll �?        # broker 错误零容忍（本地 broker 常热故从未暴露）。此处先触发创建�?        # 等待 group 路径可用；exec 报错原样输出以便诊断�?        docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list
+        docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 \
           --create --topic ci-coordinator-warmup --partitions 1 --replication-factor 1 || true
-        echo "warmup" | docker exec -i kafka kafka-console-producer.sh \
+        echo "warmup" | docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh \
           --bootstrap-server 127.0.0.1:9092 --topic ci-coordinator-warmup
         for i in 1 2 3 4 5 6; do
-          if docker exec kafka kafka-console-consumer.sh \
+          if docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
               --bootstrap-server 127.0.0.1:9092 --topic ci-coordinator-warmup \
               --from-beginning --max-messages 1 --group ci-warmup --timeout-ms 30000; then
             echo "group coordinator warm (try $i)"
