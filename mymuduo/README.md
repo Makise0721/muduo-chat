@@ -1,108 +1,112 @@
-# mymuduo
+﻿# mymuduo
 
-基于muduo网络库的C++高性能网络库实现
-
-## 项目简介
-
-mymuduo是一个现代化的C++网络库，采用Reactor模式设计，提供高性能的事件驱动网络编程框架。该项目参考了陈硕的muduo网络库设计思想，实现了完整的TCP网络通信功能。
+参考陈硕 muduo 设计思想自研的 C++11 高性能网络库：Reactor 模式、epoll、one loop per thread，在经典设计之上补齐了**有界发送与背压语义**和 **v1/v2 双协议编解码器**。本库是上层聊天系统 [muduo-chat](../README.md) 的网络底座。
 
 ## 主要特性
 
-- **Reactor模式**：基于事件驱动的反应器模式设计
-- **非阻塞IO**：使用epoll实现高效的IO多路复用
-- **多线程支持**：支持线程池，充分利用多核CPU
-- **现代C++**：使用C++11特性，如智能指针、lambda表达式等
-- **简洁易用**：提供简洁的API接口，易于集成和使用
+- **Reactor 模式**：事件驱动，非阻塞 IO，epoll 多路复用
+- **One Loop Per Thread**：每个线程至多一个 EventLoop，多核扩展经 EventLoopThreadPool
+- **有界发送 / 背压**：send 返回结构化结果（Accepted/WouldBlock/Closed/TooLarge），写缓冲超限主动通知生产者暂停，慢消费者不拖垮进程
+- **双协议编解码器**：换行分隔 JSON 与二进制帧两种 OutputCodec，可按连接注入
+- **毫秒级定时器**：`runAfter` / `runEvery` / `cancel`
+- **异步日志**：前端格式化、后台线程落盘
+- **C++11**：智能指针、std::function/bind、thread、atomic，无第三方依赖
 
 ## 核心组件
 
-### 网络核心
-- **EventLoop**：事件循环，负责事件分发和处理
-- **Channel**：事件通道，封装文件描述符和事件回调
-- **Poller/EPollPoller**：IO多路复用封装
+### 事件核心
+
+| 组件 | 职责 |
+|---|---|
+| `EventLoop` | 事件循环：`runInLoop`/`queueInLoop` 跨线程投递、毫秒定时器、`loopLagProbeMs()` loop 滞后探针 |
+| `Channel` | fd + 关注事件 + 回调封装 |
+| `Poller` / `EPollPoller` | IO 多路复用抽象与 epoll 实现（`DefaultPoller.cc` 工厂）|
+| `TimerQueue` | 定时器队列（timerfd 驱动）|
 
 ### 服务器组件
-- **TcpServer**：TCP服务器，管理连接和线程池
-- **TcpConnection**：TCP连接，处理具体连接的读写操作
-- **Acceptor**：连接接受器，处理新连接
 
-### 辅助组件
-- **Buffer**：缓冲区管理，支持高效的读写操作
-- **EventLoopThreadPool**：事件循环线程池
-- **EventLoopThread**：事件循环线程
-- **Thread**：线程封装
-- **InetAddress**：网络地址封装
-- **Socket**：Socket封装
-- **Logger**：日志系统
-- **Timestamp**：时间戳
+| 组件 | 职责 |
+|---|---|
+| `Acceptor` | 新连接接受；accept 失败按原因分类计数（EMFILE 恢复等）|
+| `TcpServer` | 连接管理 + IO 线程池；提供 `stopAccept()`、`forceCloseAllConnections()`、`connectionCount()`、`acceptReasonCounts()`、`totalOutstandingBytes()` 运维接口 |
+| `TcpConnection` | 连接读写；有界发送、背压回调、`outstandingBytes()` 观测 |
+| `EventLoopThreadPool` / `EventLoopThread` | IO 线程池与单 IO 线程 |
+
+### 协议编解码器
+
+统一的 `OutputCodec` 接口（`encodedSize` + `encode`），经 `TcpConnection::setOutputCodec()` 按连接注入：
+
+| Codec | 协议 | 说明 |
+|---|---|---|
+| `LegacyJsonLineCodec` | v1 | 换行分隔 JSON，encode 自动追加 `\n`，可用 telnet 直接调试 |
+| `StreamCodec` / `BinaryFrameCodec` | v2 | 二进制帧封装任意 payload；20 字节大端帧头：`magic=0x4D434854("MCHT") · version=2 · flags · headerLength=20 · bodyLength · messageType · contentType=JSON · reserved · requestId` |
+
+v2 校验规则：帧体默认上限 **1 MiB**（构造参数可调，硬上限 **16 MiB**）；magic/version/flags/reserved/contentType 不合法返回 `ProtocolError` / `UnsupportedVersion`。帧格式与应用层协议详见[主项目 README](../README.md)。
+
+### 基础设施
+
+`Buffer`（应用层读写缓冲）、`Logger`（异步日志）、`Socket`、`InetAddress`、`Timestamp`、`CurrentThread`、`Thread`、`noncopyable`、`Callbacks`
+
+## 背压与有界发送
+
+普通网络库的 `send()` 要么无限堆积要么静默丢弃，本库把"发不进去"变成一等公民：
+
+```cpp
+SendOutcome out = conn->send(msg);
+// out.disposition: Accepted / WouldBlock / Closed / TooLarge
+// out.pressure:    Normal / PauseProducer（建议上游暂停生产）
+conn->setPressureCallback([] { /* 通知生产者限流 */ });
+```
+
+写缓冲水位由 `WriteBufferLimits` 控制，缺省：暂停读入 16MB / 恢复 8MB / 硬上限 64MB / 停滞超时 5s。连接级 `outstandingBytes()` 与服务端 `totalOutstandingBytes()` 支撑运行时观测。
 
 ## 构建方法
 
-### 环境要求
-- C++11或更高版本
-- CMake 3.10+
-- Linux系统（使用epoll）
-
-### 编译步骤
+环境要求：Linux（epoll）、CMake 3.10+、支持 C++11 的 GCC 或 Clang。
 
 ```bash
-cd mymuduo
-mkdir build && cd build
-cmake ..
-make
+# 方式一：随主项目构建（推荐，产物在 <build>/lib/libmymuduo.so）
+cmake -S .. -B build && cmake --build build
+
+# 方式二：独立构建（产物在 mymuduo/build/ 下）
+cmake -S . -B build && cmake --build build
 ```
 
-编译完成后，动态库将生成在`lib/`目录下。
+`autobuild.sh` 是编译并安装到系统目录（头文件 `/usr/include/mymuduo`、动态库 `/usr/lib` 后 `ldconfig`）的辅助脚本；注意它从 `mymuduo/lib/` 取产物，独立构建时需先把 `build/libmymuduo.so` 拷到该位置。
 
 ## 使用示例
 
-### Echo服务器
-
-项目提供了一个简单的Echo服务器示例（`example/testserver.cc`）：
+完整可运行示例见 [`example/testserver.cc`](example/testserver.cc)（Echo 服务器，监听 8000）：
 
 ```cpp
 #include "../EventLoop.h"
 #include "../InetAddress.h"
 #include "../TcpServer.h"
 
-class EchoServer 
-{
+class EchoServer {
 public:
     EchoServer(EventLoop *loop, const InetAddress &listenAddr)
-        : server_(loop, listenAddr, "EchoServer") 
-    {
+        : server_(loop, listenAddr, "EchoServer") {
         server_.setConnectionCallback(
             std::bind(&EchoServer::onConnection, this, std::placeholders::_1));
         server_.setMessageCallback(
             std::bind(&EchoServer::onMessage, this, std::placeholders::_1,
                       std::placeholders::_2, std::placeholders::_3));
     }
-
-    void start() {
-        server_.start();
-    }
+    void start() { server_.start(); }
 
 private:
-    void onConnection(const TcpConnectionPtr &conn) {
-        // 处理连接事件
-    }
-
     void onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp time) {
-        // 处理消息事件
-        std::string msg = buf->retrieveAllAsString();
-        conn->send(msg);
+        conn->send(buf->retrieveAllAsString());
     }
-
     TcpServer server_;
 };
 
 int main() {
     EventLoop loop;
-    InetAddress listenAddr(8000);
-    EchoServer server(&loop, listenAddr);
+    EchoServer server(&loop, InetAddress(8000));
     server.start();
     loop.loop();
-    return 0;
 }
 ```
 
@@ -110,45 +114,45 @@ int main() {
 
 ```
 mymuduo/
-├── EventLoop.h/cc          # 事件循环
-├── TcpServer.h/cc          # TCP服务器
-├── TcpConnection.h/cc      # TCP连接
-├── Channel.h/cc            # 事件通道
-├── Poller.h/cc             # IO多路复用基类
-├── EPollPoller.h/cc        # epoll实现
-├── Buffer.h/cc             # 缓冲区
-├── Acceptor.h/cc           # 连接接受器
-├── EventLoopThreadPool.h/cc # 线程池
-├── EventLoopThread.h/cc    # 事件循环线程
-├── Thread.h/cc             # 线程封装
-├── Socket.h/cc             # Socket封装
-├── InetAddress.h/cc        # 网络地址
-├── Logger.h/cc             # 日志系统
-├── Timestamp.h/cc          # 时间戳
-├── CurrentThread.h/cc      # 线程信息
-├── noncopyable.h           # 不可拷贝基类
-├── Callbacks.h             # 回调函数类型定义
-├── DefaultPoller.cc        # 默认Poller工厂
-├── example/                # 示例代码
-│   └── testserver.cc       # Echo服务器示例
-├── lib/                    # 编译输出目录
-├── build/                  # 构建目录
-└── CMakeLists.txt          # CMake配置文件
+├── EventLoop.h/cc               事件循环（跨线程投递 / 定时器 / lag 探针）
+├── Channel.h/cc                 fd 事件与回调封装
+├── Poller.h/cc                  IO 多路复用抽象
+├── EPollPoller.h/cc             epoll 实现
+├── DefaultPoller.cc             Poller 工厂
+├── Acceptor.h/cc                新连接接受（拒绝原因分类）
+├── TcpServer.h/cc               TCP 服务器（连接管理 / 线程池 / 优雅停止）
+├── TcpConnection.h/cc           TCP 连接（有界发送 / 背压）
+├── EventLoopThreadPool.h/cc     IO 线程池
+├── EventLoopThread.h/cc         单 IO 线程
+├── Thread.h/cc                  线程封装
+├── TimerQueue.h/cc              定时器队列
+├── StreamCodec.h/cc             v2 二进制帧编解码
+├── BinaryFrameCodec.h/cc        v2 对外 codec（OutputCodec 实现）
+├── LegacyJsonLineCodec.h/cc     v1 换行 JSON codec
+├── Buffer.h/cc                  应用层缓冲区
+├── Logger.h/cc                  异步日志
+├── Socket.h/cc                  RAII socket 封装
+├── InetAddress.h/cc             网络地址封装
+├── Timestamp.h/cc               时间戳
+├── CurrentThread.h/cc           线程局部 tid 缓存
+├── Callbacks.h                  回调类型定义
+├── noncopyable.h                不可拷贝基类
+├── example/testserver.cc        Echo 示例（端口 8000）
+├── autobuild.sh                 系统安装辅助脚本
+└── CMakeLists.txt
 ```
 
 ## 技术要点
 
-1. **One Loop Per Thread**：每个线程运行一个事件循环
-2. **异步非阻塞**：所有IO操作都是异步非阻塞的
-3. **事件回调**：使用回调函数处理各种事件
-4. **线程安全**：通过互斥锁和原子操作保证线程安全
-5. **资源管理**：使用智能指针自动管理对象生命周期
+1. **One Loop Per Thread**：每个线程至多一个 EventLoop，用 `eventfd` 唤醒跨线程任务投递
+2. **全异步非阻塞**：所有 IO 走 epoll LT 事件驱动，IO 线程上无阻塞调用
+3. **背压优先**：写缓冲有界，压力显式上抛而不是默默堆积
+4. **线程安全边界清晰**：连接对象只在 owner loop 上操作，跨线程只允许 `runInLoop`/`queueInLoop`
+5. **RAII 资源管理**：socket/Channel/连接生命周期全部智能指针托管，回调经弱引用防悬垂
 
 ## 参考资料
 
-- 《Linux多线程服务端编程》- 陈硕
-- muduo网络库：https://github.com/chenshuo/muduo
-
-## 许可证
+- 《Linux 多线程服务端编程》— 陈硕
+- muduo 网络库：<https://github.com/chenshuo/muduo>
 
 本项目仅供学习交流使用。
