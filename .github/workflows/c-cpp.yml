@@ -141,8 +141,10 @@ jobs:
       if: failure()
       run: |
         if [ -f /tmp/bp-server.log ]; then
-          echo "--- bp server log: errors / connection lifecycle (tail 120) ---"
-          grep -E "ERROR|error |new connection|is down" /tmp/bp-server.log | tail -n 120 || true
+          echo "--- bp server log: errors and connection closes (tail 80) ---"
+          grep -E "ERROR|is down" /tmp/bp-server.log | tail -n 80 || true
+          echo "--- bp server log: channel pressure transitions (tail 60) ---"
+          grep -E "updateChannel" /tmp/bp-server.log | tail -n 60 || true
         else
           echo "no bp server log kept"
         fi
