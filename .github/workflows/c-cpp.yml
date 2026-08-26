@@ -56,6 +56,13 @@ jobs:
     - name: Build
       run: cmake --build build --parallel 4
 
+    - name: Prepare default chat database
+      run: |
+        # Process tests start ChatServer with the default config (dbname=chat);
+        # the database must exist with the current schema.
+        mysql -h 127.0.0.1 -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS chat DEFAULT CHARSET utf8"
+        ./build/bin/dbmigrate --db chat --to 3 --password 123456 --migrations-dir sql/migrations
+
     - name: Start Kafka
       run: |
         # --pid=host: ClusterChaosProcess kp7 needs the broker java process visible
@@ -125,4 +132,6 @@ jobs:
       env:
         DB_PASSWORD: 123456
         MYSQL_HOST: 127.0.0.1
-      run: ctest --test-dir build --output-on-failure
+      # Root is required: ClusterChaosProcess kp7 SIGSTOPs the kafka broker
+      # process (container uid) — cross-uid signals need CAP_KILL.
+      run: sudo env DB_PASSWORD="$DB_PASSWORD" MYSQL_HOST="$MYSQL_HOST" "$(which ctest)" --test-dir build --output-on-failure
