@@ -23,15 +23,6 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=15
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd="redis-cli ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=15
 
     steps:
     - uses: actions/checkout@v4
@@ -39,11 +30,25 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        # policy-rc.d stops apt from auto-starting redis-server on port 6379 (already taken by the container)
+        # policy-rc.d stops apt from auto-starting redis-server; we start it ourselves below
         echo '#!/bin/sh' | sudo tee /usr/sbin/policy-rc.d >/dev/null
         echo 'exit 101' | sudo tee -a /usr/sbin/policy-rc.d >/dev/null
         sudo chmod +x /usr/sbin/policy-rc.d
         sudo apt-get install -y libmysqlclient-dev mysql-client redis-tools redis-server libgtest-dev libgmock-dev
+    - name: Start Redis
+      run: |
+        # Host redis owned by the tests: RedisPresenceContractTest shuts it down
+        # and restarts it via redis-cli/redis-server, so no container here.
+        redis-server --daemonize yes --port 6379 --bind 127.0.0.1 --save "" --appendonly no --dir /tmp
+        for i in $(seq 1 20); do
+          if redis-cli -h 127.0.0.1 ping >/dev/null 2>&1; then
+            echo "redis ready"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "redis not ready"
+        exit 1
 
     - name: Configure (Debug, tests on)
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON
